@@ -1,0 +1,50 @@
+{
+  "iterations": 30000,
+  "medium_energy": 1097.9478,
+  "small_energy": 1861.0,
+  "unit_count": 428,
+  "group_count": 55,
+  "bay_count": 2957,
+  "block_count": 483,
+  "medium_row_count": 106,
+  "small_row_count": 87,
+  "planning_hierarchy": "medium plan assigns attributes to yard blocks first; small plan assigns large attributes to bays inside selected blocks",
+  "block_policy": "preferred six-20ft-small-bay blocks; boundaries are adjusted to avoid splitting inferred 40ft bay pairs; block concentration is a soft preference",
+  "large_box_edge_policy": "small-plan hard constraint: the first and last bay of an area cannot receive 20ft boxes",
+  "size_overlap_policy": "20/40 capacities are size-specific; 45ft boxes consume 40ft capacity; total bay load also cannot exceed unsplit physical capacity",
+  "size_modes": [
+    "20",
+    "40"
+  ],
+  "big_plan_size_modes": [
+    "20",
+    "40"
+  ],
+  "big_plan_size_policy": "45ft boxes consume the 40ft quota in both medium and small plans",
+  "area_size_quota_count": 10,
+  "small_plan_threshold": 10,
+  "big_plan_volume_policy": "medium and small plans use 100% of the big-plan volume; no 70% rescaling is applied",
+  "voyage_windows": {
+    "453334": {
+      "window_start": "2026-05-08 10:00:00",
+      "window_end": "2026-05-09 10:00:00"
+    },
+    "453400": {
+      "window_start": "2026-05-08 16:00:00",
+      "window_end": "2026-05-09 16:00:00"
+    }
+  },
+  "operation_conflict_policy": "medium-plan soft constraint: avoid blocks in areas with loading during the voyage window; prefer areas with loading in the 24h after the voyage window",
+  "business_special_codes": [
+    "OV_OG",
+    "TYPE_FR",
+    "TYPE_OT",
+    "TYPE_TK"
+  ],
+  "planning_time": "2026-05-08 09:30:00",
+  "horizon_hours": 24.0,
+  "target_voyages": [
+    "453334",
+    "453400"
+  ]
+}
