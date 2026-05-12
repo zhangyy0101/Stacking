@@ -27,7 +27,7 @@ N_BERTHS = 7    # 泊位数量
 
 # 岸线从 10 箱区最左边到 A0 箱区最右边。
 # 10 的中心为 x=0.5，因此其左边界为 0.0；
-# A0箱区的右边界为 10.0。
+# A0 箱区的右边界为 10.0。
 SHORELINE_LEFT_X = 0.0
 SHORELINE_RIGHT_X = 10.0
 
@@ -39,35 +39,51 @@ CHANNEL_X = {ch: i + 0.5 for i, ch in enumerate(CHANNELS)}
 
 # 普通箱区的纵向层级。数值越大，越远离岸线。
 # 这些值是根据蓝色示意图的相对位置给的近似值，可以后续用实测道路距离校准。
+# 当前版本将最靠近岸线的一排 10、20、30、...、A0 设为 y=0。
+# 因此：
+#   10、20、30、...、A0 的纵坐标为 0；
+#   18、28、38、...、A8 不再作为 y=0，而是回到更远离岸线的位置。
+#
+# 注意：
+#   1. L/M/N/P 是普通主通道向下延伸的层级，比如 2L、2M、2N、2P；
+#   2. 图片中 2 通道没有 2Q、2R、2S，因此 Q/R/S 不放入普通 ROW_Y；
+#   3. 5Q、5R、5S 属于图中可见的独立小箱区，放在 SPECIAL_AREA_COORDS 中单独处理。
 ROW_Y = {
+    "0": 0.00,
+    "1": 0.25,
+    "2": 0.50,
+    "3": 0.75,
+    "4": 1.00,
+    "5": 1.15,
+    "6": 1.30,
+    "7": 1.40,
+
+    # T 位于 17/27/... 与 18/28/... 之间，按示意图给一个中间近似值。
+    "T": 1.43,
+
     "8": 1.45,
     "9": 1.70,
     "A": 1.95,
     "B": 2.30,
     "C": 2.55,
     "D": 2.90,
+
+    # X 位于 D 与 E 之间，用于 1X、2X、... 等箱区。
+    "X": 3.20,
+
     "E": 3.55,
     "F": 3.85,
     "G": 4.15,
     "H": 4.45,
     "J": 4.75,
     "K": 5.05,
-}
 
-# TODO:所有的ROW_Y在当前的基础上减去1.45，使得8层的纵坐标为0，防止横向距离和纵向距离计算失效
-ROW_Y = {
-    "8": 0.0,
-    "9": 0.25,
-    "A": 0.50,
-    "B": 0.85,
-    "C": 1.10,
-    "D": 1.45,
-    "E": 2.10,
-    "F": 2.40,
-    "G": 2.70,
-    "H": 3.00,
-    "J": 3.30,
-    "K": 3.60,
+    # L/M/N/P 是图片下半部分继续向下延伸的普通层级。
+    # 例如 2L、2M、2N、2P。
+    "L": 5.45,
+    "M": 5.80,
+    "N": 6.15,
+    "P": 6.50,
 }
 
 # 下方 E1~EE 是两组横向箱区，不属于上方 1~A 的垂直通道列。
@@ -78,21 +94,225 @@ E_GROUP_X = {
 }
 
 E_ROW_Y = {
-    "1": 5.45,
-    "2": 5.80,
-    "3": 6.15,
-    "4": 6.50,
-    "5": 6.85,
-    "6": 7.20,
-    "7": 7.55,
-    "8": 5.45,
-    "9": 5.80,
-    "A": 6.15,
-    "B": 6.50,
-    "C": 6.85,
-    "D": 7.20,
-    "E": 7.55,
+    # E1~E7 位于左下方横向箱区组，整体在 2P/5P 等箱区下方。
+    # 因此 E1 的 y 必须大于 P 层级的 6.50。
+    "1": 7.05,
+    "2": 7.35,
+    "3": 7.65,
+    "4": 7.95,
+    "5": 8.25,
+    "6": 8.55,
+    "7": 8.85,
+
+    # E8~EE 位于中下方横向箱区组，与 E1~E7 大致对应同一组纵向层级。
+    "8": 7.05,
+    "9": 7.35,
+    "A": 7.65,
+    "B": 7.95,
+    "C": 8.25,
+    "D": 8.55,
+    "E": 8.85,
 }
+
+
+IGNORED_AREAS = {"C7"}
+
+
+def evenly_spaced_values(start, end, count):
+    """在两个纵坐标之间生成 count 个等间距数值"""
+    if count == 1:
+        return [round(start, 6)]
+
+    step = (end - start) / (count - 1)
+    return [round(start + i * step, 6) for i in range(count)]
+
+
+def build_vertical_area_coords(area_names, x, start_y, end_y):
+    """把一组箱区编号映射成坐标"""
+    return {
+        area: (x, y)
+        for area, y in zip(area_names, evenly_spaced_values(start_y, end_y, len(area_names)))
+    }
+
+
+def midpoint(a, b):
+    return round((a + b) / 2, 6)
+
+
+XN_COORD = (10.25, 2.45)
+
+X_GROUP_COORDS = build_vertical_area_coords(
+    ["X1", "X2", "X3", "X4", "X5", "X6", "X7"],
+    -0.75,
+    E_ROW_Y["2"],
+    E_ROW_Y["5"],
+)
+
+W_LEFT_GROUP_COORDS = build_vertical_area_coords(
+    ["W5", "W6", "W7", "W8", "W9", "WA", "WB"],
+    0.85,
+    ROW_Y["L"],
+    ROW_Y["P"],
+)
+
+S_GROUP_COORDS = build_vertical_area_coords(
+    ["S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9"],
+    10.65,
+    (ROW_Y["0"] + ROW_Y["1"]) / 2,
+    (ROW_Y["A"] + ROW_Y["B"]) / 2,
+)
+
+D_GROUP_COORDS = {
+    "DK": (CHANNEL_X["6"], E_ROW_Y["8"]),
+    "DL": (CHANNEL_X["6"], E_ROW_Y["9"]),
+    "DM": (CHANNEL_X["6"], E_ROW_Y["A"]),
+    "DN": (CHANNEL_X["6"], E_ROW_Y["B"]),
+    "DU": (CHANNEL_X["6"], E_ROW_Y["C"]),
+    "DV": (CHANNEL_X["6"], E_ROW_Y["D"]),
+    "DW": (CHANNEL_X["6"], E_ROW_Y["E"]),
+    "DX": (CHANNEL_X["6"], round(E_ROW_Y["E"] + (E_ROW_Y["E"] - E_ROW_Y["D"]), 6)),
+
+    "DF": (CHANNEL_X["7"], E_ROW_Y["8"]),
+    "DG": (CHANNEL_X["7"], E_ROW_Y["9"]),
+    "DH": (CHANNEL_X["7"], E_ROW_Y["A"]),
+    "DJ": (CHANNEL_X["7"], E_ROW_Y["B"]),
+    "DP": (CHANNEL_X["7"], E_ROW_Y["C"]),
+    "DQ": (CHANNEL_X["7"], E_ROW_Y["D"]),
+    "DR": (CHANNEL_X["7"], E_ROW_Y["E"]),
+    "DS": (CHANNEL_X["7"], round(E_ROW_Y["E"] + (E_ROW_Y["E"] - E_ROW_Y["D"]), 6)),
+
+    "DB": (CHANNEL_X["8"], E_ROW_Y["8"]),
+    "DC": (CHANNEL_X["8"], E_ROW_Y["9"]),
+    "DD": (CHANNEL_X["8"], E_ROW_Y["A"]),
+    "DE": (CHANNEL_X["8"], E_ROW_Y["B"]),
+
+    "D7": (CHANNEL_X["9"], E_ROW_Y["8"]),
+    "D8": (CHANNEL_X["9"], E_ROW_Y["9"]),
+    "D9": (CHANNEL_X["9"], E_ROW_Y["A"]),
+    "DA": (CHANNEL_X["9"], E_ROW_Y["B"]),
+}
+
+FIVE_SMALL_AREA_COORDS = build_vertical_area_coords(
+    ["5N", "5M", "5S", "5R", "5Q", "5P", "5W"],
+    4.80,
+    ROW_Y["L"],
+    D_GROUP_COORDS["DX"][1],
+)
+
+RIGHT_W_GROUP_COORDS = {
+    "W1": (CHANNEL_X["A"], ROW_Y["E"]),
+    "W2": (CHANNEL_X["A"], ROW_Y["G"]),
+    "W3": (CHANNEL_X["A"], ROW_Y["H"]),
+    "W4": (CHANNEL_X["A"], ROW_Y["J"]),
+    "WG": (CHANNEL_X["A"], ROW_Y["K"]),
+}
+
+D4_D6_X = midpoint(CHANNEL_X["9"], CHANNEL_X["A"])
+
+C_GROUP_COORDS = {
+    "C1": (CHANNEL_X["A"], FIVE_SMALL_AREA_COORDS["5M"][1]),
+    "C2": (
+        CHANNEL_X["A"],
+        midpoint(FIVE_SMALL_AREA_COORDS["5M"][1], FIVE_SMALL_AREA_COORDS["5S"][1]),
+    ),
+    "C3": (
+        midpoint(CHANNEL_X["A"], XN_COORD[0]),
+        FIVE_SMALL_AREA_COORDS["5M"][1],
+    ),
+    "C4": (D4_D6_X, FIVE_SMALL_AREA_COORDS["5M"][1]),
+    "C5": (D4_D6_X, FIVE_SMALL_AREA_COORDS["5N"][1]),
+    "C6": (
+        midpoint(CHANNEL_X["A"], D4_D6_X),
+        FIVE_SMALL_AREA_COORDS["5M"][1],
+    ),
+}
+
+D4_D6_COORDS = {
+    "D4": (D4_D6_X, D_GROUP_COORDS["DN"][1]),
+    "D5": (D4_D6_X, D_GROUP_COORDS["DU"][1]),
+    "D6": (D4_D6_X, D_GROUP_COORDS["DV"][1]),
+}
+
+Y_GROUP_COORDS = {
+    "Y1": (8.00, midpoint(D_GROUP_COORDS["DV"][1], D_GROUP_COORDS["DW"][1])),
+    "Y3": (7.00, midpoint(D_GROUP_COORDS["DV"][1], D_GROUP_COORDS["DW"][1])),
+    "Y4": (7.00, D_GROUP_COORDS["DX"][1]),
+    "Y6": (8.00, D_GROUP_COORDS["DX"][1]),
+}
+
+OTHER_SMALL_AREA_COORDS = {
+    "4P": (3.20, midpoint(ROW_Y["P"], E_ROW_Y["1"])),
+    "7L": (6.55, C_GROUP_COORDS["C5"][1]),
+    "7M": (6.55, C_GROUP_COORDS["C4"][1]),
+    "7N": (6.00, midpoint(C_GROUP_COORDS["C5"][1], C_GROUP_COORDS["C4"][1])),
+    "9L": (8.55, 5.75),
+}
+
+R_GROUP_COORDS = {
+    "R1": (2.70, midpoint(ROW_Y["N"], ROW_Y["M"])),
+    "R2": (2.70, midpoint(ROW_Y["M"], ROW_Y["L"])),
+    "R3": (3.00, midpoint(ROW_Y["N"], ROW_Y["P"])),
+    "R4": (2.00, midpoint(ROW_Y["L"], ROW_Y["M"])),
+}
+
+
+# 图片中还存在一些不属于 1~A 主通道规则的特殊箱区。
+# 这些箱区不能用“首字符=横向通道、第二字符=纵向层级”的规则解析，
+# 因此在这里直接给出从示意图估计的中心点坐标。
+# 这些坐标是第一版近似值，后续可以按实测距离或更精确图纸继续校准。
+SPECIAL_AREA_COORDS = {
+    # 左侧 F 组
+    "F9": (-0.60, 1.70),
+    "FA": (-0.60, 1.95),
+    "FB": (-0.60, 2.30),
+    "FC": (-0.60, 2.55),
+    "FD": (-0.60, 2.90),
+    "FE": (-1.15, 3.55),
+    "FF": (-1.15, 3.85),
+    "FG": (-1.15, 4.15),
+    "FH": (-1.15, 4.45),
+    "FJ": (-1.15, 4.75),
+    "FK": (-1.15, 5.05),
+
+    # 左下 X 组
+    **X_GROUP_COORDS,
+    "XN": XN_COORD,
+
+    # 左下与右侧 W 组
+    **W_LEFT_GROUP_COORDS,
+    **RIGHT_W_GROUP_COORDS,
+
+    # 右上 S 组
+    **S_GROUP_COORDS,
+
+    # 右侧 C 组
+    **C_GROUP_COORDS,
+
+    # 中下部与右下部 D 组
+    **D_GROUP_COORDS,
+    **D4_D6_COORDS,
+
+    # 底部右侧 Y 组
+    **Y_GROUP_COORDS,
+
+    # 5M、5N、5P、5Q、5R、5S 在图中是独立小箱区，
+    # 不按普通“5 通道 + 后缀层级”规则处理。
+    **FIVE_SMALL_AREA_COORDS,
+
+    # 其他图中可见的独立小箱区
+    **OTHER_SMALL_AREA_COORDS,
+
+    # 独立小箱区
+    **R_GROUP_COORDS,
+    "BU": (10.20, ROW_Y["2"]),
+    "J2": (10.50, -0.20),
+}
+
+
+EXPLICIT_AREA_ORDER = (
+    [f"E{i}" for i in ["1", "2", "3", "4", "5", "6", "7", "8", "9", "A", "B", "C", "D", "E"]]
+    + list(SPECIAL_AREA_COORDS)
+)
 
 
 # =========================
@@ -156,6 +376,10 @@ def area_to_coord(area_no):
     if not area_no:
         raise ValueError("空箱区编号")
 
+    # 优先处理图片中补充的特殊箱区。
+    if area_no in SPECIAL_AREA_COORDS:
+        return SPECIAL_AREA_COORDS[area_no]
+
     # 特殊处理 E1~EE，返回对应坐标
     if area_no.startswith("E") and len(area_no) == 2:
         suffix = area_no[1] # 取第二个字符
@@ -191,7 +415,7 @@ def area_to_coord(area_no):
 
 
 # =========================
-# 5. 读取 OF 适放箱区，并过滤关闭箱区
+# 5. 读取箱区，并过滤关闭/忽略箱区
 # =========================
 
 def load_closed_areas(closed_areas_path): 
@@ -218,7 +442,7 @@ def load_closed_areas(closed_areas_path):
     return closed_areas
 
 
-def load_of_areas(excel_path, closed_areas=None):
+def load_areas(excel_path, closed_areas=None):
     df = pd.read_excel(excel_path)
 
     if "area_no" in df.columns:
@@ -234,13 +458,19 @@ def load_of_areas(excel_path, closed_areas=None):
         .tolist()
     )
 
+    for area in EXPLICIT_AREA_ORDER:
+        if area not in areas:
+            areas.append(area)
+
     closed_areas = {
         area
         for area in (normalize_area_no(value) for value in (closed_areas or []))
         if area
     }
 
-    return [area for area in areas if area not in closed_areas]
+    excluded_areas = closed_areas | IGNORED_AREAS
+
+    return [area for area in areas if area not in excluded_areas]
 
 
 # =========================
@@ -322,14 +552,14 @@ def build_distance_tables(area_coord_df, berth_df):
 
 def main():
     closed_areas = load_closed_areas(CLOSED_AREAS_PATH)
-    areas = load_of_areas(EXCEL_PATH, closed_areas=closed_areas)
+    areas = load_areas(EXCEL_PATH, closed_areas=closed_areas)
 
     berth_df = build_berths()
     area_coord_df = build_area_coord_table(areas)
     long_df, matrix_df = build_distance_tables(area_coord_df, berth_df)
 
     closed_area_df = pd.DataFrame({"area_no": sorted(closed_areas)})
-    output_path = BASE_DIR / "of_适放箱区_泊位距离矩阵.xlsx"
+    output_path = BASE_DIR / "适放箱区_泊位距离矩阵.xlsx"
 
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
         berth_df.to_excel(writer, sheet_name="泊位坐标", index=False)
