@@ -10,9 +10,9 @@ import pandas as pd
 # =========================
 
 BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "堆存计划测试数据20260508"
+DATA_DIR = BASE_DIR / "堆存计划测试数据20260508补充"
 
-EXCEL_PATH = DATA_DIR / "of适放箱区列表.xlsx"
+EXCEL_PATH = DATA_DIR / "箱区功能.xlsx"
 CLOSED_AREAS_PATH = DATA_DIR / "n_usefg_areas.txt"
 DEFAULT_CLOSED_AREAS = {"20", "25", "4F"}   # 关闭的箱区
 
@@ -415,7 +415,7 @@ def area_to_coord(area_no):
 
 
 # =========================
-# 5. 读取箱区，并过滤关闭/忽略箱区
+# 5. 读取箱区，并过滤不存在的箱区
 # =========================
 
 def load_closed_areas(closed_areas_path): 
@@ -468,7 +468,9 @@ def load_areas(excel_path, closed_areas=None):
         if area
     }
 
-    excluded_areas = closed_areas | IGNORED_AREAS
+    # 距离矩阵要覆盖箱区功能表里的所有箱区；关闭箱区只记录在单独 sheet 中，
+    # 不从距离矩阵里剔除。这里只过滤确认不存在的箱区。
+    excluded_areas = IGNORED_AREAS
 
     return [area for area in areas if area not in excluded_areas]
 
@@ -569,7 +571,7 @@ def main():
         long_df.to_excel(writer, sheet_name="距离长表", index=False)
 
     print(f"已输出：{output_path.resolve()}")
-    print(f"已过滤关闭箱区：{', '.join(sorted(closed_areas))}")
+    print(f"已记录关闭箱区（距离矩阵不剔除）：{', '.join(sorted(closed_areas))}")
     print("\n箱区坐标示例：")
     print(area_coord_df.head())
 

@@ -1,0 +1,175 @@
+{
+  "data_dir": "E:\\container_terminal\\stacking\\堆存计划测试数据20260508补充",
+  "area_count": 158,
+  "flows": [
+    "IF",
+    "IZ",
+    "OF",
+    "OZ",
+    "T"
+  ],
+  "flow_aliases": {
+    "IE": "IF",
+    "RF": "IF",
+    "RE": "IF"
+  },
+  "bad_bay_count": 271,
+  "bad_bay_sample": [
+    [
+      "11",
+      "11"
+    ],
+    [
+      "11",
+      "13"
+    ],
+    [
+      "11",
+      "15"
+    ],
+    [
+      "11",
+      "17"
+    ],
+    [
+      "12",
+      "15"
+    ],
+    [
+      "12",
+      "17"
+    ],
+    [
+      "12",
+      "29"
+    ],
+    [
+      "12",
+      "31"
+    ],
+    [
+      "13",
+      "41"
+    ],
+    [
+      "13",
+      "43"
+    ],
+    [
+      "14",
+      "05"
+    ],
+    [
+      "14",
+      "07"
+    ],
+    [
+      "14",
+      "17"
+    ],
+    [
+      "14",
+      "19"
+    ],
+    [
+      "14",
+      "37"
+    ],
+    [
+      "14",
+      "39"
+    ],
+    [
+      "14",
+      "43"
+    ],
+    [
+      "14",
+      "45"
+    ],
+    [
+      "16",
+      "27"
+    ],
+    [
+      "1K",
+      "13"
+    ]
+  ],
+  "current_snapshot_rows": 1193,
+  "active_tops_rows": 424,
+  "capacity20_total": 59880.0,
+  "capacity20_direct_total": 21909.0,
+  "capacity40_total": 27403.0,
+  "capacity20_if_total": 15306.0,
+  "capacity20_direct_if_total": 3042.0,
+  "capacity40_if_total": 6708.0,
+  "cbar20_min": 0.0,
+  "cbar20_direct_min": 0.0,
+  "cbar40_min": 0.0,
+  "old_vessels": [],
+  "demand": {
+    "453334": {
+      "type": "export",
+      "doc_rows": 182,
+      "snapshot_rows": 313,
+      "dedup_rows": 378,
+      "prediction20": 263.0,
+      "prediction40": 820.0,
+      "detail20_before_prediction_extra": 178.0,
+      "detail40_before_prediction_extra": 200.0,
+      "extra_prediction20_to_OF": 85.0,
+      "extra_prediction40_to_OF": 620.0
+    },
+    "453400": {
+      "type": "export",
+      "doc_rows": 426,
+      "snapshot_rows": 880,
+      "dedup_rows": 937,
+      "prediction20": 490.0,
+      "prediction40": 1553.0,
+      "detail20_before_prediction_extra": 217.0,
+      "detail40_before_prediction_extra": 720.0,
+      "extra_prediction20_to_OF": 273.0,
+      "extra_prediction40_to_OF": 833.0
+    },
+    "453886": {
+      "type": "import",
+      "doc_rows": 2513,
+      "snapshot_rows": 0,
+      "dedup_rows": 2513
+    },
+    "454063": {
+      "type": "import",
+      "doc_rows": 1,
+      "snapshot_rows": 0,
+      "dedup_rows": 1
+    }
+  },
+  "status": "OPTIMAL",
+  "objective_value": 76042.94046770307,
+  "best_bound": 75915.5407748381,
+  "mip_gap": 0.0016753651565996625,
+  "runtime": 0.0970001220703125,
+  "objective_components": {
+    "miss": 0.0,
+    "adjustment": 0.0,
+    "distance": 2506.264682256769,
+    "distance_raw": 22197127.000000004,
+    "share": 7.0,
+    "operation": 0.0,
+    "balance": 715.0
+  },
+  "unmet20": {},
+  "unmet40": {},
+  "operation_overage": {},
+  "area_share_overage": {
+    "E1": 1,
+    "E2": 1,
+    "E3": 1,
+    "E4": 1,
+    "E8": 1,
+    "E9": 1,
+    "EA": 1
+  }
+}

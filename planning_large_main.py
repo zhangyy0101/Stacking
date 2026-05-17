@@ -1,0 +1,1525 @@
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import uuid
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Iterable, Mapping, Optional, Sequence
+
+import pandas as pd
+
+from planning_large_solver import (
+    DailyRollingYardPlanningData,
+    DailyRollingYardPlanningSolution,
+    YardPlanningWeights,
+    solve_daily_rolling_yard_plan,
+)
+
+
+DEFAULT_PLANNING_TIME = "2026-05-08 09:30:00"
+DEFAULT_EXPORT_VESSELS = ["453334", "453400"]
+DEFAULT_IMPORT_VESSELS = ["453886", "454063"]
+
+# 进口资料箱中存在 IE/RF/RE，但当前箱区功能表没有这些功能。
+# 这里默认将它们映射为 IF，使进口箱能使用 IF 功能箱区；如业务口径变化，可在此修改。
+DEFAULT_FLOW_ALIASES = {
+    "IE": "IF",
+    "RF": "IF",
+    "RE": "IF",
+}
+
+
+@dataclass(frozen=True)
+class PlanningInputArtifacts:
+    """参数构造层：包含求解器输入、滚动状态、诊断信息和辅助业务信息。"""
+
+    data: DailyRollingYardPlanningData
+    planning_time: pd.Timestamp
+    export_vessels: list[str]
+    import_vessels: list[str]
+    area_functions: dict[str, set[str]]
+    berth_by_vessel: dict[str, str]
+    previous_plan_rows: pd.DataFrame
+    diagnostics: dict[str, Any]
+
+
+class RollingPlanningState:
+    """
+    滚动规划状态管理器。
+
+    当前用 CSV 保存每次规划输出的箱区级总计划。下一天滚动规划时，
+    这里会读取上一版计划并构造模型中的 P20/P40/O：
+    - P：上一规划节点的总计划；
+    - O：是否旧航次，旧航次会进入调整幅度惩罚。
+    """
+
+    def __init__(self, state_dir: Path) -> None:
+        """
+        功能：
+            初始化滚动规划状态管理器，并确定历史计划 CSV 的存储路径。
+
+        参数：
+            state_dir: 状态文件所在目录。
+
+        返回：
+            无。
+        """
+        self.state_dir = state_dir
+        self.plan_history_path = state_dir / "plan_history.csv"
+
+    def read_history(self) -> pd.DataFrame:
+        """
+        功能：
+            读取历史规划状态表；若状态文件不存在，则返回包含固定列名的空表。
+
+        参数：
+            无。
+
+        返回：
+            历史计划 DataFrame，包含规划时间、航次、流向、箱区、箱型和计划箱量等字段。
+
+        异常：
+            pandas 读取 CSV 失败时会透传相应异常。
+        """
+
+        if not self.plan_history_path.exists():
+            return pd.DataFrame(
+                columns=[
+                    "run_id",
+                    "planning_time",
+                    "voy_id",
+                    "flow",
+                    "area_no",
+                    "size",
+                    "planned_qty",
+                    "status_name",
+                    "objective_value",
+                ]
+            )
+        history = pd.read_csv(self.plan_history_path)
+        if "planning_time" in history.columns:
+            history["planning_time"] = pd.to_datetime(history["planning_time"], errors="coerce")
+        return history
+
+    def latest_previous_plan(
+        self,
+        planning_time: pd.Timestamp,
+        vessels: Sequence[str],
+    ) -> pd.DataFrame:
+        """
+        功能：
+            读取每个航次在当前规划时间之前的最新一版历史计划。
+
+        参数：
+            planning_time: 当前规划节点时间。
+            vessels: 需要查询历史计划的航次集合。
+
+        返回：
+            每个航次在 ``planning_time`` 之前最新规划时间对应的计划记录。
+
+        异常：
+            pandas 分组、时间比较或历史文件读取失败时会透传相应异常。
+        """
+
+        history = self.read_history()
+        if history.empty:
+            return history
+        history = history[history["voy_id"].map(normalize_code).isin(set(vessels))].copy()
+        history = history[history["planning_time"] < planning_time].copy()
+        if history.empty:
+            return history
+        latest_by_vessel = history.groupby("voy_id")["planning_time"].transform("max")
+        return history[history["planning_time"] == latest_by_vessel].copy()
+
+    def build_previous_plan_params(
+        self,
+        planning_time: pd.Timestamp,
+        vessels: Sequence[str],
+    ) -> tuple[dict[tuple[str, str, str], float], dict[tuple[str, str, str], float], dict[str, int], pd.DataFrame]:
+        """
+        功能：
+            将历史计划表转换成求解器参数 P20、P40 和 O。
+
+        参数：
+            planning_time: 当前规划节点时间。
+            vessels: 需要构造历史计划参数的航次集合。
+
+        返回：
+            四元组 ``(p20, p40, old_flags, previous)``。其中 ``p20`` 和 ``p40``
+            的键为 ``(voy_id, flow, area_no)``，``old_flags`` 表示航次是否存在
+            上一版计划，``previous`` 为用于构造参数的历史计划明细。
+
+        异常：
+            历史计划读取、字段转换或 pandas 分组失败时会透传相应异常。
+        """
+
+        previous = self.latest_previous_plan(planning_time, vessels)
+        p20: dict[tuple[str, str, str], float] = {}
+        p40: dict[tuple[str, str, str], float] = {}
+        old_flags = {v: 0 for v in vessels}
+        if previous.empty:
+            return p20, p40, old_flags, previous
+
+        previous = previous.copy()
+        previous["voy_id"] = previous["voy_id"].map(normalize_code)
+        previous["flow"] = previous["flow"].map(normalize_code)
+        previous["area_no"] = previous["area_no"].map(normalize_code)
+        previous["size"] = previous["size"].map(normalize_size)
+        previous["planned_qty"] = pd.to_numeric(previous["planned_qty"], errors="coerce").fillna(0.0)
+
+        for vessel in previous["voy_id"].dropna().unique():
+            old_flags[vessel] = 1
+
+        grouped = previous.groupby(["voy_id", "flow", "area_no", "size"], dropna=False)["planned_qty"].sum()
+        for (vessel, flow, area, size), qty in grouped.items():
+            if not vessel or not flow or not area:
+                continue
+            key = (str(vessel), str(flow), str(area))
+            if size == "20":
+                p20[key] = float(qty)
+            elif size == "40":
+                p40[key] = float(qty)
+        return p20, p40, old_flags, previous
+
+    def append_solution(
+        self,
+        planning_time: pd.Timestamp,
+        solution: DailyRollingYardPlanningSolution,
+    ) -> pd.DataFrame:
+        """
+        功能：
+            将本次求解得到的非零总计划写入滚动状态表。
+
+        参数：
+            planning_time: 当前规划节点时间。
+            solution: 求解器返回的规划结果。
+
+        返回：
+            本次追加到状态表的新计划记录。若求解结果没有非零计划量，则返回空表。
+
+        异常：
+            创建目录、读取历史状态或写入 CSV 失败时会透传相应异常。
+        """
+
+        rows = []
+        run_id = uuid.uuid4().hex[:12]
+        for size, values in (("20", solution.x20), ("40", solution.x40)):
+            for (vessel, flow, area), qty in values.items():
+                if qty <= 0:
+                    continue
+                rows.append(
+                    {
+                        "run_id": run_id,
+                        "planning_time": planning_time.isoformat(),
+                        "voy_id": vessel,
+                        "flow": flow,
+                        "area_no": area,
+                        "size": size,
+                        "planned_qty": int(qty),
+                        "status_name": solution.status_name,
+                        "objective_value": solution.objective_value,
+                    }
+                )
+        new_rows = pd.DataFrame(rows)
+        if new_rows.empty:
+            return new_rows
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        old = self.read_history()
+        if not old.empty:
+            old["planning_time"] = pd.to_datetime(old["planning_time"], errors="coerce")
+            replacing_vessels = set(new_rows["voy_id"].map(normalize_code))
+            old = old[
+                ~(
+                    old["planning_time"].eq(planning_time)
+                    & old["voy_id"].map(normalize_code).isin(replacing_vessels)
+                )
+            ].copy()
+        combined = pd.concat([old, new_rows], ignore_index=True)
+        combined.to_csv(self.plan_history_path, index=False, encoding="utf-8-sig")
+        return new_rows
+
+
+def build_current_case_data(
+    *,
+    base_dir: Path,
+    data_dir: Optional[Path],
+    planning_time: pd.Timestamp,
+    export_vessels: Sequence[str],
+    import_vessels: Sequence[str],
+    state: RollingPlanningState,
+    flow_aliases: Optional[Mapping[str, str]] = None,
+) -> PlanningInputArtifacts:
+    """
+    功能：
+        构造当前规划节点的完整模型输入，是 pipeline 的主入口。
+
+    参数：
+        base_dir: 项目或脚本所在基础目录。
+        data_dir: 业务数据目录；为 ``None`` 时会自动发现默认数据目录。
+        planning_time: 当前规划节点时间。
+        export_vessels: 本次参与规划的出口航次集合。
+        import_vessels: 本次参与规划的进口航次集合。
+        state: 滚动规划状态管理器，用于读取 P/O 历史参数。
+        flow_aliases: 作业流向别名映射，例如将 IE/RF/RE 映射为 IF。
+
+    返回：
+        ``PlanningInputArtifacts``，包含求解器输入、规划时间、航次集合、
+        箱区功能、泊位信息、上一版计划和诊断信息。
+
+    异常：
+        FileNotFoundError: 数据目录、箱区功能表或距离矩阵未找到时抛出。
+        KeyError: 必需业务字段、泊位、箱区或距离矩阵列缺失时抛出。
+        pandas 读取 parquet、CSV、Excel 或数据转换失败时会透传相应异常。
+    """
+
+    data_dir = discover_data_dir(base_dir, data_dir)
+    flow_aliases = {normalize_code(k): normalize_code(v) for k, v in (flow_aliases or {}).items()}
+
+    # 当前要规划的航次集合。出口和进口在数据来源上不同，但求解器中统一进入 V。
+    export_vessels = [normalize_code(v) for v in export_vessels if normalize_code(v)]
+    import_vessels = [normalize_code(v) for v in import_vessels if normalize_code(v)]
+    all_vessels = export_vessels + import_vessels
+
+    # 基础静态参数：泊位距离、箱区功能、箱区作业能力。
+    vessel_info = read_vessel_info(data_dir / "vessel_berth_info_new.csv")
+    area_file = discover_area_function_file(data_dir)
+    areas, area_functions, load_capacity = read_area_functions(area_file)
+    distance = read_distance_matrix(
+        discover_distance_matrix(base_dir),
+        areas,
+        read_berths_for_vessels(vessel_info, all_vessels),
+    )
+    berth_by_vessel = read_berths_for_vessels(vessel_info, all_vessels)
+
+    # 堆场快照：识别当前规划航次已经在场的箱子。
+    snapshot = read_snapshot(data_dir / "bay_slots_detail.parquet")
+    current_snapshot = extract_current_snapshot_rows(
+        snapshot,
+        export_vessels=export_vessels,
+        import_vessels=import_vessels,
+        flow_aliases=flow_aliases,
+    )
+
+    # 异常贝位：若已在场箱流向与箱区功能不匹配，则该箱所在贝位关闭。
+    # L/Q：按 container ID 去重后的快照覆盖量，Q 对应异常贝位中的已出现箱。
+    bad_bays = identify_bad_bays(current_snapshot, area_functions)
+    l20, l40, q20, q40 = build_snapshot_count_params(current_snapshot, bad_bays, set(areas))
+
+    # 容量统计：
+    # C20        来自未拆分 bay_slots_detail.parquet，表示 20 尺等价物理容量；
+    # C20Direct  来自 bay_slots_detail_20.parquet，表示真实适放 20 尺的位置数；
+    # C40        来自 bay_slots_detail_40.parquet，表示真实适放 40 尺的位置数。
+    # 三者都会剔除已占用箱位和异常贝位。
+    bay20_equiv = prepare_slot_frame(snapshot, areas, bad_bays)
+    bay20_direct = prepare_slot_frame(pd.read_parquet(data_dir / "bay_slots_detail_20.parquet"), areas, bad_bays)
+    bay40 = prepare_slot_frame(pd.read_parquet(data_dir / "bay_slots_detail_40.parquet"), areas, bad_bays)
+    c20 = bay20_equiv.groupby("area_no")["slot_uid"].nunique().reindex(areas, fill_value=0).astype(float).to_dict()
+    c20_direct = bay20_direct.groupby("area_no")["slot_uid"].nunique().reindex(areas, fill_value=0).astype(float).to_dict()
+    c40 = bay40.groupby("area_no")["slot_uid"].nunique().reindex(areas, fill_value=0).astype(float).to_dict()
+
+    # TOPS 扣减：只看 SPL_STDATE/SPL_EDDATE 判断计划是否生效。
+    # 若生效 TOPS 的 SPL_CONDITIONCODE 不是当前待规划航次，则扣除 SPR_STBAY~SPR_EDBAY
+    # 表示的完整贝位区间内所有空箱位。为与容量口径一致，分别扣 C20、C20Direct、C40。
+    tops = pd.read_parquet(data_dir / "tops_plan_info.parquet")
+    tops20, tops20_direct, tops40, active_tops_count = compute_tops_capacity_deductions(
+        tops,
+        planning_time,
+        all_vessels,
+        bay20_equiv,
+        bay20_direct,
+        bay40,
+    )
+    cbar20 = {(v, a): max(0.0, c20.get(a, 0.0) - tops20.get((v, a), 0.0)) for v in all_vessels for a in areas}
+    cbar20_direct = {
+        (v, a): max(0.0, c20_direct.get(a, 0.0) - tops20_direct.get((v, a), 0.0))
+        for v in all_vessels
+        for a in areas
+    }
+    cbar40 = {(v, a): max(0.0, c40.get(a, 0.0) - tops40.get((v, a), 0.0)) for v in all_vessels for a in areas}
+
+    # 需求 D：出口 = 资料箱/快照箱去重 + 预估超出部分补 OF；进口 = 资料箱 + 快照补全。
+    d20, d40, demand_diagnostics = build_demand_params(
+        data_dir,
+        export_vessels=export_vessels,
+        import_vessels=import_vessels,
+        current_snapshot=current_snapshot,
+        flow_aliases=flow_aliases,
+    )
+
+    # 流向集合 F：取箱区功能、需求、快照箱流向的并集。
+    flows = sorted(
+        {
+            flow
+            for funcs in area_functions.values()
+            for flow in funcs
+        }
+        | {flow for _, flow in d20}
+        | {flow for _, flow in d40}
+        | {flow for _, flow, _ in l20}
+        | {flow for _, flow, _ in l40}
+        | {flow for _, flow, _ in q20}
+        | {flow for _, flow, _ in q40}
+    )
+
+    # U/E：箱区用途和可用性。
+    # U 只看功能是否允许；E 还会检查 TOPS 后容量是否为正。
+    u = {(a, f): int(f in area_functions.get(a, set())) for a in areas for f in flows}
+    e20, e40 = build_availability_flags(
+        vessels=all_vessels,
+        flows=flows,
+        areas=areas,
+        area_functions=area_functions,
+        cbar20=cbar20,
+        cbar20_direct=cbar20_direct,
+        cbar40=cbar40,
+    )
+
+    # 历史计划 P 和新旧航次标记 O。
+    p20, p40, old_flags, previous_rows = state.build_previous_plan_params(planning_time, all_vessels)
+
+    # 汇总所有集合和参数，交给 solver 建模。
+    model_data = DailyRollingYardPlanningData(
+        V=all_vessels,
+        F=flows,
+        A=areas,
+        D20=d20,
+        D40=d40,
+        L20=l20,
+        L40=l40,
+        Q20=q20,
+        Q40=q40,
+        C20=c20,
+        C20Direct=c20_direct,
+        C40=c40,
+        Cbar20=cbar20,
+        Cbar20Direct=cbar20_direct,
+        Cbar40=cbar40,
+        H=load_capacity,
+        distance=distance,
+        U=u,
+        E20=e20,
+        E40=e40,
+        P20=p20,
+        P40=p40,
+        O=old_flags,
+        weights=YardPlanningWeights(
+            miss=100.0,
+            operation=50.0,
+            distance=30.0,
+            share=20.0,
+            adjustment=10.0,
+            balance=1.0,
+        ),
+        allow_unmet_demand=True,
+        strict_validation=True,
+    )
+
+    diagnostics = {
+        "data_dir": str(data_dir),
+        "area_count": len(areas),
+        "flows": flows,
+        "flow_aliases": flow_aliases,
+        "bad_bay_count": len(bad_bays),
+        "bad_bay_sample": sorted(list(bad_bays))[:20],
+        "current_snapshot_rows": int(len(current_snapshot)),
+        "active_tops_rows": int(active_tops_count),
+        "capacity20_total": float(sum(c20.values())),
+        "capacity20_direct_total": float(sum(c20_direct.values())),
+        "capacity40_total": float(sum(c40.values())),
+        "capacity20_if_total": float(sum(c20[a] for a in areas if "IF" in area_functions.get(a, set()))),
+        "capacity20_direct_if_total": float(sum(c20_direct[a] for a in areas if "IF" in area_functions.get(a, set()))),
+        "capacity40_if_total": float(sum(c40[a] for a in areas if "IF" in area_functions.get(a, set()))),
+        "cbar20_min": float(min(cbar20.values()) if cbar20 else 0.0),
+        "cbar20_direct_min": float(min(cbar20_direct.values()) if cbar20_direct else 0.0),
+        "cbar40_min": float(min(cbar40.values()) if cbar40 else 0.0),
+        "old_vessels": sorted([v for v, flag in old_flags.items() if flag]),
+        "demand": demand_diagnostics,
+    }
+    return PlanningInputArtifacts(
+        data=model_data,
+        planning_time=planning_time,
+        export_vessels=export_vessels,
+        import_vessels=import_vessels,
+        area_functions=area_functions,
+        berth_by_vessel=berth_by_vessel,
+        previous_plan_rows=previous_rows,
+        diagnostics=diagnostics,
+    )
+
+
+def discover_data_dir(base_dir: Path, data_dir: Optional[Path]) -> Path:
+    """
+    功能：
+        确定本次规划使用的数据目录。
+
+    参数：
+        base_dir: 自动搜索数据目录时使用的基础目录。
+        data_dir: 用户显式指定的数据目录；不为空时直接返回该目录的绝对路径。
+
+    返回：
+        数据目录路径。
+
+    异常：
+        FileNotFoundError: 未显式指定目录且无法唯一找到包含 ``20260508`` 的数据目录时抛出。
+    """
+    if data_dir is not None:
+        return data_dir.resolve()
+    candidates = [p for p in base_dir.iterdir() if p.is_dir() and "20260508" in p.name]
+    if len(candidates) != 1:
+        raise FileNotFoundError(f"Expected one 20260508 data directory, found: {candidates}")
+    return candidates[0]
+
+
+def discover_area_function_file(data_dir: Path) -> Path:
+    """
+    功能：
+        在数据目录中自动发现箱区功能 Excel 文件。
+
+    参数：
+        data_dir: 业务数据目录。
+
+    返回：
+        箱区功能表文件路径。
+
+    异常：
+        FileNotFoundError: 未找到或找到多个候选 Excel 文件时抛出。
+    """
+    candidates = [
+        p
+        for p in data_dir.iterdir()
+        if p.suffix.lower() in {".xlsx", ".xls"}
+        and not p.name.startswith("~")
+        and "predict" not in p.name.lower()
+    ]
+    if len(candidates) != 1:
+        raise FileNotFoundError(f"Expected one area function workbook, found: {candidates}")
+    return candidates[0]
+
+
+def discover_distance_matrix(base_dir: Path) -> Path:
+    """
+    功能：
+        在基础目录中自动发现泊位到箱区的距离矩阵工作簿。
+
+    参数：
+        base_dir: 自动搜索距离矩阵时使用的基础目录。
+
+    返回：
+        距离矩阵 Excel 文件路径。
+
+    异常：
+        FileNotFoundError: 未找到符合工作表数量特征的距离矩阵工作簿时抛出。
+    """
+    for path in base_dir.iterdir():
+        if path.suffix.lower() not in {".xlsx", ".xls"} or path.name.startswith("~"):
+            continue
+        try:
+            xls = pd.ExcelFile(path)
+        except Exception:
+            continue
+        if len(xls.sheet_names) >= 5:
+            return path
+    raise FileNotFoundError("Could not find the berth-area distance matrix workbook.")
+
+
+def normalize_code(value: Any) -> Optional[str]:
+    """
+    功能：
+        将业务编码统一清洗为去空格的大写字符串，并处理 Excel 数字编码的 ``.0`` 后缀。
+
+    参数：
+        value: 待清洗的原始值。
+
+    返回：
+        清洗后的编码；空值、NaN 或空字符串返回 ``None``。
+    """
+    if value is None or pd.isna(value):
+        return None
+    text = str(value).strip().upper()
+    if not text or text == "NAN":
+        return None
+    if re.fullmatch(r"\d+\.0", text):
+        text = text[:-2]
+    return text
+
+
+def normalize_size(value: Any) -> Optional[str]:
+    """
+    功能：
+        将箱尺寸编码标准化为模型使用的 20/40 两类。
+
+    参数：
+        value: 原始箱尺寸编码。
+
+    返回：
+        ``"20"``、``"40"`` 或 ``None``。45 尺箱按 40 尺口径处理。
+    """
+    code = normalize_code(value)
+    if not code:
+        return None
+    if code.startswith("20"):
+        return "20"
+    if code.startswith(("40", "45")):
+        return "40"
+    return None
+
+
+def normalize_flow(value: Any, aliases: Mapping[str, str]) -> Optional[str]:
+    """
+    功能：
+        清洗作业流向编码，并应用流向别名映射。
+
+    参数：
+        value: 原始作业流向编码。
+        aliases: 流向别名映射，键和值均为标准化后的流向编码。
+
+    返回：
+        映射后的作业流向；空值返回 ``None``。
+    """
+    flow = normalize_code(value)
+    if not flow:
+        return None
+    return aliases.get(flow, flow)
+
+
+def normalize_bay(value: Any) -> Optional[str]:
+    """
+    功能：
+        清洗贝位、排号或层号编码，并将纯数字编码补齐为两位字符串。
+
+    参数：
+        value: 原始贝位、排号或层号。
+
+    返回：
+        标准化后的编码；空值返回 ``None``。
+    """
+    code = normalize_code(value)
+    if not code:
+        return None
+    if code.isdigit():
+        return f"{int(code):02d}"
+    return code
+
+
+def normalize_int_string(value: Any) -> Optional[str]:
+    """
+    功能：
+        将整数型业务编码标准化为不带前导零和小数后缀的字符串。
+
+    参数：
+        value: 原始整数型编码。
+
+    返回：
+        标准化后的字符串；空值返回 ``None``。
+    """
+    code = normalize_code(value)
+    if not code:
+        return None
+    if re.fullmatch(r"\d+", code):
+        return str(int(code))
+    return code
+
+
+def read_vessel_info(path: Path) -> pd.DataFrame:
+    """
+    功能：
+        读取并清洗船舶靠泊信息。
+
+    参数：
+        path: 船舶靠泊信息 CSV 路径。
+
+    返回：
+        清洗后的 DataFrame，新增航次号、计划泊位、实际泊位、距离矩阵泊位、
+        开港时间和关港时间字段。
+
+    异常：
+        FileNotFoundError: 文件不存在时由 pandas 抛出。
+        KeyError: 必需列缺失时抛出。
+        pandas 读取或时间转换失败时会透传相应异常。
+    """
+
+    df = pd.read_csv(path).copy()
+    df["voy_id"] = df["VOY_ID"].map(normalize_code)
+    df["planned_berth"] = df["VBT_BTH_PBTHNO"].map(normalize_int_string)
+    df["actual_berth"] = df["VBT_BTH_ABTHNO"].map(normalize_int_string)
+    df["berth"] = df["planned_berth"].fillna(df["actual_berth"]).map(lambda x: f"B{x}" if x else None)
+    df["open_time"] = pd.to_datetime(df["SCD_RCVSTDT"], format="%Y-%m-%d %H:%M:%S", errors="coerce")
+    df["close_time"] = pd.to_datetime(df["SCD_RCVEDDT"], format="%Y-%m-%d %H:%M:%S", errors="coerce")
+    return df
+
+
+def read_berths_for_vessels(vessel_info: pd.DataFrame, vessels: Sequence[str]) -> dict[str, str]:
+    """
+    功能：
+        为当前规划航次提取泊位号，用于读取泊位到箱区的距离。
+
+    参数：
+        vessel_info: 已清洗的船舶靠泊信息 DataFrame。
+        vessels: 当前规划航次集合。
+
+    返回：
+        航次到泊位编码的映射，例如 ``{"453334": "B1"}``。
+
+    异常：
+        KeyError: 航次缺少靠泊信息或泊位为空时抛出。
+    """
+
+    info = vessel_info.drop_duplicates("voy_id").set_index("voy_id")
+    result: dict[str, str] = {}
+    for vessel in vessels:
+        if vessel not in info.index:
+            raise KeyError(f"Missing vessel berth info for voyage {vessel}.")
+        berth = info.loc[vessel, "berth"]
+        if not berth:
+            raise KeyError(f"Missing berth for voyage {vessel}.")
+        result[vessel] = str(berth)
+    return result
+
+
+def read_area_functions(path: Path) -> tuple[list[str], dict[str, set[str]], dict[str, float]]:
+    """
+    功能：
+        读取箱区功能表，并构造箱区集合、功能集合和作业能力参数。
+
+    参数：
+        path: 箱区功能 Excel 文件路径。
+
+    返回：
+        三元组 ``(areas, area_functions, load_capacity)``。``areas`` 是可参与规划
+        的箱区集合，``area_functions`` 表示每个箱区允许的流向，``load_capacity``
+        表示箱区每日作业能力 H。
+
+    异常：
+        KeyError: 缺少 ``load_capacity`` 或 ``load_campacity`` 列时抛出。
+        pandas 读取 Excel 或数值转换失败时会透传相应异常。
+    """
+
+    df = pd.read_excel(path).copy()
+    load_col = "load_capacity" if "load_capacity" in df.columns else "load_campacity"
+    if load_col not in df.columns:
+        raise KeyError("Area function workbook must contain load_capacity or load_campacity.")
+    df["area_no"] = df["area_no"].map(normalize_code)
+    df = df[df["area_no"].notna()].drop_duplicates("area_no")
+    areas = df["area_no"].tolist()
+
+    area_functions: dict[str, set[str]] = {}
+    load_capacity: dict[str, float] = {}
+    for _, row in df.iterrows():
+        area = row["area_no"]
+        funcs = {
+            normalize_code(part)
+            for part in str(row["cntr_type"]).split(",")
+            if normalize_code(part)
+        }
+        area_functions[area] = set(funcs)
+        load_capacity[area] = float(pd.to_numeric(row[load_col], errors="coerce") or 0.0)
+    return areas, area_functions, load_capacity
+
+
+def read_distance_matrix(path: Path, areas: Sequence[str], berth_by_vessel: Mapping[str, str]) -> dict[tuple[str, str], float]:
+    """
+    功能：
+        读取距离矩阵工作表，并构造求解器使用的 ``distance[v,a]`` 参数。
+
+    参数：
+        path: 距离矩阵 Excel 文件路径。
+        areas: 当前规划箱区集合。
+        berth_by_vessel: 航次到泊位编码的映射。
+
+    返回：
+        键为 ``(voy_id, area_no)``、值为距离的字典。
+
+    异常：
+        KeyError: 距离矩阵缺少泊位列或箱区行时抛出。
+        pandas 读取 Excel 或数值转换失败时会透传相应异常。
+    """
+
+    xls = pd.ExcelFile(path)
+    matrix = pd.read_excel(path, sheet_name=xls.sheet_names[3]).copy()
+    matrix["area_no"] = matrix["area_no"].map(normalize_code)
+    matrix = matrix.dropna(subset=["area_no"]).set_index("area_no")
+    result: dict[tuple[str, str], float] = {}
+    for vessel, berth in berth_by_vessel.items():
+        if berth not in matrix.columns:
+            raise KeyError(f"Distance matrix does not contain berth column {berth}.")
+        for area in areas:
+            if area not in matrix.index:
+                raise KeyError(f"Distance matrix does not contain area {area}.")
+            result[(vessel, area)] = float(matrix.loc[area, berth])
+    return result
+
+
+def read_snapshot(path: Path) -> pd.DataFrame:
+    """
+    功能：
+        读取并清洗未拆分堆场快照 ``bay_slots_detail.parquet``。
+
+    参数：
+        path: 未拆分堆场快照 parquet 文件路径。
+
+    返回：
+        清洗后的快照 DataFrame，新增箱区、贝位、排、层、箱号、尺寸、流向、
+        进出口航次和是否占用字段。
+
+    异常：
+        FileNotFoundError: 文件不存在时由 pandas 抛出。
+        KeyError: 必需列缺失时抛出。
+        pandas 读取 parquet 或字段转换失败时会透传相应异常。
+    """
+
+    df = pd.read_parquet(path).copy()
+    df["area_no"] = df["YAA_AREANO"].map(normalize_code)
+    df["bay_no"] = df["YBY_BAYNO"].map(normalize_bay)
+    df["row_no"] = df["YST_ROWNO"].map(normalize_bay)
+    df["tier_no"] = df["YST_TIERNO"].map(normalize_bay)
+    df["cntr_id"] = df["IYC_CNTRID"].map(normalize_code)
+    df["size"] = df["IYC_CSZ_CSIZECD"].map(normalize_size)
+    df["raw_flow"] = df["IYC_STS_CSTATUSCD"].map(normalize_code)
+    df["e_voy"] = df["IYC_EVOY_ID"].map(normalize_code)
+    df["i_voy"] = df["IYC_IVOY_ID"].map(normalize_code)
+    df["has_container"] = pd.to_numeric(df["HAS_CONTAINER"], errors="coerce").fillna(0).astype(int)
+    return df
+
+
+def extract_current_snapshot_rows(
+    snapshot: pd.DataFrame,
+    *,
+    export_vessels: Sequence[str],
+    import_vessels: Sequence[str],
+    flow_aliases: Mapping[str, str],
+) -> pd.DataFrame:
+    """
+    功能：
+        从堆场快照中筛选当前待规划航次已经在场的箱。
+
+    参数：
+        snapshot: 已清洗的堆场快照 DataFrame。
+        export_vessels: 当前待规划出口航次集合。
+        import_vessels: 当前待规划进口航次集合。
+        flow_aliases: 作业流向别名映射。
+
+    返回：
+        当前规划航次的在场箱 DataFrame，新增 ``voy_id``、``direction`` 和
+        映射后的 ``flow`` 字段。
+    """
+
+    export_set = set(export_vessels)
+    import_set = set(import_vessels)
+    occupied = snapshot[snapshot["has_container"].eq(1)].copy()
+    rows = []
+    for _, row in occupied.iterrows():
+        vessel = None
+        direction = None
+        if row["e_voy"] in export_set:
+            vessel = row["e_voy"]
+            direction = "E"
+        elif row["i_voy"] in import_set:
+            vessel = row["i_voy"]
+            direction = "I"
+        if not vessel:
+            continue
+        rows.append(
+            {
+                **row.to_dict(),
+                "voy_id": vessel,
+                "direction": direction,
+                "flow": normalize_flow(row["raw_flow"], flow_aliases),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def identify_bad_bays(current_snapshot: pd.DataFrame, area_functions: Mapping[str, set[str]]) -> set[tuple[str, str]]:
+    """
+    功能：
+        识别需要关闭新增容量的异常贝位集合。
+
+    参数：
+        current_snapshot: 当前规划航次的在场箱 DataFrame。
+        area_functions: 箱区到允许作业流向集合的映射。
+
+    返回：
+        异常贝位集合，元素为 ``(area_no, bay_no)``。
+    """
+
+    bad_bays: set[tuple[str, str]] = set()
+    if current_snapshot.empty:
+        return bad_bays
+    for _, row in current_snapshot.iterrows():
+        area = row.get("area_no")
+        bay = row.get("bay_no")
+        flow = row.get("flow")
+        if not area or not bay:
+            continue
+        if flow not in area_functions.get(area, set()):
+            bad_bays.add((area, bay))
+    return bad_bays
+
+
+def build_snapshot_count_params(
+    current_snapshot: pd.DataFrame,
+    bad_bays: set[tuple[str, str]],
+    model_areas: set[str],
+) -> tuple[
+    dict[tuple[str, str, str], float],
+    dict[tuple[str, str, str], float],
+    dict[tuple[str, str, str], float],
+    dict[tuple[str, str, str], float],
+]:
+    """
+    功能：
+        根据当前在场箱和异常贝位构造 L20、L40、Q20、Q40 快照参数。
+
+    参数：
+        current_snapshot: 当前规划航次的在场箱 DataFrame。
+        bad_bays: 异常贝位集合。
+        model_areas: 当前模型允许参与规划的箱区集合。
+
+    返回：
+        四元组 ``(l20, l40, q20, q40)``。字典键均为
+        ``(voy_id, flow, area_no)``，值为按箱号去重后的箱量。
+    """
+
+    l20: dict[tuple[str, str, str], float] = {}
+    l40: dict[tuple[str, str, str], float] = {}
+    q20: dict[tuple[str, str, str], float] = {}
+    q40: dict[tuple[str, str, str], float] = {}
+    if current_snapshot.empty:
+        return l20, l40, q20, q40
+
+    unique_containers = current_snapshot.copy()
+    unique_containers = unique_containers[unique_containers["cntr_id"].notna()].copy()
+    unique_containers = unique_containers.sort_values(["cntr_id", "area_no", "bay_no"]).drop_duplicates("cntr_id", keep="first")
+
+    for _, row in unique_containers.iterrows():
+        vessel = row.get("voy_id")
+        flow = row.get("flow")
+        area = row.get("area_no")
+        size = row.get("size")
+        bay = row.get("bay_no")
+        if not vessel or not flow or not area or area not in model_areas or size not in {"20", "40"}:
+            continue
+        target = q20 if (area, bay) in bad_bays and size == "20" else None
+        target = q40 if (area, bay) in bad_bays and size == "40" else target
+        target = l20 if target is None and size == "20" else target
+        target = l40 if target is None and size == "40" else target
+        key = (vessel, flow, area)
+        target[key] = target.get(key, 0.0) + 1.0
+    return l20, l40, q20, q40
+
+
+def prepare_slot_frame(raw: pd.DataFrame, areas: Sequence[str], bad_bays: set[tuple[str, str]]) -> pd.DataFrame:
+    """
+    功能：
+        将原始箱位表整理成可统计剩余容量的空箱位表。
+
+    参数：
+        raw: 原始箱位 DataFrame。
+        areas: 当前模型允许参与规划的箱区集合。
+        bad_bays: 异常贝位集合，需要从新增容量中剔除。
+
+    返回：
+        只包含模型箱区、空箱位和非异常贝位的 DataFrame，并新增 ``slot_uid``
+        唯一箱位标识。
+
+    异常：
+        KeyError: 原始箱位表缺少必需列时抛出。
+    """
+
+    df = raw.copy()
+    df["area_no"] = df["YAA_AREANO"].map(normalize_code)
+    df["bay_no"] = df["YBY_BAYNO"].map(normalize_bay)
+    df["row_no"] = df["YST_ROWNO"].map(normalize_bay)
+    df["tier_no"] = df["YST_TIERNO"].map(normalize_bay)
+    df["slot_no"] = df["YST_SLOTNO"].map(normalize_code)
+    df["has_container"] = pd.to_numeric(df["HAS_CONTAINER"], errors="coerce").fillna(0).astype(int)
+    df = df[df["area_no"].isin(set(areas))].copy()
+    df = df[df["has_container"].eq(0)].copy()
+    if bad_bays:
+        df = df[~df.apply(lambda row: (row["area_no"], row["bay_no"]) in bad_bays, axis=1)].copy()
+    df["slot_uid"] = list(zip(df["area_no"], df["bay_no"], df["row_no"], df["tier_no"], df["slot_no"]))
+    return df
+
+
+def build_demand_params(
+    data_dir: Path,
+    *,
+    export_vessels: Sequence[str],
+    import_vessels: Sequence[str],
+    current_snapshot: pd.DataFrame,
+    flow_aliases: Mapping[str, str],
+) -> tuple[dict[tuple[str, str], float], dict[tuple[str, str], float], dict[str, Any]]:
+    """
+    功能：
+        构造求解器最终需求参数 D20 和 D40。
+
+    参数：
+        data_dir: 业务数据目录。
+        export_vessels: 当前待规划出口航次集合。
+        import_vessels: 当前待规划进口航次集合。
+        current_snapshot: 当前规划航次的在场箱 DataFrame。
+        flow_aliases: 作业流向别名映射。
+
+    返回：
+        三元组 ``(d20, d40, diagnostics)``。``d20`` 和 ``d40`` 的键为
+        ``(voy_id, flow)``，``diagnostics`` 记录每个航次的资料箱、快照箱、
+        预估箱和补量情况。
+
+    异常：
+        FileNotFoundError: 资料箱或预估文件不存在时由 pandas 抛出。
+        StopIteration: 未在数据目录中找到进口资料箱子目录时抛出。
+        KeyError: 资料箱、快照或预估文件缺少必需列时抛出。
+        pandas 读取 parquet、Excel 或数据转换失败时会透传相应异常。
+    """
+
+    d20: dict[tuple[str, str], float] = {}
+    d40: dict[tuple[str, str], float] = {}
+    diagnostics: dict[str, Any] = {}
+
+    for vessel in export_vessels:
+        doc_path = data_dir / f"container_info_{vessel}.parquet"
+        predict_path = data_dir / f"predict_data_{vessel}.xlsx"
+        doc = normalize_container_frame(pd.read_parquet(doc_path), flow_aliases)
+        doc = doc[doc["e_voy"].eq(vessel)].copy()
+        snap = current_snapshot[current_snapshot["voy_id"].eq(vessel)].copy()
+        merged = merge_snapshot_and_doc(doc, snap)
+        add_grouped_demand(merged, vessel, d20, d40)
+
+        pred20, pred40 = read_prediction_counts(predict_path)
+        detail20 = sum(qty for (v, _), qty in d20.items() if v == vessel)
+        detail40 = sum(qty for (v, _), qty in d40.items() if v == vessel)
+        extra20 = max(0.0, pred20 - detail20)
+        extra40 = max(0.0, pred40 - detail40)
+        if extra20:
+            d20[(vessel, "OF")] = d20.get((vessel, "OF"), 0.0) + extra20
+        if extra40:
+            d40[(vessel, "OF")] = d40.get((vessel, "OF"), 0.0) + extra40
+        diagnostics[vessel] = {
+            "type": "export",
+            "doc_rows": int(len(doc)),
+            "snapshot_rows": int(len(snap)),
+            "dedup_rows": int(len(merged)),
+            "prediction20": float(pred20),
+            "prediction40": float(pred40),
+            "detail20_before_prediction_extra": float(detail20),
+            "detail40_before_prediction_extra": float(detail40),
+            "extra_prediction20_to_OF": float(extra20),
+            "extra_prediction40_to_OF": float(extra40),
+        }
+
+    import_dir = next(p for p in data_dir.iterdir() if p.is_dir())
+    for vessel in import_vessels:
+        doc_path = import_dir / f"container_info_import_voy_{vessel}.parquet"
+        doc = normalize_container_frame(pd.read_parquet(doc_path), flow_aliases)
+        doc = doc[doc["i_voy"].eq(vessel)].copy()
+        snap = current_snapshot[current_snapshot["voy_id"].eq(vessel)].copy()
+        merged = merge_snapshot_and_doc(doc, snap)
+        add_grouped_demand(merged, vessel, d20, d40)
+        diagnostics[vessel] = {
+            "type": "import",
+            "doc_rows": int(len(doc)),
+            "snapshot_rows": int(len(snap)),
+            "dedup_rows": int(len(merged)),
+        }
+    return d20, d40, diagnostics
+
+
+def normalize_container_frame(df: pd.DataFrame, flow_aliases: Mapping[str, str]) -> pd.DataFrame:
+    """
+    功能：
+        统一清洗资料箱字段，包括箱号、进出口航次、尺寸和作业流向。
+
+    参数：
+        df: 原始资料箱 DataFrame。
+        flow_aliases: 作业流向别名映射。
+
+    返回：
+        新增 ``cntr_id``、``e_voy``、``i_voy``、``size``、``raw_flow`` 和
+        ``flow`` 字段的 DataFrame。
+
+    异常：
+        KeyError: 原始资料箱缺少必需列时抛出。
+    """
+
+    df = df.copy()
+    df["cntr_id"] = df["IYC_CNTRID"].map(normalize_code)
+    df["e_voy"] = df["IYC_EVOY_ID"].map(normalize_code)
+    df["i_voy"] = df["IYC_IVOY_ID"].map(normalize_code)
+    df["size"] = df["IYC_CSZ_CSIZECD"].map(normalize_size)
+    df["raw_flow"] = df["IYC_STS_CSTATUSCD"].map(normalize_code)
+    df["flow"] = df["raw_flow"].map(lambda value: normalize_flow(value, flow_aliases))
+    return df
+
+
+def merge_snapshot_and_doc(doc: pd.DataFrame, snapshot_rows: pd.DataFrame) -> pd.DataFrame:
+    """
+    功能：
+        合并资料箱和快照箱，并按箱号去重。
+
+    参数：
+        doc: 已清洗的资料箱 DataFrame。
+        snapshot_rows: 当前航次相关的快照箱 DataFrame。
+
+    返回：
+        按箱号去重后的箱明细 DataFrame。同一箱号同时存在于资料箱和快照中时，
+        优先保留快照行。
+
+    异常：
+        KeyError: 输入 DataFrame 缺少 ``cntr_id``、``flow`` 或 ``size`` 列时抛出。
+    """
+
+    doc_part = doc[["cntr_id", "flow", "size"]].copy()
+    doc_part["source_rank"] = 1
+    snap_part = snapshot_rows[["cntr_id", "flow", "size"]].copy() if not snapshot_rows.empty else doc_part.iloc[0:0].copy()
+    snap_part["source_rank"] = 0
+    merged = pd.concat([snap_part, doc_part], ignore_index=True)
+    merged = merged[merged["cntr_id"].notna() & merged["flow"].notna() & merged["size"].notna()].copy()
+    merged = merged.sort_values("source_rank").drop_duplicates("cntr_id", keep="first")
+    return merged
+
+
+def add_grouped_demand(
+    rows: pd.DataFrame,
+    vessel: str,
+    d20: dict[tuple[str, str], float],
+    d40: dict[tuple[str, str], float],
+) -> None:
+    """
+    功能：
+        将去重后的箱明细按流向和箱型汇总，并累加写入 D20/D40 需求字典。
+
+    参数：
+        rows: 已去重的箱明细 DataFrame。
+        vessel: 当前航次号。
+        d20: 20 尺箱需求字典，函数会原地更新。
+        d40: 40 尺箱需求字典，函数会原地更新。
+
+    返回：
+        无。
+
+    异常：
+        KeyError: ``rows`` 缺少 ``flow`` 或 ``size`` 列时抛出。
+    """
+
+    if rows.empty:
+        return
+    grouped = rows.groupby(["flow", "size"]).size()
+    for (flow, size), qty in grouped.items():
+        target = d20 if size == "20" else d40
+        target[(vessel, flow)] = target.get((vessel, flow), 0.0) + float(qty)
+
+
+def read_prediction_counts(path: Path) -> tuple[float, float]:
+    """
+    功能：
+        读取出口预估箱量，并将 45 尺箱统一并入 40 尺口径。
+
+    参数：
+        path: 出口预估箱量 Excel 文件路径。
+
+    返回：
+        二元组 ``(total20, total40)``，分别表示 20 尺和 40 尺预估箱量。
+
+    异常：
+        FileNotFoundError: 文件不存在时由 pandas 抛出。
+        KeyError: 缺少箱型或数量列时抛出。
+        pandas 读取 Excel 或数值转换失败时会透传相应异常。
+    """
+
+    xls = pd.ExcelFile(path)
+    df = pd.read_excel(path, sheet_name=xls.sheet_names[0]).copy()
+    size_col = "IYC_CSZ_CSIZECD"
+    count_col = "count"
+    total20 = 0.0
+    total40 = 0.0
+    for _, row in df.iterrows():
+        size = normalize_size(row[size_col])
+        count = float(pd.to_numeric(row[count_col], errors="coerce") or 0.0)
+        if size == "20":
+            total20 += count
+        elif size == "40":
+            total40 += count
+    return total20, total40
+
+
+def compute_tops_capacity_deductions(
+    tops: pd.DataFrame,
+    planning_time: pd.Timestamp,
+    vessels: Sequence[str],
+    bay20_equiv: pd.DataFrame,
+    bay20_direct: pd.DataFrame,
+    bay40: pd.DataFrame,
+) -> tuple[
+    dict[tuple[str, str], float],
+    dict[tuple[str, str], float],
+    dict[tuple[str, str], float],
+    int,
+]:
+    """
+    功能：
+        计算 TOPS 对各航次、各箱区容量的扣减量。
+
+    参数：
+        tops: TOPS 计划 DataFrame。
+        planning_time: 当前规划节点时间。
+        vessels: 当前规划航次集合。
+        bay20_equiv: 20 尺等价物理容量口径的空箱位表。
+        bay20_direct: 真实适放 20 尺箱口径的空箱位表。
+        bay40: 真实适放 40 尺箱口径的空箱位表。
+
+    返回：
+        四元组 ``(tops20, tops20_direct, tops40, active_tops_count)``，前三个字典
+        的键为 ``(voy_id, area_no)``，值为应扣除的箱位数量。
+
+    异常：
+        KeyError: TOPS 表缺少 ``SPL_STDATE``、``SPL_EDDATE``、``SPL_CONDITIONCODE``、
+            ``SPR_STBAY`` 或 ``SPR_EDBAY`` 时抛出。
+        pandas 时间转换或筛选失败时会透传相应异常。
+    """
+
+    active = tops.copy()
+    active["condition_vessel"] = active["SPL_CONDITIONCODE"].map(normalize_code)
+    active["start_time"] = parse_tops_time(active["SPL_STDATE"])
+    active["end_time"] = parse_tops_time(active["SPL_EDDATE"])
+    if "SPL_ISVALID" in active.columns:
+        active = active[active["SPL_ISVALID"].astype(str).str.upper().eq("Y")].copy()
+    active = active[(active["start_time"] <= planning_time) & (planning_time <= active["end_time"])].copy()
+
+    tops20: dict[tuple[str, str], float] = {}
+    tops20_direct: dict[tuple[str, str], float] = {}
+    tops40: dict[tuple[str, str], float] = {}
+    for vessel in vessels:
+        relevant = active[active["condition_vessel"] != vessel].copy()
+        tops20.update(count_tops_blocked_slots(relevant, bay20_equiv, vessel))
+        tops20_direct.update(count_tops_blocked_slots(relevant, bay20_direct, vessel))
+        tops40.update(count_tops_blocked_slots(relevant, bay40, vessel))
+    return tops20, tops20_direct, tops40, int(len(active))
+
+
+def parse_tops_time(series: pd.Series) -> pd.Series:
+    """
+    功能：
+        将 TOPS 时间字段解析为 pandas 时间序列，兼容 datetime 字符串和 Unix 秒时间戳。
+
+    参数：
+        series: TOPS 起止时间字段。
+
+    返回：
+        转换后的 ``datetime64`` Series，无法解析的值为 ``NaT``。
+    """
+
+    if pd.api.types.is_numeric_dtype(series):
+        return pd.to_datetime(series, unit="s", errors="coerce")
+    return pd.to_datetime(series, errors="coerce")
+
+
+def count_tops_blocked_slots(tops_rows: pd.DataFrame, slots: pd.DataFrame, vessel: str) -> dict[tuple[str, str], float]:
+    """
+    功能：
+        在指定箱位表中统计 TOPS 覆盖的空箱位数量。
+
+    参数：
+        tops_rows: 当前航次需要扣除的生效 TOPS 行。
+        slots: 某一容量口径下的空箱位表。
+        vessel: 当前计算扣减量的航次号。
+
+    返回：
+        键为 ``(voy_id, area_no)``、值为该航次在该箱区应扣除容量的字典。
+        使用 set 对箱位去重，避免多条 TOPS 范围重叠时重复扣减。
+
+    异常：
+        KeyError: 输入表缺少 ``area_no``、``bay_no`` 或 ``slot_uid`` 列时抛出。
+    """
+
+    blocked_by_area: dict[str, set[Any]] = {}
+    if tops_rows.empty or slots.empty:
+        return {}
+    slots_by_area = {area: sub for area, sub in slots.groupby("area_no")}
+    for _, tops in tops_rows.iterrows():
+        start_area, start_bay = parse_tops_area_bay(tops.get("SPR_STBAY"))
+        end_area, end_bay = parse_tops_area_bay(tops.get("SPR_EDBAY"))
+        area = end_area or start_area
+        if not area or area not in slots_by_area:
+            continue
+        sub = slots_by_area[area]
+        bay_mask = bay_range_mask(sub["bay_no"], start_bay, end_bay)
+        matched = sub[bay_mask]
+        if matched.empty:
+            continue
+        blocked_by_area.setdefault(area, set()).update(matched["slot_uid"].tolist())
+    return {(vessel, area): float(len(uids)) for area, uids in blocked_by_area.items()}
+
+
+def parse_tops_area_bay(value: Any) -> tuple[Optional[str], Optional[str]]:
+    """
+    功能：
+        从 TOPS 的 ``SPR_STBAY`` 或 ``SPR_EDBAY`` 字段解析箱区和贝位。
+
+    参数：
+        value: TOPS 起止贝位原始编码。
+
+    返回：
+        二元组 ``(area_no, bay_no)``。无法解析时返回 ``(None, None)``。
+    """
+
+    code = normalize_code(value)
+    if not code:
+        return None, None
+    code = code.replace(".0", "")
+    if len(code) < 4:
+        code = code.zfill(4)
+    return code[:2], normalize_bay(code[-2:])
+
+
+def bay_range_mask(values: pd.Series, start_bay: Optional[str], end_bay: Optional[str]) -> pd.Series:
+    """
+    功能：
+        根据 TOPS 起止贝位构造箱位表的贝位筛选掩码。
+
+    参数：
+        values: 箱位表中的贝位 Series。
+        start_bay: TOPS 起始贝位。
+        end_bay: TOPS 结束贝位。
+
+    返回：
+        与 ``values`` 索引一致的布尔 Series。若起止贝位均为空，则全部为 True。
+    """
+
+    if not start_bay and not end_bay:
+        return pd.Series(True, index=values.index)
+    if start_bay and end_bay and start_bay.isdigit() and end_bay.isdigit():
+        lo = min(int(start_bay), int(end_bay))
+        hi = max(int(start_bay), int(end_bay))
+        numeric = pd.to_numeric(values, errors="coerce")
+        return numeric.between(lo, hi)
+    allowed = {b for b in [start_bay, end_bay] if b}
+    return values.isin(allowed)
+
+
+def build_availability_flags(
+    *,
+    vessels: Sequence[str],
+    flows: Sequence[str],
+    areas: Sequence[str],
+    area_functions: Mapping[str, set[str]],
+    cbar20: Mapping[tuple[str, str], float],
+    cbar20_direct: Mapping[tuple[str, str], float],
+    cbar40: Mapping[tuple[str, str], float],
+) -> tuple[dict[tuple[str, str, str], int], dict[tuple[str, str, str], int]]:
+    """
+    功能：
+        构造求解器使用的 E20/E40 箱区可用性参数。
+
+    参数：
+        vessels: 当前规划航次集合。
+        flows: 当前模型流向集合。
+        areas: 当前模型箱区集合。
+        area_functions: 箱区到允许流向集合的映射。
+        cbar20: TOPS 扣减后的 20 尺等价容量。
+        cbar20_direct: TOPS 扣减后的真实适放 20 尺容量。
+        cbar40: TOPS 扣减后的真实适放 40 尺容量。
+
+    返回：
+        二元组 ``(e20, e40)``。字典键为 ``(voy_id, flow, area_no)``，值为 0/1。
+    """
+
+    e20: dict[tuple[str, str, str], int] = {}
+    e40: dict[tuple[str, str, str], int] = {}
+    for vessel in vessels:
+        for flow in flows:
+            for area in areas:
+                func_ok = flow in area_functions.get(area, set())
+                e20[(vessel, flow, area)] = int(
+                    func_ok
+                    and cbar20_direct.get((vessel, area), 0.0) > 0
+                    and cbar20.get((vessel, area), 0.0) > 0
+                )
+                e40[(vessel, flow, area)] = int(
+                    func_ok
+                    and cbar40.get((vessel, area), 0.0) > 0
+                    and cbar20.get((vessel, area), 0.0) >= 2
+                )
+    return e20, e40
+
+
+def write_run_outputs(
+    output_dir: Path,
+    artifacts: PlanningInputArtifacts,
+    solution: DailyRollingYardPlanningSolution,
+    state_rows: pd.DataFrame,
+) -> None:
+    """
+    功能：
+        将分配结果、追加状态记录和诊断信息写入本次运行输出目录。
+
+    参数：
+        output_dir: 输出目录路径。
+        artifacts: 参数构造阶段产物。
+        solution: 求解器返回的规划结果。
+        state_rows: 本次追加到滚动状态表的记录。
+
+    返回：
+        无。
+
+    异常：
+        OSError: 创建目录或写入文件失败时抛出。
+        pandas 写出 CSV 失败时会透传相应异常。
+        TypeError: 诊断信息无法 JSON 序列化时抛出。
+    """
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    allocation = pd.DataFrame(solution.allocation_rows())
+    allocation.to_csv(output_dir / "allocation.csv", index=False, encoding="utf-8-sig")
+    if not state_rows.empty:
+        state_rows.to_csv(output_dir / "state_rows_appended.csv", index=False, encoding="utf-8-sig")
+    diagnostics = {
+        **artifacts.diagnostics,
+        "status": solution.status_name,
+        "objective_value": solution.objective_value,
+        "best_bound": solution.best_bound,
+        "mip_gap": solution.mip_gap,
+        "runtime": solution.runtime,
+        "objective_components": solution.objective_components,
+        "unmet20": {str(k): v for k, v in solution.s20.items()},
+        "unmet40": {str(k): v for k, v in solution.s40.items()},
+        "operation_overage": solution.o,
+        "area_share_overage": solution.h,
+    }
+    (output_dir / "diagnostics.json").write_text(
+        json.dumps(diagnostics, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def parse_args() -> argparse.Namespace:
+    """
+    功能：
+        解析命令行参数。
+
+    参数：
+        无。
+
+    返回：
+        argparse 命名空间，包含数据目录、规划时间、航次列表、状态目录、
+        输出目录、求解时间限制和日志开关等参数。
+
+    异常：
+        SystemExit: 命令行参数不合法或请求帮助信息时由 argparse 抛出。
+    """
+    parser = argparse.ArgumentParser(description="Build parameters and solve the daily rolling yard planning model.")
+    parser.add_argument("--data-dir", type=Path, default=None)
+    parser.add_argument("--planning-time", default=DEFAULT_PLANNING_TIME)
+    parser.add_argument("--export-vessels", nargs="+", default=DEFAULT_EXPORT_VESSELS)
+    parser.add_argument("--import-vessels", nargs="+", default=DEFAULT_IMPORT_VESSELS)
+    parser.add_argument("--state-dir", type=Path, default=Path("outputs_large/state"))
+    parser.add_argument("--output-dir", type=Path, default=Path("outputs_large/latest_run"))
+    parser.add_argument("--time-limit", type=float, default=120.0)
+    parser.add_argument("--mip-gap", type=float, default=0.01)
+    parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--no-write-state", action="store_true")
+    parser.add_argument("--disable-default-flow-aliases", action="store_true")
+    return parser.parse_args()
+
+
+def main() -> None:
+    """
+    功能：
+        命令行执行入口，串联参数构造、模型求解、状态写入和结果输出。
+
+    参数：
+        无。
+
+    返回：
+        无。
+
+    异常：
+        运行过程中数据读取、参数构造、Gurobi 求解或文件写入失败时会透传相应异常。
+    """
+    args = parse_args()
+    base_dir = Path(__file__).resolve().parent
+    planning_time = pd.Timestamp(args.planning_time)
+    state = RollingPlanningState((base_dir / args.state_dir).resolve())
+    flow_aliases = {} if args.disable_default_flow_aliases else DEFAULT_FLOW_ALIASES
+
+    artifacts = build_current_case_data(
+        base_dir=base_dir,
+        data_dir=args.data_dir,
+        planning_time=planning_time,
+        export_vessels=args.export_vessels,
+        import_vessels=args.import_vessels,
+        state=state,
+        flow_aliases=flow_aliases,
+    )
+    print_case_summary(artifacts)
+    solution = solve_daily_rolling_yard_plan(
+        artifacts.data,
+        time_limit=args.time_limit,
+        mip_gap=args.mip_gap,
+        verbose=not args.quiet,
+    )
+    print_solution_summary(solution)
+    state_rows = pd.DataFrame()
+    if not args.no_write_state and solution.objective_value is not None:
+        state_rows = state.append_solution(planning_time, solution)
+        print(f"State rows appended: {len(state_rows)} -> {state.plan_history_path}")
+    write_run_outputs((base_dir / args.output_dir).resolve(), artifacts, solution, state_rows)
+    print(f"Run outputs written to: {(base_dir / args.output_dir).resolve()}")
+
+
+def print_case_summary(artifacts: PlanningInputArtifacts) -> None:
+    """
+    功能：
+        在控制台打印本次规划案例的关键输入摘要。
+
+    参数：
+        artifacts: 参数构造阶段产物。
+
+    返回：
+        无。
+
+    异常：
+        KeyError: 诊断信息中缺少摘要字段时抛出。
+    """
+    data = artifacts.data
+    print("planning_time:", artifacts.planning_time)
+    print("export_vessels:", artifacts.export_vessels)
+    print("import_vessels:", artifacts.import_vessels)
+    print("berth_by_vessel:", artifacts.berth_by_vessel)
+    print("area_count:", len(data.A))
+    print("flows:", list(data.F))
+    print("demand20_total:", sum(data.D20.values()))
+    print("demand40_total:", sum(data.D40.values()))
+    print("capacity20_equiv_total:", artifacts.diagnostics["capacity20_total"])
+    print("capacity20_direct_total:", artifacts.diagnostics["capacity20_direct_total"])
+    print("capacity40_total:", artifacts.diagnostics["capacity40_total"])
+    print("bad_bay_count:", artifacts.diagnostics["bad_bay_count"])
+    print("active_tops_rows:", artifacts.diagnostics["active_tops_rows"])
+    print("old_vessels:", artifacts.diagnostics["old_vessels"])
+
+
+def print_solution_summary(solution: DailyRollingYardPlanningSolution) -> None:
+    """
+    功能：
+        在控制台打印求解结果的关键摘要。
+
+    参数：
+        solution: 求解器返回的规划结果。
+
+    返回：
+        无。
+    """
+    print("status:", solution.status_name)
+    print("objective_value:", solution.objective_value)
+    print("mip_gap:", solution.mip_gap)
+    print("runtime:", solution.runtime)
+    print("objective_components:", solution.objective_components)
+    print("unmet20_total:", sum(solution.s20.values()))
+    print("unmet40_total:", sum(solution.s40.values()))
+    print("operation_overage_total:", sum(solution.o.values()))
+    print("area_share_overage_total:", sum(solution.h.values()))
+
+
+if __name__ == "__main__":
+    main()
