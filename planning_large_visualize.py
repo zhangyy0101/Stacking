@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import argparse
 import csv
+import re
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
+
+from planning_large_main import discover_area_function_file, discover_data_dir, normalize_code
 
 try:
     from scipy import ndimage
@@ -18,6 +21,7 @@ except ImportError:  # pragma: no cover - fallback keeps the script usable witho
 DEFAULT_BASE_IMAGE = Path("箱区俯视示意图（原始）.png")
 DEFAULT_ALLOCATION = Path("outputs_large/latest_run/allocation.csv")
 DEFAULT_OUTPUT_DIR = Path("outputs_large/yard_visualization")
+ANNOTATION_Y_OFFSET = -10
 
 
 def resolve_base_image(path: Path) -> Path:
@@ -250,6 +254,72 @@ def read_allocation_summary(allocation_path: Path) -> dict[str, list[dict[str, A
     return summary
 
 
+def read_area_work_type_labels(base_dir: Path, data_dir: Path | None) -> dict[str, str]:
+    """
+    功能：
+        从箱区功能 Excel 中读取每个箱区的作业类型标签。
+
+    参数：
+        base_dir: 当前脚本所在基础目录。
+        data_dir: 业务数据目录；为 ``None`` 时自动发现默认数据目录。
+
+    返回：
+        键为箱区号、值为按 Excel 顺序拼接的作业类型标签，例如 ``OF/OZ/IF/IZ/T``。
+
+    异常：
+        FileNotFoundError: 数据目录或箱区功能表未找到时抛出。
+        KeyError: 箱区功能表缺少必需列时抛出。
+    """
+
+    resolved_data_dir = discover_data_dir(base_dir, data_dir)
+    area_file = discover_area_function_file(resolved_data_dir)
+    df = pd.read_excel(area_file).copy()
+    required = {"area_no", "cntr_type"}
+    missing = required - set(df.columns)
+    if missing:
+        raise KeyError(f"Area function file is missing columns: {sorted(missing)}")
+
+    df["area_no"] = df["area_no"].map(normalize_code)
+    df = df[df["area_no"].notna()].drop_duplicates("area_no", keep="first")
+
+    labels: dict[str, str] = {}
+    for _, row in df.iterrows():
+        area = row["area_no"]
+        if not area:
+            continue
+        flows: list[str] = []
+        for part in re.split(r"[,/;，、\s]+", str(row["cntr_type"])):
+            flow = normalize_code(part)
+            if flow and flow not in flows:
+                flows.append(flow)
+        labels[area] = "/".join(flows)
+    return labels
+
+
+def label_fill_color(work_type_label: str) -> tuple[int, int, int, int]:
+    """
+    功能：
+        根据作业类型标签返回箱区功能段的底色。
+
+    参数：
+        work_type_label: 箱区作业类型标签。
+
+    返回：
+        RGBA 颜色。
+    """
+
+    flows = set(work_type_label.split("/")) if work_type_label else set()
+    if "IF" in flows:
+        return (72, 164, 92, 242)
+    if "OF" in flows:
+        return (202, 150, 40, 242)
+    if flows & {"OZ", "IZ"}:
+        return (154, 174, 196, 242)
+    if "T" in flows:
+        return (196, 188, 176, 242)
+    return (255, 255, 240, 0)
+
+
 def load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     """
     功能：
@@ -274,10 +344,35 @@ def load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     return ImageFont.load_default()
 
 
+def load_bold_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    """
+    功能：
+        加载适合图上加粗标注的字体。
+
+    参数：
+        size: 字号。
+
+    返回：
+        Pillow 字体对象。
+    """
+
+    candidates = [
+        Path("C:/Windows/Fonts/arialbd.ttf"),
+        Path("C:/Windows/Fonts/calibrib.ttf"),
+        Path("C:/Windows/Fonts/simhei.ttf"),
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+    ]
+    for path in candidates:
+        if path.exists():
+            return ImageFont.truetype(str(path), size=size)
+    return ImageFont.load_default()
+
+
 def draw_annotations(
     image: Image.Image,
     allocation_by_area: dict[str, list[dict[str, Any]]],
     area_positions: dict[str, tuple[int, int]],
+    area_work_type_labels: dict[str, str],
 ) -> tuple[Image.Image, list[str]]:
     """
     功能：
@@ -287,6 +382,7 @@ def draw_annotations(
         image: 已清理的空白底图。
         allocation_by_area: 按箱区汇总的计划结果。
         area_positions: 箱区号到图上坐标的映射。
+        area_work_type_labels: 箱区功能标签映射。
 
     返回：
         二元组 ``(annotated_image, unmapped_areas)``，第二项记录缺少坐标的箱区。
@@ -296,6 +392,7 @@ def draw_annotations(
     overlay = Image.new("RGBA", annotated.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     font = load_font(13)
+    bold_font = load_bold_font(13)
     unmapped: list[str] = []
 
     vessel_colors = {
@@ -311,11 +408,18 @@ def draw_annotations(
             unmapped.append(area)
             continue
         x, y = area_positions[area]
-        segments = [(area, (255, 255, 240, 0))] + [
-            (f"{row['voy_id']}:{row['planned_qty']}", vessel_colors.get(row["voy_id"], (230, 230, 230, 232)))
+        y += ANNOTATION_Y_OFFSET
+        work_type_label = area_work_type_labels.get(area, "")
+        area_label = f"{area} {work_type_label}".strip()
+        segments = [(area_label, label_fill_color(work_type_label), bold_font)] + [
+            (
+                f"{row['voy_id']}:{row['planned_qty']}",
+                vessel_colors.get(row["voy_id"], (230, 230, 230, 232)),
+                font,
+            )
             for row in rows
         ]
-        segment_bboxes = [draw.textbbox((0, 0), text, font=font) for text, _ in segments]
+        segment_bboxes = [draw.textbbox((0, 0), text, font=segment_font) for text, _, segment_font in segments]
         text_width = sum(bbox[2] - bbox[0] for bbox in segment_bboxes) + 5 * (len(segments) - 1)
         text_height = max(bbox[3] - bbox[1] for bbox in segment_bboxes)
         box_w = text_width + 10
@@ -328,11 +432,11 @@ def draw_annotations(
         draw.rounded_rectangle((x1, y1, x2, y2), radius=4, fill=(255, 255, 240, 226), outline=border, width=1)
         xx = x1 + 5
         yy = y1 + 3
-        for (text, fill), bbox in zip(segments, segment_bboxes):
+        for (text, fill, segment_font), bbox in zip(segments, segment_bboxes):
             segment_w = bbox[2] - bbox[0]
             if fill[3] > 0:
                 draw.rounded_rectangle((xx - 2, yy, xx + segment_w + 2, yy + text_height + 2), radius=2, fill=fill)
-            draw.text((xx, yy), text, fill=(0, 0, 0, 255), font=font)
+            draw.text((xx, yy), text, fill=(0, 0, 0, 255), font=segment_font)
             xx += segment_w + 5
 
     combined = Image.alpha_composite(annotated, overlay)
@@ -361,6 +465,33 @@ def write_unmapped_areas(path: Path, unmapped: list[str], allocation_by_area: di
                 writer.writerow([area, row["voy_id"], row["planned_qty"]])
 
 
+def write_visualization_check(
+    path: Path,
+    allocation_by_area: dict[str, list[dict[str, Any]]],
+    area_positions: dict[str, tuple[int, int]],
+    area_work_type_labels: dict[str, str],
+) -> None:
+    """
+    Write the exact area/voyage quantities that the visualization is expected to display.
+    """
+
+    with path.open("w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.writer(f)
+        writer.writerow(["area_no", "work_type", "has_position", "voy_id", "planned_qty"])
+        for area in sorted(allocation_by_area):
+            rows = allocation_by_area[area]
+            for row in rows:
+                writer.writerow(
+                    [
+                        area,
+                        area_work_type_labels.get(area, ""),
+                        int(area in area_positions),
+                        row["voy_id"],
+                        row["planned_qty"],
+                    ]
+                )
+
+
 def parse_args() -> argparse.Namespace:
     """
     功能：
@@ -375,6 +506,7 @@ def parse_args() -> argparse.Namespace:
 
     parser = argparse.ArgumentParser(description="Generate a yard allocation map from the solved plan.")
     parser.add_argument("--base-image", type=Path, default=DEFAULT_BASE_IMAGE)
+    parser.add_argument("--data-dir", type=Path, default=None)
     parser.add_argument("--allocation", type=Path, default=DEFAULT_ALLOCATION)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     return parser.parse_args()
@@ -400,17 +532,26 @@ def main() -> None:
 
     blank = Image.open(base_image_path).convert("RGBA")
     allocation_by_area = read_allocation_summary(allocation_path)
-    annotated, unmapped = draw_annotations(blank, allocation_by_area, build_area_positions())
+    area_work_type_labels = read_area_work_type_labels(Path(__file__).resolve().parent, args.data_dir)
+    area_positions = build_area_positions()
+    annotated, unmapped = draw_annotations(blank, allocation_by_area, area_positions, area_work_type_labels)
 
     blank_path = output_dir / "yard_base_original.png"
     annotated_path = output_dir / "yard_allocation_annotated.png"
     blank.save(blank_path)
     annotated.save(annotated_path)
+    write_visualization_check(
+        output_dir / "visualization_allocation_check.csv",
+        allocation_by_area,
+        area_positions,
+        area_work_type_labels,
+    )
     if unmapped:
         write_unmapped_areas(output_dir / "unmapped_areas.csv", unmapped, allocation_by_area)
 
     print(f"Base image: {base_image_path}")
     print(f"Allocation rows grouped into areas: {len(allocation_by_area)}")
+    print(f"Area function labels read: {len(area_work_type_labels)}")
     print(f"Base image copy written to: {blank_path}")
     print(f"Annotated image written to: {annotated_path}")
     if unmapped:

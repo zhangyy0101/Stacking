@@ -31,7 +31,14 @@
 
 规划新航次的同时要结合新旧航次进行规划，旧航次的规划可能也要调整，但是尽可能不要调整太多。总而言之大概是一个增量计划。要一直规划到某个航次关港。
 
-
+大计划需要的输入信息：
+1. container_info_xxxxxx.parquet 出口箱资料箱信息
+2. predict_data_xxxxxx.xlsx 出口箱预估箱量信息（与出口箱资料箱信息航次对应）
+3. tops_plan_info.parquet 一段时间内生效的TOPS计划信息
+4. vessel_berth_info_new.csv 船舶靠泊信息（随时间更新）
+5. n_usefg_areas.txt 关闭箱区信息
+6. bay_slots_detail.parquet 每个规划节点上的实时堆场快照
+7. 箱区功能.xlsx 箱区功能（箱区可放的集装箱作业类型），同时包含每个箱区的作业能力
 
 
 

@@ -302,26 +302,30 @@ def build_current_case_data(
         flow_aliases=flow_aliases,
     )
 
-    # 异常贝位：若已在场箱流向与箱区功能不匹配，则该箱所在贝位关闭。
-    # L/Q：按 container ID 去重后的快照覆盖量，Q 对应异常贝位中的已出现箱。
-    bad_bays = identify_bad_bays(current_snapshot, area_functions)
-    l20, l40, q20, q40 = build_snapshot_count_params(current_snapshot, bad_bays, set(areas))
+    # 异常贝位：
+    # 1. 当前出口航次已在场箱若流向与箱区功能不匹配，则记为异常关联箱；
+    # 2. 若某贝位的异常关联箱占该贝位总箱位行数超过 2/3，则关闭整个贝位；
+    # 3. L/Q 按箱号去重：流向匹配箱区功能的进入 L，不匹配的进入 Q。
+    bay_total_slots = build_bay_total_slot_counts(snapshot, areas)
+    bad_bays = identify_bad_bays(current_snapshot, area_functions, bay_total_slots)
+    l20, l40, q20, q40 = build_snapshot_count_params(current_snapshot, area_functions, set(areas))
 
     # 容量统计：
-    # C20        来自未拆分 bay_slots_detail.parquet，表示 20 尺等价物理容量；
-    # C20Direct  来自 bay_slots_detail_20.parquet，表示真实适放 20 尺的位置数；
-    # C40        来自 bay_slots_detail_40.parquet，表示真实适放 40 尺的位置数。
-    # 三者都会剔除已占用箱位和异常贝位。
-    bay20_equiv = prepare_slot_frame(snapshot, areas, bad_bays)
-    bay20_direct = prepare_slot_frame(pd.read_parquet(data_dir / "bay_slots_detail_20.parquet"), areas, bad_bays)
-    bay40 = prepare_slot_frame(pd.read_parquet(data_dir / "bay_slots_detail_40.parquet"), areas, bad_bays)
-    c20 = bay20_equiv.groupby("area_no")["slot_uid"].nunique().reindex(areas, fill_value=0).astype(float).to_dict()
-    c20_direct = bay20_direct.groupby("area_no")["slot_uid"].nunique().reindex(areas, fill_value=0).astype(float).to_dict()
-    c40 = bay40.groupby("area_no")["slot_uid"].nunique().reindex(areas, fill_value=0).astype(float).to_dict()
+    # 只读取未拆分 bay_slots_detail.parquet。C20 使用未拆分物理箱位行数口径；
+    # C20Direct 使用 YBY_ENABLECSIZECD 包含 20 的空箱位；
+    # C40 使用 YBY_ENABLECSIZECD 包含 40/45 的空箱位，45 按 40 处理。
+    # 三者都会剔除已占用箱位和达到 2/3 阈值后关闭的异常贝位。
+    available_slots = prepare_slot_frame(snapshot, areas, bad_bays)
+    bay20_equiv = available_slots
+    bay20_direct = available_slots[available_slots["enable_20"]].copy()
+    bay40 = available_slots[available_slots["enable_40"]].copy()
+    c20 = count_slots_by_area(bay20_equiv, areas)
+    c20_direct = count_slots_by_area(bay20_direct, areas)
+    c40 = count_slots_by_area(bay40, areas)
 
     # TOPS 扣减：只看 SPL_STDATE/SPL_EDDATE 判断计划是否生效。
     # 若生效 TOPS 的 SPL_CONDITIONCODE 不是当前待规划航次，则扣除 SPR_STBAY~SPR_EDBAY
-    # 表示的完整贝位区间内所有空箱位。为与容量口径一致，分别扣 C20、C20Direct、C40。
+    # 覆盖的完整贝位。为与容量口径一致，分别扣 C20、C20Direct、C40。
     tops = pd.read_parquet(data_dir / "tops_plan_info.parquet")
     tops20, tops20_direct, tops40, active_tops_count = compute_tops_capacity_deductions(
         tops,
@@ -505,7 +509,7 @@ def discover_distance_matrix(base_dir: Path) -> Path:
 
     参数：
         base_dir: 自动搜索距离矩阵时使用的基础目录。
-
+        
     返回：
         距离矩阵 Excel 文件路径。
 
@@ -620,6 +624,27 @@ def normalize_int_string(value: Any) -> Optional[str]:
     if re.fullmatch(r"\d+", code):
         return str(int(code))
     return code
+
+
+def parse_enable_size_flags(value: Any) -> tuple[bool, bool]:
+    """
+    功能：
+        解析箱位适放箱型字段，判断该箱位是否适放 20 尺和 40 尺箱。
+
+    参数：
+        value: ``YBY_ENABLECSIZECD`` 原始值。
+
+    返回：
+        二元组 ``(enable_20, enable_40)``。其中 45 尺按 40 尺处理。
+    """
+
+    if value is None or pd.isna(value):
+        return True, True
+    tokens = re.findall(r"\d+", str(value))
+    if not tokens:
+        return True, True
+    sizes = {normalize_size(token) for token in tokens}
+    return "20" in sizes, "40" in sizes
 
 
 def read_vessel_info(path: Path) -> pd.DataFrame:
@@ -774,12 +799,17 @@ def read_snapshot(path: Path) -> pd.DataFrame:
     df["bay_no"] = df["YBY_BAYNO"].map(normalize_bay)
     df["row_no"] = df["YST_ROWNO"].map(normalize_bay)
     df["tier_no"] = df["YST_TIERNO"].map(normalize_bay)
+    df["slot_no"] = df["YST_SLOTNO"].map(normalize_code)
     df["cntr_id"] = df["IYC_CNTRID"].map(normalize_code)
     df["size"] = df["IYC_CSZ_CSIZECD"].map(normalize_size)
     df["raw_flow"] = df["IYC_STS_CSTATUSCD"].map(normalize_code)
     df["e_voy"] = df["IYC_EVOY_ID"].map(normalize_code)
     df["i_voy"] = df["IYC_IVOY_ID"].map(normalize_code)
     df["has_container"] = pd.to_numeric(df["HAS_CONTAINER"], errors="coerce").fillna(0).astype(int)
+    enable_flags = df["YBY_ENABLECSIZECD"].map(parse_enable_size_flags)
+    df["enable_20"] = enable_flags.map(lambda flags: flags[0])
+    df["enable_40"] = enable_flags.map(lambda flags: flags[1])
+    df["slot_uid"] = list(zip(df["area_no"], df["bay_no"], df["row_no"], df["tier_no"], df["slot_no"]))
     return df
 
 
@@ -831,7 +861,27 @@ def extract_current_snapshot_rows(
     return pd.DataFrame(rows)
 
 
-def identify_bad_bays(current_snapshot: pd.DataFrame, area_functions: Mapping[str, set[str]]) -> set[tuple[str, str]]:
+def build_bay_total_slot_counts(snapshot: pd.DataFrame, areas: Sequence[str]) -> dict[tuple[str, str], int]:
+    """
+    Count the unsplit slot rows in each area/bay.
+    """
+
+    if snapshot.empty:
+        return {}
+    df = snapshot[snapshot["area_no"].isin(set(areas))].copy()
+    grouped = df.groupby(["area_no", "bay_no"], dropna=False)["slot_uid"].nunique()
+    return {
+        (area, bay): int(qty)
+        for (area, bay), qty in grouped.items()
+        if area and bay
+    }
+
+
+def identify_bad_bays(
+    current_snapshot: pd.DataFrame,
+    area_functions: Mapping[str, set[str]],
+    bay_total_slots: Mapping[tuple[str, str], int],
+) -> set[tuple[str, str]]:
     """
     功能：
         识别需要关闭新增容量的异常贝位集合。
@@ -847,20 +897,38 @@ def identify_bad_bays(current_snapshot: pd.DataFrame, area_functions: Mapping[st
     bad_bays: set[tuple[str, str]] = set()
     if current_snapshot.empty:
         return bad_bays
-    for _, row in current_snapshot.iterrows():
-        area = row.get("area_no")
-        bay = row.get("bay_no")
-        flow = row.get("flow")
+
+    rows = current_snapshot.copy()
+    rows = rows[
+        rows["direction"].eq("E")
+        & rows["cntr_id"].notna()
+        & ~rows["cntr_id"].isin({"", "-1"})
+    ].copy()
+    if rows.empty:
+        return bad_bays
+
+    rows["is_bad_flow"] = rows.apply(
+        lambda row: row.get("flow") not in area_functions.get(row.get("area_no"), set()),
+        axis=1,
+    )
+    bad_rows = rows[rows["is_bad_flow"]].copy()
+    if bad_rows.empty:
+        return bad_bays
+
+    bad_rows = bad_rows.drop_duplicates(["cntr_id", "area_no", "bay_no"])
+    grouped = bad_rows.groupby(["area_no", "bay_no"], dropna=False)["cntr_id"].nunique()
+    for (area, bay), bad_count in grouped.items():
         if not area or not bay:
             continue
-        if flow not in area_functions.get(area, set()):
+        total_slots = bay_total_slots.get((area, bay), 0)
+        if total_slots > 0 and float(bad_count) > (2.0 / 3.0) * float(total_slots):
             bad_bays.add((area, bay))
     return bad_bays
 
 
 def build_snapshot_count_params(
     current_snapshot: pd.DataFrame,
-    bad_bays: set[tuple[str, str]],
+    area_functions: Mapping[str, set[str]],
     model_areas: set[str],
 ) -> tuple[
     dict[tuple[str, str, str], float],
@@ -898,13 +966,19 @@ def build_snapshot_count_params(
         flow = row.get("flow")
         area = row.get("area_no")
         size = row.get("size")
-        bay = row.get("bay_no")
+        if str(row.get("cntr_id")) == "-1":
+            continue
         if not vessel or not flow or not area or area not in model_areas or size not in {"20", "40"}:
             continue
-        target = q20 if (area, bay) in bad_bays and size == "20" else None
-        target = q40 if (area, bay) in bad_bays and size == "40" else target
-        target = l20 if target is None and size == "20" else target
-        target = l40 if target is None and size == "40" else target
+        flow_matches_area = flow in area_functions.get(area, set())
+        if flow_matches_area and size == "20":
+            target = l20
+        elif flow_matches_area and size == "40":
+            target = l40
+        elif size == "20":
+            target = q20
+        else:
+            target = q40
         key = (vessel, flow, area)
         target[key] = target.get(key, 0.0) + 1.0
     return l20, l40, q20, q40
@@ -938,9 +1012,22 @@ def prepare_slot_frame(raw: pd.DataFrame, areas: Sequence[str], bad_bays: set[tu
     df = df[df["area_no"].isin(set(areas))].copy()
     df = df[df["has_container"].eq(0)].copy()
     if bad_bays:
-        df = df[~df.apply(lambda row: (row["area_no"], row["bay_no"]) in bad_bays, axis=1)].copy()
+        bad_index = pd.MultiIndex.from_tuples(sorted(bad_bays), names=["area_no", "bay_no"])
+        row_index = pd.MultiIndex.from_frame(df[["area_no", "bay_no"]])
+        df = df[~row_index.isin(bad_index)].copy()
     df["slot_uid"] = list(zip(df["area_no"], df["bay_no"], df["row_no"], df["tier_no"], df["slot_no"]))
     return df
+
+
+def count_slots_by_area(slots: pd.DataFrame, areas: Sequence[str]) -> dict[str, float]:
+    """
+    Count remaining slot rows by area for one capacity view.
+    """
+
+    if slots.empty:
+        return {area: 0.0 for area in areas}
+    counts = slots.groupby("area_no")["slot_uid"].nunique()
+    return {area: float(counts.get(area, 0.0)) for area in areas}
 
 
 def build_demand_params(
@@ -1185,6 +1272,8 @@ def compute_tops_capacity_deductions(
     active["end_time"] = parse_tops_time(active["SPL_EDDATE"])
     if "SPL_ISVALID" in active.columns:
         active = active[active["SPL_ISVALID"].astype(str).str.upper().eq("Y")].copy()
+    if "SPR_ISVALID" in active.columns:
+        active = active[active["SPR_ISVALID"].astype(str).str.upper().eq("Y")].copy()
     active = active[(active["start_time"] <= planning_time) & (planning_time <= active["end_time"])].copy()
 
     tops20: dict[tuple[str, str], float] = {}
@@ -1240,7 +1329,9 @@ def count_tops_blocked_slots(tops_rows: pd.DataFrame, slots: pd.DataFrame, vesse
     for _, tops in tops_rows.iterrows():
         start_area, start_bay = parse_tops_area_bay(tops.get("SPR_STBAY"))
         end_area, end_bay = parse_tops_area_bay(tops.get("SPR_EDBAY"))
-        area = end_area or start_area
+        area = start_area or end_area
+        if start_area and end_area and start_area != end_area:
+            area = end_area
         if not area or area not in slots_by_area:
             continue
         sub = slots_by_area[area]
@@ -1287,15 +1378,58 @@ def bay_range_mask(values: pd.Series, start_bay: Optional[str], end_bay: Optiona
         与 ``values`` 索引一致的布尔 Series。若起止贝位均为空，则全部为 True。
     """
 
-    if not start_bay and not end_bay:
+    return slot_range_mask(values, start_bay, end_bay, bay_code_value)
+
+
+def slot_range_mask(
+    values: pd.Series,
+    start_value: Any,
+    end_value: Any,
+    value_parser: Any,
+) -> pd.Series:
+    """
+    Build an inclusive mask for numeric or alphanumeric yard coordinates.
+    """
+
+    start = normalize_code(start_value)
+    end = normalize_code(end_value)
+    if not start and not end:
         return pd.Series(True, index=values.index)
-    if start_bay and end_bay and start_bay.isdigit() and end_bay.isdigit():
-        lo = min(int(start_bay), int(end_bay))
-        hi = max(int(start_bay), int(end_bay))
-        numeric = pd.to_numeric(values, errors="coerce")
-        return numeric.between(lo, hi)
-    allowed = {b for b in [start_bay, end_bay] if b}
-    return values.isin(allowed)
+    if start and not end:
+        return values.map(normalize_code).eq(start)
+    if end and not start:
+        return values.map(normalize_code).eq(end)
+
+    start_key = value_parser(start)
+    end_key = value_parser(end)
+    if start_key is None or end_key is None:
+        allowed = {value for value in [start, end] if value}
+        return values.map(normalize_code).isin(allowed)
+
+    lo = min(start_key, end_key)
+    hi = max(start_key, end_key)
+    parsed_values = values.map(value_parser)
+    return parsed_values.map(lambda value: value is not None and lo <= value <= hi)
+
+
+def bay_code_value(value: Any) -> Optional[int]:
+    """
+    Convert bay codes such as 09, 99, A1, C7 or D0 to a sortable base-36 value.
+    """
+
+    code = normalize_code(value)
+    if not code:
+        return None
+    total = 0
+    for char in code:
+        if "0" <= char <= "9":
+            digit = ord(char) - ord("0")
+        elif "A" <= char <= "Z":
+            digit = ord(char) - ord("A") + 10
+        else:
+            return None
+        total = total * 36 + digit
+    return total
 
 
 def build_availability_flags(
@@ -1344,6 +1478,79 @@ def build_availability_flags(
     return e20, e40
 
 
+def build_allocation_output_rows(
+    solution: DailyRollingYardPlanningSolution,
+    data: DailyRollingYardPlanningData,
+    *,
+    include_zero: bool = False,
+) -> list[dict[str, Any]]:
+    """
+    Convert total X into output rows and expose the snapshot/new split.
+    """
+
+    rows: list[dict[str, Any]] = []
+    for size, values in (("20", solution.x20), ("40", solution.x40)):
+        for key, qty in values.items():
+            snapshot_qty = snapshot_quantity_for_output(data, size, key)
+            new_qty = max(0.0, float(qty) - snapshot_qty)
+            if not include_zero and not qty and not snapshot_qty and not new_qty:
+                continue
+            vessel, flow, area = key
+            rows.append(
+                {
+                    "voy_id": vessel,
+                    "flow": flow,
+                    "area_no": area,
+                    "size": size,
+                    "planned_qty": int(qty),
+                    "snapshot_qty": float(snapshot_qty),
+                    "new_qty": float(new_qty),
+                }
+            )
+    return rows
+
+
+def snapshot_quantity_for_output(
+    data: DailyRollingYardPlanningData,
+    size: str,
+    key: tuple[str, str, str],
+) -> float:
+    """
+    Read S for output. If S is not explicitly supplied, use L+Q.
+    """
+
+    if size == "20":
+        if key in data.S20:
+            return float(data.S20[key])
+        return float(data.L20.get(key, 0.0) + data.Q20.get(key, 0.0))
+    if key in data.S40:
+        return float(data.S40[key])
+    return float(data.L40.get(key, 0.0) + data.Q40.get(key, 0.0))
+
+
+def count_flow_function_mismatch_rows(
+    allocation: pd.DataFrame,
+    area_functions: Mapping[str, set[str]],
+    *,
+    qty_column: str,
+) -> int:
+    """
+    Count output rows whose positive quantity is not allowed by the area's function.
+    """
+
+    if allocation.empty or qty_column not in allocation.columns:
+        return 0
+    rows = allocation[pd.to_numeric(allocation[qty_column], errors="coerce").fillna(0.0) > 1e-6].copy()
+    if rows.empty:
+        return 0
+    return int(
+        rows.apply(
+            lambda row: row["flow"] not in area_functions.get(row["area_no"], set()),
+            axis=1,
+        ).sum()
+    )
+
+
 def write_run_outputs(
     output_dir: Path,
     artifacts: PlanningInputArtifacts,
@@ -1370,8 +1577,15 @@ def write_run_outputs(
     """
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    allocation = pd.DataFrame(solution.allocation_rows())
+    allocation = pd.DataFrame(build_allocation_output_rows(solution, artifacts.data))
     allocation.to_csv(output_dir / "allocation.csv", index=False, encoding="utf-8-sig")
+    if allocation.empty:
+        allocation_new = allocation.copy()
+    else:
+        allocation_new = allocation[
+            pd.to_numeric(allocation["new_qty"], errors="coerce").fillna(0.0) > 1e-6
+        ].copy()
+    allocation_new.to_csv(output_dir / "allocation_new.csv", index=False, encoding="utf-8-sig")
     if not state_rows.empty:
         state_rows.to_csv(output_dir / "state_rows_appended.csv", index=False, encoding="utf-8-sig")
     diagnostics = {
@@ -1386,6 +1600,16 @@ def write_run_outputs(
         "unmet40": {str(k): v for k, v in solution.s40.items()},
         "operation_overage": solution.o,
         "area_share_overage": solution.h,
+        "allocation_total_wrong_function_rows": count_flow_function_mismatch_rows(
+            allocation,
+            artifacts.area_functions,
+            qty_column="planned_qty",
+        ),
+        "allocation_new_wrong_function_rows": count_flow_function_mismatch_rows(
+            allocation,
+            artifacts.area_functions,
+            qty_column="new_qty",
+        ),
     }
     (output_dir / "diagnostics.json").write_text(
         json.dumps(diagnostics, ensure_ascii=False, indent=2),

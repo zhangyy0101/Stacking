@@ -13,97 +13,16 @@
     "RF": "IF",
     "RE": "IF"
   },
-  "bad_bay_count": 271,
-  "bad_bay_sample": [
-    [
-      "11",
-      "11"
-    ],
-    [
-      "11",
-      "13"
-    ],
-    [
-      "11",
-      "15"
-    ],
-    [
-      "11",
-      "17"
-    ],
-    [
-      "12",
-      "15"
-    ],
-    [
-      "12",
-      "17"
-    ],
-    [
-      "12",
-      "29"
-    ],
-    [
-      "12",
-      "31"
-    ],
-    [
-      "13",
-      "41"
-    ],
-    [
-      "13",
-      "43"
-    ],
-    [
-      "14",
-      "05"
-    ],
-    [
-      "14",
-      "07"
-    ],
-    [
-      "14",
-      "17"
-    ],
-    [
-      "14",
-      "19"
-    ],
-    [
-      "14",
-      "37"
-    ],
-    [
-      "14",
-      "39"
-    ],
-    [
-      "14",
-      "43"
-    ],
-    [
-      "14",
-      "45"
-    ],
-    [
-      "16",
-      "27"
-    ],
-    [
-      "1K",
-      "13"
-    ]
-  ],
+  "bad_bay_count": 0,
+  "bad_bay_sample": [],
   "current_snapshot_rows": 1193,
   "active_tops_rows": 424,
-  "capacity20_total": 59880.0,
-  "capacity20_direct_total": 21909.0,
-  "capacity40_total": 27403.0,
+  "capacity20_total": 61491.0,
+  "capacity20_direct_total": 58333.0,
+  "capacity40_total": 61240.0,
   "capacity20_if_total": 15306.0,
-  "capacity20_direct_if_total": 3042.0,
-  "capacity40_if_total": 6708.0,
+  "capacity20_direct_if_total": 15306.0,
+  "capacity40_if_total": 15306.0,
   "cbar20_min": 0.0,
   "cbar20_direct_min": 0.0,
   "cbar40_min": 0.0,
@@ -147,18 +66,18 @@
     }
   },
   "status": "OPTIMAL",
-  "objective_value": 76042.94046770307,
-  "best_bound": 75915.5407748381,
-  "mip_gap": 0.0016753651565996625,
-  "runtime": 0.0970001220703125,
+  "objective_value": 75063.46830955247,
+  "best_bound": 74777.85776218653,
+  "mip_gap": 0.0038049207397148005,
+  "runtime": 0.10100007057189941,
   "objective_components": {
     "miss": 0.0,
     "adjustment": 0.0,
-    "distance": 2506.264682256769,
-    "distance_raw": 22197127.000000004,
-    "share": 7.0,
+    "distance": 2467.64894365175,
+    "distance_raw": 21855120.642857146,
+    "share": 8.0,
     "operation": 0.0,
-    "balance": 715.0
+    "balance": 874.0
   },
   "unmet20": {},
   "unmet40": {},
@@ -167,9 +86,11 @@
     "E1": 1,
     "E2": 1,
     "E3": 1,
-    "E4": 1,
+    "E4": 2,
     "E8": 1,
     "E9": 1,
     "EA": 1
-  }
+  },
+  "allocation_total_wrong_function_rows": 100,
+  "allocation_new_wrong_function_rows": 0
 }
