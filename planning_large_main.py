@@ -351,6 +351,8 @@ def build_current_case_data(
         current_snapshot=current_snapshot,
         flow_aliases=flow_aliases,
     )
+    of_work_lanes = {vessel: read_prediction_work_lanes(data_dir / f"predict_data_{vessel}.xlsx") for vessel in export_vessels}
+    of_work_lanes.update({vessel: 0.0 for vessel in import_vessels})
 
     # 流向集合 F：取箱区功能、需求、快照箱流向的并集。
     flows = sorted(
@@ -408,9 +410,11 @@ def build_current_case_data(
         P20=p20,
         P40=p40,
         O=old_flags,
+        OFWorkLanes=of_work_lanes,
         weights=YardPlanningWeights(
             miss=100.0,
             operation=50.0,
+            of_area=40.0,
             distance=30.0,
             share=20.0,
             adjustment=10.0,
@@ -439,6 +443,8 @@ def build_current_case_data(
         "cbar20_direct_min": float(min(cbar20_direct.values()) if cbar20_direct else 0.0),
         "cbar40_min": float(min(cbar40.values()) if cbar40 else 0.0),
         "old_vessels": sorted([v for v, flag in old_flags.items() if flag]),
+        "of_work_lanes": of_work_lanes,
+        "of_area_limits": {vessel: 2.0 * lanes for vessel, lanes in of_work_lanes.items()},
         "demand": demand_diagnostics,
     }
     return PlanningInputArtifacts(
@@ -1231,6 +1237,46 @@ def read_prediction_counts(path: Path) -> tuple[float, float]:
     return total20, total40
 
 
+def read_prediction_work_lanes(path: Path) -> float:
+    """
+    Read the export vessel work-lane count from the prediction workbook.
+
+    Some current files store the lane count as the second column header of the
+    "作业路" sheet (for example columns ["作业路数", 3]) and have no data rows.
+    This reader therefore checks both column headers and cell values.
+    """
+
+    xls = pd.ExcelFile(path)
+    sheet_name = "作业路" if "作业路" in xls.sheet_names else None
+    if sheet_name is None:
+        sheet_name = next((name for name in xls.sheet_names if "作业" in str(name) and "路" in str(name)), None)
+    if sheet_name is None:
+        raise KeyError(f"Prediction workbook {path} is missing the 作业路 sheet.")
+
+    df = pd.read_excel(path, sheet_name=sheet_name).copy()
+    candidates: list[float] = []
+
+    def collect_numeric(value: Any) -> None:
+        if value is None or pd.isna(value):
+            return
+        text = str(value).strip()
+        if not text or text == "作业路数":
+            return
+        numeric = pd.to_numeric(value, errors="coerce")
+        if pd.notna(numeric):
+            candidates.append(float(numeric))
+
+    for column in df.columns:
+        collect_numeric(column)
+    for value in df.to_numpy().ravel():
+        collect_numeric(value)
+
+    positive_candidates = [value for value in candidates if value > 0]
+    if not positive_candidates:
+        raise ValueError(f"Prediction workbook {path} does not contain a positive work-lane count.")
+    return positive_candidates[0]
+
+
 def compute_tops_capacity_deductions(
     tops: pd.DataFrame,
     planning_time: pd.Timestamp,
@@ -1600,6 +1646,11 @@ def write_run_outputs(
         "unmet40": {str(k): v for k, v in solution.s40.items()},
         "operation_overage": solution.o,
         "area_share_overage": solution.h,
+        "of_area_overage": solution.of_area_over,
+        "of_area_used_count": {
+            vessel: int(sum(used for (used_vessel, _area), used in solution.of_area_used.items() if used_vessel == vessel))
+            for vessel in artifacts.export_vessels
+        },
         "allocation_total_wrong_function_rows": count_flow_function_mismatch_rows(
             allocation,
             artifacts.area_functions,
@@ -1721,6 +1772,8 @@ def print_case_summary(artifacts: PlanningInputArtifacts) -> None:
     print("bad_bay_count:", artifacts.diagnostics["bad_bay_count"])
     print("active_tops_rows:", artifacts.diagnostics["active_tops_rows"])
     print("old_vessels:", artifacts.diagnostics["old_vessels"])
+    print("of_work_lanes:", artifacts.diagnostics["of_work_lanes"])
+    print("of_area_limits:", artifacts.diagnostics["of_area_limits"])
 
 
 def print_solution_summary(solution: DailyRollingYardPlanningSolution) -> None:
@@ -1742,6 +1795,7 @@ def print_solution_summary(solution: DailyRollingYardPlanningSolution) -> None:
     print("unmet20_total:", sum(solution.s20.values()))
     print("unmet40_total:", sum(solution.s40.values()))
     print("operation_overage_total:", sum(solution.o.values()))
+    print("of_area_overage_total:", sum(solution.of_area_over.values()))
     print("area_share_overage_total:", sum(solution.h.values()))
 
 

@@ -27,6 +27,18 @@
   "cbar20_direct_min": 0.0,
   "cbar40_min": 0.0,
   "old_vessels": [],
+  "of_work_lanes": {
+    "453334": 3.0,
+    "453400": 6.0,
+    "453886": 0.0,
+    "454063": 0.0
+  },
+  "of_area_limits": {
+    "453334": 6.0,
+    "453400": 12.0,
+    "453886": 0.0,
+    "454063": 0.0
+  },
   "demand": {
     "453334": {
       "type": "export",
@@ -66,18 +78,19 @@
     }
   },
   "status": "OPTIMAL",
-  "objective_value": 75063.46830955247,
-  "best_bound": 74777.85776218653,
-  "mip_gap": 0.0038049207397148005,
-  "runtime": 0.10100007057189941,
+  "objective_value": 75864.85240158331,
+  "best_bound": 75138.69031021402,
+  "mip_gap": 0.00957178546298911,
+  "runtime": 0.1419999599456787,
   "objective_components": {
     "miss": 0.0,
-    "adjustment": 0.0,
-    "distance": 2467.64894365175,
-    "distance_raw": 21855120.642857146,
-    "share": 8.0,
     "operation": 0.0,
-    "balance": 874.0
+    "of_area": 22.0,
+    "distance": 2462.6950800527784,
+    "distance_raw": 21811245.97142858,
+    "share": 7.0,
+    "adjustment": 0.0,
+    "balance": 964.0
   },
   "unmet20": {},
   "unmet40": {},
@@ -86,10 +99,18 @@
     "E1": 1,
     "E2": 1,
     "E3": 1,
-    "E4": 2,
+    "E4": 1,
     "E8": 1,
     "E9": 1,
     "EA": 1
+  },
+  "of_area_overage": {
+    "453334": 4.0,
+    "453400": 18.0
+  },
+  "of_area_used_count": {
+    "453334": 10,
+    "453400": 30
   },
   "allocation_total_wrong_function_rows": 100,
   "allocation_new_wrong_function_rows": 0

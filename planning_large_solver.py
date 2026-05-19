@@ -36,6 +36,7 @@ class YardPlanningWeights:
 
     miss: float = 100.0
     operation: float = 50.0
+    of_area: float = 40.0
     distance: float = 30.0
     share: float = 20.0
     adjustment: float = 10.0
@@ -116,6 +117,9 @@ class DailyRollingYardPlanningData:
     # 参数 M：航次计划总量大 M，用于联动 X 和 y。若未传，默认等于该航次总需求。
     M: Optional[Mapping[Vessel, float]] = None
 
+    # 出口 OF 作业路数。软约束上限为 2 * OFWorkLanes[v] 个箱区。
+    OFWorkLanes: Mapping[Vessel, float] = field(default_factory=dict)
+
     # 目标函数权重。
     weights: YardPlanningWeights = field(default_factory=YardPlanningWeights)
 
@@ -157,6 +161,8 @@ class DailyRollingYardPlanningSolution:
     # 软约束变量：箱区服务航次数超额量 h、作业能力超额量 o。
     h: Dict[Area, int]
     o: Dict[Area, float]
+    of_area_used: Dict[VA, int]
+    of_area_over: Dict[Vessel, float]
 
     # 未满足需求变量 s。
     s20: Dict[VF, float]
@@ -291,6 +297,12 @@ def build_daily_rolling_yard_model(
     # s20/s40[v,f]：未满足需求量。若 allow_unmet_demand=False，则后面强制 s=0。
     s20 = model.addVars(V, F, vtype=GRB.CONTINUOUS, lb=0, name="s20")
     s40 = model.addVars(V, F, vtype=GRB.CONTINUOUS, lb=0, name="s40")
+
+    # of_area_used[v,a]：出口航次 v 的 OF 箱是否使用箱区 a。
+    # of_area_over[v]：OF 使用箱区数超过 2 倍作业路数的超额量。
+    OF_area_vessels = params["OF_area_vessels"]
+    of_area_used = model.addVars(OF_area_vessels, A, vtype=GRB.BINARY, name="of_area_used")
+    of_area_over = model.addVars(OF_area_vessels, vtype=GRB.CONTINUOUS, lb=0, name="of_area_over")
 
     # -------------------------
     # 约束 1：需求满足约束
@@ -449,7 +461,29 @@ def build_daily_rolling_yard_model(
             )
 
     # -------------------------
-    # 约束 10：旧航次计划调整幅度约束
+    # 约束 10：出口 OF 使用箱区数软约束
+    # 每个出口航次的 OF 箱使用箱区数建议不超过 2 * 作业路数；超过部分进入 of_area_over。
+    # -------------------------
+    if "OF" in F:
+        for v in OF_area_vessels:
+            for a in A:
+                of_total_plan = X20[v, "OF", a] + X40[v, "OF", a]
+                model.addConstr(
+                    of_total_plan <= params["M"][v] * of_area_used[v, a],
+                    name=f"link_of_area_upper[{v},{a}]",
+                )
+                model.addConstr(
+                    of_total_plan >= of_area_used[v, a],
+                    name=f"link_of_area_lower[{v},{a}]",
+                )
+            model.addConstr(
+                gp.quicksum(of_area_used[v, a] for a in A)
+                <= params["OF_area_limit"][v] + of_area_over[v],
+                name=f"of_area_limit[{v}]",
+            )
+
+    # -------------------------
+    # 约束 11：旧航次计划调整幅度约束
     # X - P = r_pos - r_neg
     # 目标函数惩罚 r_pos+r_neg，等价于惩罚 |X-P|。
     # 只对 V_old 建立，新航次不惩罚首次规划。
@@ -469,7 +503,7 @@ def build_daily_rolling_yard_model(
                 )
 
     # -------------------------
-    # 约束 11：箱型分布均衡约束
+    # 约束 12：箱型分布均衡约束
     # X20[v,f,a] <= m20[v,f]，X40[v,f,a] <= m40[v,f]
     # 最小化 m 后，同一航次/流向/箱型不会过度集中到单个箱区。
     # -------------------------
@@ -518,16 +552,20 @@ def build_daily_rolling_yard_model(
     # Z_op：箱区作业能力超额惩罚。
     Z_op = gp.quicksum(o[a] for a in A)
 
+    # Z_of_area：出口 OF 箱使用箱区数超过 2 倍作业路数的超额惩罚。
+    Z_of_area = gp.quicksum(of_area_over[v] for v in OF_area_vessels)
+
     # Z_bal：20/40 箱型分布均衡惩罚。
     Z_bal = gp.quicksum(m20[v, f] + m40[v, f] for v in V for f in F)
 
     # 综合目标函数：按业务优先级加权求和并最小化。
     model.setObjective(
         weights.miss * Z_miss
-        + weights.adjustment * Z_adj
+        + weights.operation * Z_op
+        + weights.of_area * Z_of_area
         + weights.distance * Z_dist
         + weights.share * Z_share
-        + weights.operation * Z_op
+        + weights.adjustment * Z_adj
         + weights.balance * Z_bal,
         GRB.MINIMIZE,
     )
@@ -546,13 +584,16 @@ def build_daily_rolling_yard_model(
         "m40": m40,
         "s20": s20,
         "s40": s40,
+        "of_area_used": of_area_used,
+        "of_area_over": of_area_over,
         "objective_components": {
             "miss": Z_miss,
-            "adjustment": Z_adj,
+            "operation": Z_op,
+            "of_area": Z_of_area,
             "distance": Z_dist,
             "distance_raw": Z_dist_raw,
             "share": Z_share,
-            "operation": Z_op,
+            "adjustment": Z_adj,
             "balance": Z_bal,
         },
     }
@@ -612,6 +653,8 @@ def solve_daily_rolling_yard_plan(
             y={},
             h={},
             o={},
+            of_area_used={},
+            of_area_over={},
             s20={},
             s40={},
             m20={},
@@ -628,6 +671,7 @@ def solve_daily_rolling_yard_plan(
     F = params["F"]
     A = params["A"]
     V_old = params["V_old"]
+    OF_area_vessels = params["OF_area_vessels"]
     components = variables["objective_components"]
 
     return DailyRollingYardPlanningSolution(
@@ -642,6 +686,8 @@ def solve_daily_rolling_yard_plan(
         y=_extract_int_tupledict(variables["y"], (V, A)),
         h=_extract_int_tupledict(variables["h"], (A,)),
         o=_extract_float_tupledict(variables["o"], (A,)),
+        of_area_used=_extract_int_tupledict(variables["of_area_used"], (OF_area_vessels, A)),
+        of_area_over=_extract_float_tupledict(variables["of_area_over"], (OF_area_vessels,)),
         s20=_extract_float_tupledict(variables["s20"], (V, F)),
         s40=_extract_float_tupledict(variables["s40"], (V, F)),
         m20=_extract_float_tupledict(variables["m20"], (V, F)),
@@ -798,6 +844,10 @@ def _prepare_params(
         if M[v] < computed_m - 1e-6:
             raise ValueError(f"M[{v}]={M[v]} is smaller than total demand {computed_m}.")
 
+    OFWorkLanes = {v: _num(data.OFWorkLanes, (v,), 0.0) for v in V}
+    OF_area_limit = {v: 2.0 * OFWorkLanes[v] for v in V}
+    OF_area_vessels = [v for v in V if "OF" in F and OFWorkLanes[v] > 0]
+
     # 旧航次集合：只有 O[v]=1 的航次进入调整幅度变量和调整惩罚。
     V_old = [v for v in V if int(data.O.get(v, 0)) == 1]
 
@@ -813,6 +863,7 @@ def _prepare_params(
     _validate_nonnegative("Cbar20", Cbar20)
     _validate_nonnegative("Cbar20Direct", Cbar20Direct)
     _validate_nonnegative("Cbar40", Cbar40)
+    _validate_nonnegative("OFWorkLanes", OFWorkLanes)
 
     return {
         "V": V,
@@ -839,6 +890,9 @@ def _prepare_params(
         "P20": P20,
         "P40": P40,
         "M": M,
+        "OFWorkLanes": OFWorkLanes,
+        "OF_area_limit": OF_area_limit,
+        "OF_area_vessels": OF_area_vessels,
     }
 
 
