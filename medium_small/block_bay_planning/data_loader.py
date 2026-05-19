@@ -1,0 +1,1436 @@
+﻿from __future__ import annotations
+
+import csv
+import math
+import re
+import zipfile
+from collections import Counter, defaultdict
+from datetime import datetime, timedelta
+from pathlib import Path
+from xml.etree import ElementTree
+
+import pandas as pd
+
+from .demand_calculator import DEFAULT_TARGET_VOYAGES, DemandRow, calculate_medium_demands
+from .models import AreaOperation, Bay, BigPlanRow, BoxGroup, ProblemData, SmallBoxGroup, VoyageSchedule
+
+
+DEFAULT_PLANNING_TIME = datetime(2026, 5, 8, 9, 30)
+SIZE_MODES = ("20", "40", "45")
+DEFAULT_MISPLACED_BAY_EXCLUSION_RATIO = 2.0 / 3.0
+
+
+def _norm(value: object, default: str = "") -> str:
+    if value is None or pd.isna(value):
+        return default
+    text = str(value).strip()
+    if text.endswith(".0") and text.replace(".", "", 1).isdigit():
+        text = text[:-2]
+    return text or default
+
+
+def _voyage(value: object, fallback: str = "") -> str:
+    text = _norm(value, fallback)
+    try:
+        return str(int(float(text)))
+    except ValueError:
+        return text
+
+
+def _map_unique(series: pd.Series, func) -> pd.Series:
+    mapping = {value: func(value) for value in series.drop_duplicates()}
+    return series.map(mapping).fillna("").astype(str)
+
+
+def _norm_series(series: pd.Series, default: str = "") -> pd.Series:
+    return _map_unique(series, lambda value: _norm(value, default))
+
+
+def _voyage_series(series: pd.Series, fallback: str = "") -> pd.Series:
+    return _map_unique(series, lambda value: _voyage(value, fallback))
+
+
+def _bay_no_series(series: pd.Series) -> pd.Series:
+    return _map_unique(series, _bay_no)
+
+
+def _row_no_series(series: pd.Series) -> pd.Series:
+    return _bay_no_series(series)
+
+
+def parse_datetime(value: object) -> datetime | None:
+    if value is None or pd.isna(value):
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            return pd.to_datetime(value, unit="D", origin="1899-12-30").to_pydatetime()
+        except (ValueError, TypeError, OverflowError):
+            return None
+    text = str(value).strip()
+    if not text or text.lower() == "nan":
+        return None
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S.%f",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y/%m/%d %H:%M",
+        "%Y-%m-%d",
+        "%Y/%m/%d",
+    ):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            pass
+    if re.search(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}", text):
+        parsed = pd.to_datetime(text, errors="coerce")
+        if not pd.isna(parsed):
+            return parsed.to_pydatetime()
+    return None
+
+
+def _read_one_column_xlsx(path: Path, header: str = "area_no") -> set[str]:
+    ns = {"a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    with zipfile.ZipFile(path) as zf:
+        shared: list[str] = []
+        if "xl/sharedStrings.xml" in zf.namelist():
+            root = ElementTree.fromstring(zf.read("xl/sharedStrings.xml"))
+            for si in root.findall("a:si", ns):
+                shared.append("".join(t.text or "" for t in si.findall(".//a:t", ns)))
+        sheet = ElementTree.fromstring(zf.read("xl/worksheets/sheet1.xml"))
+    values: list[str] = []
+    for cell in sheet.findall(".//a:sheetData/a:row/a:c", ns):
+        raw = cell.find("a:v", ns)
+        if raw is None:
+            continue
+        value = raw.text or ""
+        if cell.attrib.get("t") == "s":
+            value = shared[int(value)]
+        values.append(value.strip())
+    return {v for v in values if v and v != header}
+
+
+def read_closed_areas(data_dir: str | Path) -> set[str]:
+    path = Path(data_dir) / "n_usefg_areas.txt"
+    text = path.read_text(encoding="utf-8").strip()
+    return set(re.findall(r"[A-Za-z0-9]+", text))
+
+
+def read_export_areas(data_dir: str | Path) -> set[str]:
+    return {area for area, funcs in read_area_functions(data_dir).items() if "OF" in funcs}
+
+
+def read_area_functions(data_dir: str | Path) -> dict[str, set[str]]:
+    data_path = Path(data_dir)
+    function_files = [path for path in data_path.glob("*功能*.xlsx") if not path.name.startswith("~$")]
+    if function_files:
+        frame = pd.read_excel(function_files[0])
+        if {"area_no", "cntr_type"}.issubset(frame.columns):
+            area_functions = {
+                _norm(row["area_no"]): {_norm(part).upper() for part in str(row.get("cntr_type")).split(",") if _norm(part)}
+                for row in frame.to_dict("records")
+                if _norm(row.get("area_no"))
+            }
+            if area_functions:
+                return area_functions
+
+    matrix_files = [
+        path for path in data_path.glob("*.xlsx")
+        if _is_area_distance_workbook(path)
+    ]
+    if matrix_files:
+        frame = pd.read_excel(matrix_files[0], sheet_name="箱区坐标")
+        if "area_no" in frame.columns:
+            return {_norm(value): {"OF"} for value in frame["area_no"] if _norm(value)}
+    raise FileNotFoundError(f"No area function definition found under {data_path}")
+
+
+def read_vessel_schedules(data_dir: str | Path) -> dict[str, VoyageSchedule]:
+    # vessel_berth_info.csv can support several planning decisions. In the current
+    # medium/small solver, area-level choices are fixed by the supplied big plan,
+    # so the schedule fields are currently consumed for capacity timing: whether
+    # containers already in the yard still occupy capacity at the planning timestamp.
+    data_path = Path(data_dir)
+    path = data_path / "vessel_berth_info_new.csv"
+    if not path.exists():
+        path = data_path / "vessel_berth_info.csv"
+    frame = pd.read_csv(path)
+    schedules: dict[str, VoyageSchedule] = {}
+    for row in frame.to_dict("records"):
+        if _norm(row.get("VOY_IEFG")) != "E":
+            continue
+        voyage_id = _voyage(row.get("VOY_ID"))
+        receive_start = parse_datetime(row.get("SCD_RCVSTDT"))
+        receive_end = parse_datetime(row.get("SCD_RCVEDDT"))
+        berth_time = parse_datetime(row.get("VBT_ABTHDT")) or parse_datetime(row.get("VBT_PBTHDT"))
+        departure_time = parse_datetime(row.get("VBT_ADPTDT")) or parse_datetime(row.get("VBT_PDPTDT"))
+        berth_no = _norm(row.get("VBT_BTH_ABTHNO")) or _norm(row.get("VBT_BTH_PBTHNO"))
+        if not (voyage_id and receive_start and receive_end and berth_time and departure_time):
+            continue
+        schedules[voyage_id] = VoyageSchedule(
+            voyage_id=voyage_id,
+            receive_start=receive_start,
+            receive_end=receive_end,
+            berth_no=berth_no,
+            berth_time=berth_time,
+            departure_time=departure_time,
+        )
+    return schedules
+
+
+def read_target_vessel_schedules(
+    data_dir: str | Path,
+    target_voyages: list[str],
+    planning_time: datetime = DEFAULT_PLANNING_TIME,
+    horizon_hours: float = 24.0,
+) -> dict[str, VoyageSchedule]:
+    schedules = read_vessel_schedules(data_dir)
+    missing = [_voyage(v) for v in target_voyages if _voyage(v) not in schedules]
+    if not missing:
+        return schedules
+
+    data_path = Path(data_dir)
+    path = data_path / "vessel_berth_info_new.csv"
+    if not path.exists():
+        path = data_path / "vessel_berth_info.csv"
+    if not path.exists():
+        return schedules
+
+    frame = pd.read_csv(path)
+    rows_by_voyage = {
+        _voyage(row.get("VOY_ID")): row
+        for row in frame.to_dict("records")
+        if _norm(row.get("VOY_IEFG")) == "E"
+    }
+    for voyage_id in missing:
+        row = rows_by_voyage.get(voyage_id)
+        if row is None:
+            continue
+        berth_no = _norm(row.get("VBT_BTH_ABTHNO")) or _norm(row.get("VBT_BTH_PBTHNO"))
+        receive_start = planning_time
+        receive_end = planning_time + timedelta(hours=horizon_hours)
+        berth_time = planning_time + timedelta(hours=horizon_hours)
+        departure_time = berth_time + timedelta(hours=12)
+        schedules[voyage_id] = VoyageSchedule(
+            voyage_id=voyage_id,
+            receive_start=receive_start,
+            receive_end=receive_end,
+            berth_no=berth_no,
+            berth_time=berth_time,
+            departure_time=departure_time,
+        )
+    return schedules
+
+
+def read_berth_distances(data_dir: str | Path) -> dict[tuple[str, str], float]:
+    data_path = Path(data_dir)
+    candidates = [
+        path for path in data_path.glob("*.xlsx")
+        if _is_area_distance_workbook(path)
+    ]
+    if not candidates:
+        return {}
+    frame = pd.read_excel(candidates[0], sheet_name="距离矩阵")
+    distances: dict[tuple[str, str], float] = {}
+    berth_columns = [col for col in frame.columns if re.fullmatch(r"B\d+", str(col))]
+    for row in frame.to_dict("records"):
+        area_no = _norm(row.get("area_no"))
+        for berth in berth_columns:
+            value = row.get(berth)
+            if area_no and not pd.isna(value):
+                distances[(area_no, str(berth))] = float(value)
+    return distances
+
+
+def _is_area_distance_workbook(path: Path) -> bool:
+    if path.name.startswith("~$") or path.suffix.lower() != ".xlsx":
+        return False
+    name = path.stem.lower()
+    return name.startswith("of") or ("适放箱区" in path.stem and "距离矩阵" in path.stem)
+
+
+def select_upcoming_opening_voyages(
+    data_dir: str | Path,
+    planning_time: datetime = DEFAULT_PLANNING_TIME,
+    horizon_hours: float = 24.0,
+    count: int = 2,
+) -> list[str]:
+    horizon_end = planning_time + timedelta(hours=horizon_hours)
+    candidates = [
+        schedule
+        for schedule in read_vessel_schedules(data_dir).values()
+        if planning_time <= schedule.receive_start < horizon_end
+    ]
+    candidates.sort(key=lambda item: (item.receive_start, item.berth_time, item.voyage_id))
+    return [item.voyage_id for item in candidates[:count]]
+
+
+def read_big_plan(path: str | Path) -> list[BigPlanRow]:
+    """读取大计划结果，并保留 20/40 尺寸配额。
+
+    支持中小计划标准格式，以及大计划 ``allocation.csv`` 格式
+    ``voy_id,flow,area_no,size,planned_qty``。没有 ``flow`` 列时默认 ``OF``。
+    """
+
+    counter: Counter[tuple[str, str, str, str, str]] = Counter()
+    rows: list[BigPlanRow] = []
+    with Path(path).open(newline="", encoding="utf-8-sig") as fp:
+        reader = csv.DictReader(fp)
+        fieldnames = set(reader.fieldnames or [])
+        if {"voyage_id", "area_no"}.issubset(fieldnames) and (
+            {"qty_20", "qty_40"}.issubset(fieldnames)
+            or {"planned_20", "planned_40"}.issubset(fieldnames)
+            or {"20", "40"}.issubset(fieldnames)
+        ):
+            qty20_field = _first_existing(fieldnames, ["qty_20", "planned_20", "20", "c20", "C20"])
+            qty40_field = _first_existing(fieldnames, ["qty_40", "planned_40", "40", "c40", "C40"])
+            qty45_field = _first_existing(fieldnames, ["qty_45", "planned_45", "45", "c45", "C45"])
+            date_field = _first_existing(fieldnames, ["plan_date", "date", "work_date", "planning_date", "day"])
+            flow_field = _first_existing(fieldnames, ["flow", "cntr_type", "status"])
+            for row in reader:
+                flow = _flow(row.get(flow_field)) if flow_field else "OF"
+                voyage_id = _voyage(row.get("voyage_id"))
+                area_no = _norm(row.get("area_no"))
+                plan_date = _norm(row.get(date_field)) if date_field else ""
+                for size_mode, field in (("20", qty20_field), ("40", qty40_field), ("45", qty45_field)):
+                    if not field:
+                        continue
+                    boxes = int(round(float(row.get(field, 0) or 0)))
+                    if boxes > 0:
+                        counter[(voyage_id, flow, area_no, size_mode, _date_key(plan_date))] += boxes
+            rows = [
+                BigPlanRow(voyage_id, flow, area_no, boxes, size_mode, plan_date)
+                for (voyage_id, flow, area_no, size_mode, plan_date), boxes in sorted(counter.items())
+                if boxes > 0
+            ]
+            if not rows:
+                raise ValueError("big plan file contains no positive planned boxes")
+            return rows
+
+        required = {"voyage_id", "area_no", "planned_boxes"}
+        missing = required.difference(reader.fieldnames or [])
+        if missing and {"voy_id", "area_no", "planned_qty"}.issubset(reader.fieldnames or []):
+            date_field = _first_existing(fieldnames, ["plan_date", "date", "work_date", "planning_date", "day"])
+            flow_field = _first_existing(fieldnames, ["flow", "cntr_type", "status"])
+            for row in reader:
+                flow = _flow(row.get(flow_field)) if flow_field else "OF"
+                boxes = int(round(float(row["planned_qty"])))
+                if boxes > 0:
+                    size_mode = _big_plan_size_mode(row.get("size"))
+                    plan_date = _date_key(_norm(row.get(date_field)) if date_field else "")
+                    counter[(_voyage(row["voy_id"]), flow, _norm(row["area_no"]), size_mode, plan_date)] += boxes
+            rows = [
+                BigPlanRow(voyage_id, flow, area_no, boxes, size_mode, plan_date)
+                for (voyage_id, flow, area_no, size_mode, plan_date), boxes in sorted(counter.items())
+                if boxes > 0
+            ]
+        elif missing:
+            raise ValueError(f"big plan file missing columns: {sorted(missing)}")
+        else:
+            size_field = "size_mode" if "size_mode" in (reader.fieldnames or []) else "size"
+            date_field = _first_existing(fieldnames, ["plan_date", "date", "work_date", "planning_date", "day"])
+            flow_field = _first_existing(fieldnames, ["flow", "cntr_type", "status"])
+            for row in reader:
+                flow = _flow(row.get(flow_field)) if flow_field else "OF"
+                boxes = int(round(float(row["planned_boxes"])))
+                if boxes > 0:
+                    size_mode = _big_plan_size_mode(row.get(size_field)) if size_field in row else "ALL"
+                    plan_date = _date_key(_norm(row.get(date_field)) if date_field else "")
+                    rows.append(BigPlanRow(_voyage(row["voyage_id"]), flow, _norm(row["area_no"]), boxes, size_mode, plan_date))
+    if not rows:
+        raise ValueError("big plan file contains no positive planned_boxes")
+    return rows
+
+
+def load_box_groups(
+    data_dir: str | Path,
+    voyage_ids: set[str],
+    planned_by_voyage: dict[str, int],
+    planned_by_voyage_size: dict[tuple[str, str], int] | None = None,
+) -> list[BoxGroup]:
+    """读取箱明细并缩放成中小计划需求组。
+
+    箱量目标完全来自大计划，不再按 70% 或其他比例缩放。
+    如果大计划提供 20/40 尺寸拆分，则按航次和尺寸分别对齐；45ft
+    明细归入 40ft 目标。
+    """
+    data_path = Path(data_dir)
+    counters: Counter[tuple] = Counter()
+    for path in sorted(data_path.glob("container_info_*.parquet")):
+        file_voyage = path.stem.replace("container_info_", "")
+        frame = pd.read_parquet(path)
+        for row in frame.to_dict("records"):
+            voyage_id = _voyage(row.get("IYC_EVOY_ID"), file_voyage)
+            if voyage_id not in voyage_ids:
+                continue
+            ctype = _norm(row.get("IYC_CTYPECD"), "UNK")
+            status = _norm(row.get("IYC_STS_CSTATUSCD"), "UNK")
+            key = (
+                voyage_id,
+                _norm(row.get("IYC_CSZ_CSIZECD"), "40"),
+                _norm(row.get("IYC_CHEIGHTCD"), "UNK"),
+                status,
+                _norm(row.get("IYC_POT_UNLDPORT"), "UNK"),
+                _norm(row.get("IYC_CST_COPERCD"), "UNK"),
+                ctype,
+                _weight_class(row.get("IYC_CWEIGHT")),
+                bool(ctype == "RF" or not pd.isna(row.get("IYC_SETTMPT"))),
+                bool(not pd.isna(row.get("IYC_DTP_DNGGCD"))),
+                bool(not pd.isna(row.get("IYC_OVLMTCD"))),
+                tuple(sorted(_business_special_codes(row))),
+            )
+            counters[key] += 1
+
+    raw_by_voyage: defaultdict[str, list[tuple[tuple, int]]] = defaultdict(list)
+    for key, count in counters.items():
+        raw_by_voyage[key[0]].append((key, count))
+
+    groups: list[BoxGroup] = []
+    for voyage_id in sorted(voyage_ids):
+        raw = raw_by_voyage.get(voyage_id, [])
+        if planned_by_voyage_size:
+            size_targets = {
+                size_mode: qty
+                for (v, size_mode), qty in planned_by_voyage_size.items()
+                if v == voyage_id and qty > 0
+            }
+            group_index = 1
+            for size_mode in SIZE_MODES:
+                target = size_targets.get(size_mode, 0)
+                if target <= 0:
+                    continue
+                raw_for_size = [
+                    item for item in raw
+                    if _big_plan_size_mode(item[0][1]) == size_mode
+                ]
+                if not raw_for_size:
+                    raw_for_size = [(_generic_box_key(voyage_id, size_mode), 1)]
+                group_index = _append_scaled_groups(groups, raw_for_size, target, group_index)
+            continue
+
+        if not raw:
+            raw = [(_generic_box_key(voyage_id, "40"), 1)]
+        _append_scaled_groups(groups, raw, planned_by_voyage[voyage_id], 1)
+    return groups
+
+
+def load_port_demand_groups(
+    data_dir: str | Path,
+    voyage_ids: list[str],
+    planning_time: datetime,
+) -> tuple[list[BoxGroup], list[DemandRow]]:
+    demand_rows = calculate_medium_demands(data_dir, voyage_ids, planning_time)
+    groups: list[BoxGroup] = []
+    group_index: defaultdict[str, int] = defaultdict(int)
+    for row in demand_rows:
+        group_index[row.voyage_id] += 1
+        groups.append(
+            BoxGroup(
+                group_id=f"{row.voyage_id}_P{group_index[row.voyage_id]:03d}",
+                voyage_id=row.voyage_id,
+                size=row.size_mode,
+                height="UNK",
+                status=row.flow,
+                port=row.port,
+                operator="UNK",
+                ctype="UNK",
+                weight_class="UNK",
+                reefer=False,
+                dangerous=False,
+                over_limit=False,
+                special_codes=(),
+                demand=row.planned_boxes,
+            )
+        )
+    return groups, demand_rows
+
+
+def load_small_doc_groups(data_dir: str | Path, voyage_ids: list[str]) -> list[SmallBoxGroup]:
+    data_path = Path(data_dir)
+    groups: list[SmallBoxGroup] = []
+    for voyage_id in voyage_ids:
+        path = data_path / f"container_info_{voyage_id}.parquet"
+        if not path.exists():
+            continue
+        frame = pd.read_parquet(path)
+        if frame.empty:
+            continue
+        work = pd.DataFrame(
+            {
+                "status": frame.get("IYC_STS_CSTATUSCD", pd.Series(index=frame.index, dtype=object)).map(_flow),
+                "size": frame.get("IYC_CSZ_CSIZECD", pd.Series(index=frame.index, dtype=object)).map(_size_mode),
+                "port": frame.get("IYC_POT_UNLDPORT", pd.Series(index=frame.index, dtype=object)).map(lambda value: _norm(value, "UNK")),
+                "height": frame.get("IYC_CHEIGHTCD", pd.Series(index=frame.index, dtype=object)).map(lambda value: _norm(value, "UNK")),
+                "weight": frame.get("IYC_CWEIGHT", pd.Series(index=frame.index, dtype=object)).map(_weight_class),
+                "special_code": "",
+                "pre_stow": False,
+            }
+        )
+        counts = work.groupby(
+            ["status", "size", "port", "height", "weight", "special_code", "pre_stow"],
+            sort=True,
+        ).size()
+        counter: Counter[tuple[str, str, str, str, str, str, bool]] = Counter()
+        for key, count in counts.items():
+            status, size, port, height, weight, special_code, pre_stow = key
+            counter[
+                (
+                    str(status),
+                    str(size),
+                    str(port),
+                    str(height),
+                    str(weight),
+                    str(special_code),
+                    bool(pre_stow),
+                )
+            ] = int(count)
+        for index, ((status, size, port, height, weight, special_code, pre_stow), demand) in enumerate(sorted(counter.items()), start=1):
+            groups.append(
+                SmallBoxGroup(
+                    group_id=f"{voyage_id}_S{index:03d}",
+                    voyage_id=voyage_id,
+                    status=status,
+                    port=port,
+                    size=size,
+                    height=height,
+                    weight_class=weight,
+                    demand=demand,
+                    pre_stow=pre_stow,
+                    special_stow=bool(special_code),
+                    special_stow_code=special_code,
+                )
+            )
+    return groups
+
+
+def _is_pre_stow_group(row: dict, size: str, port: str, height: str, weight: str) -> bool:
+    # Reserved extension point: the current 20260508 data has no explicit
+    # pre-stow marker. Keep this hook so a future field can map into the
+    # small-plan soft isolation preference without changing solver code.
+    return False
+
+
+def _special_stow_code(row: dict) -> str:
+    # Reserved extension point: future data should provide an explicit fixed
+    # special-stow marker. The current dataset has no such field, so no
+    # inferred special-stow category is produced here.
+    return _explicit_special_stow_code(row)
+
+
+def _business_special_codes(row: dict) -> set[str]:
+    code = _explicit_special_stow_code(row)
+    return {code} if code else set()
+
+
+def _explicit_special_stow_code(row: dict) -> str:
+    return ""
+
+
+def _weight_class(value: object) -> str:
+    if value is None or pd.isna(value):
+        return "UNK"
+    try:
+        tons = float(value) / 1000.0
+    except (TypeError, ValueError):
+        return "UNK"
+    bands = [(0, 10), (10, 15), (15, 20), (20, 25), (25, 30)]
+    for lower, upper in bands:
+        if lower <= tons < upper:
+            return f"{lower}_{upper}"
+    if tons >= 30:
+        return "GT30"
+    return "UNK"
+
+
+def _largest_remainder_scale(counts: list[int], source_total: int, target_total: int) -> list[int]:
+    if target_total <= 0:
+        return [0 for _ in counts]
+    if source_total <= 0:
+        out = [0 for _ in counts]
+        out[0] = target_total
+        return out
+    raw = [c * target_total / source_total for c in counts]
+    base = [int(math.floor(v)) for v in raw]
+    remain = target_total - sum(base)
+    order = sorted(range(len(raw)), key=lambda i: raw[i] - base[i], reverse=True)
+    for i in order[:remain]:
+        base[i] += 1
+    return base
+
+
+def _allocate_by_weights(weights: dict[str, int], target_total: int) -> dict[str, int]:
+    items = [(area, qty) for area, qty in sorted(weights.items()) if qty > 0]
+    if not items:
+        return {}
+    scaled = _largest_remainder_scale([qty for _, qty in items], sum(qty for _, qty in items), target_total)
+    return {area: qty for (area, _), qty in zip(items, scaled) if qty > 0}
+
+
+def _first_existing(fieldnames: set[str], candidates: list[str]) -> str | None:
+    lowered = {name.lower(): name for name in fieldnames}
+    for candidate in candidates:
+        if candidate in fieldnames:
+            return candidate
+        if candidate.lower() in lowered:
+            return lowered[candidate.lower()]
+    return None
+
+
+def _date_key(value: str) -> str:
+    if not value:
+        return ""
+    parsed = parse_datetime(value)
+    if parsed is not None:
+        return parsed.date().isoformat()
+    text = str(value).strip().replace("/", "-")
+    if len(text) >= 10:
+        return text[:10]
+    return text
+
+
+def _big_plan_size_mode(value: object) -> str:
+    """杞崲涓哄ぇ璁″垝灏哄鍙ｅ緞銆?
+    澶ц鍒掑彧鍖哄垎 20 鍜?40锛屽叾涓?45 灏哄綊鍏?40 灏恒€傚鏋滄棫鏂囦欢娌℃湁灏哄鍒楋紝
+    杩斿洖 `ALL`锛屽悗缁細閫€鍥炲埌鍙寜鑸-绠卞尯鎬婚噺绾︽潫銆?    """
+    size = _norm(value).upper()
+    if not size:
+        return "ALL"
+    if size in {"20", "40", "45"}:
+        return size
+    return "40"
+
+
+def _flow(value: object) -> str:
+    return _norm(value, "OF").upper() or "OF"
+
+
+def _generic_box_key(voyage_id: str, size_mode: str) -> tuple:
+    """鏋勯€犲厹搴曞睘鎬х粍銆?
+    褰撴煇鑸鏈夊ぇ璁″垝閰嶉锛屼絾绠辨槑缁嗕腑鎵句笉鍒板搴斿昂瀵哥殑绠卞瓙鏃讹紝鐢ㄤ竴涓櫘閫?    灞炴€х粍鎵挎帴杩欓儴鍒嗚鍒掗噺锛屼繚璇佹ā鍨嬩粛鑳界粰鍑哄彲妫€鏌ョ殑缁撴灉銆?    """
+    return (voyage_id, size_mode, "UNK", "OF", "UNK", "UNK", "GP", "UNK", False, False, False, ())
+
+
+def _append_scaled_groups(
+    groups: list[BoxGroup],
+    raw: list[tuple[tuple, int]],
+    target: int,
+    start_index: int,
+) -> int:
+    """鎶婂師濮嬪睘鎬х粍鎸夌洰鏍囩閲忕缉鏀惧悗杩藉姞鍒?`groups`銆?
+    杩斿洖涓嬩竴涓彲鐢ㄧ殑缁勭紪鍙凤紝渚夸簬鍚屼竴鑸鎸?20/40 鍒嗘《缂╂斁鍚庝粛淇濇寔缁勫彿鍞竴銆?    """
+    total_raw = sum(c for _, c in raw)
+    scaled_counts = _largest_remainder_scale([c for _, c in raw], total_raw, target)
+    group_index = start_index
+    for key, demand in zip((item[0] for item in raw), scaled_counts):
+        if demand <= 0:
+            continue
+        v, size, height, status, port, operator, ctype, weight_class, reefer, dangerous, over_limit, special_codes = key
+        groups.append(
+            BoxGroup(
+                group_id=f"{v}_G{group_index:03d}",
+                voyage_id=v,
+                size=size,
+                height=height,
+                status=status,
+                port=port,
+                operator=operator,
+                ctype=ctype,
+                weight_class=weight_class,
+                reefer=reefer,
+                dangerous=dangerous,
+                over_limit=over_limit,
+                special_codes=special_codes,
+                demand=demand,
+            )
+        )
+        group_index += 1
+    return group_index
+
+
+def build_bays(
+    data_dir: str | Path,
+    allowed_areas: set[str],
+    closed_areas: set[str],
+    planning_time: datetime = DEFAULT_PLANNING_TIME,
+    vessel_schedules: dict[str, VoyageSchedule] | None = None,
+    target_voyages: set[str] | None = None,
+    area_functions: dict[str, set[str]] | None = None,
+    misplaced_bay_exclusion_ratio: float = DEFAULT_MISPLACED_BAY_EXCLUSION_RATIO,
+) -> dict[str, Bay]:
+    data_path = Path(data_dir)
+    base = pd.read_parquet(data_path / "bay_slots_detail.parquet")
+    original_bay_capacity = _total_slots_by_bay(base)
+    base, reserved_slots = apply_tops_reservations(base, data_path, planning_time, target_voyages or set())
+    vessel_schedules = vessel_schedules or read_vessel_schedules(data_dir)
+    area_functions = area_functions or read_area_functions(data_dir)
+    excluded_bays = _misplaced_bays_to_exclude(
+        base,
+        area_functions,
+        vessel_schedules,
+        planning_time,
+        misplaced_bay_exclusion_ratio,
+        original_bay_capacity,
+        target_voyages or set(),
+    )
+    if excluded_bays:
+        base = _drop_bays(base, excluded_bays)
+    cap_by_size = _capacity_by_bay_size(base)
+    row_cap_by_size = _capacity_by_bay_row_size(base)
+    physical_cap = _physical_capacity_by_bay(base)
+    row_physical_cap = _physical_capacity_by_bay_row(base)
+    row_cap_by_bay_size = {
+        size_mode: _row_capacity_index_by_bay(row_cap_by_size[size_mode])
+        for size_mode in SIZE_MODES
+    }
+    row_physical_by_bay = _row_capacity_index_by_bay(row_physical_cap)
+    released_cap = _released_capacity_by_bay(base, vessel_schedules, planning_time)
+    for size_mode in SIZE_MODES:
+        for key, count in released_cap[size_mode].items():
+            cap_by_size[size_mode][key] = cap_by_size[size_mode].get(key, 0) + count
+    for key, count in released_cap["physical"].items():
+        physical_cap[key] = physical_cap.get(key, 0) + count
+
+    bay_numbers = (
+        base[["YAA_AREANO", "YBY_BAYNO"]]
+        .drop_duplicates()
+        .assign(
+            YAA_AREANO=lambda x: _norm_series(x["YAA_AREANO"]),
+            YBY_BAYNO=lambda x: _bay_no_series(x["YBY_BAYNO"]),
+        )
+    )
+    bay_order: dict[tuple[str, str], int] = {}
+    block_by_bay: dict[tuple[str, str], tuple[int, tuple[str, ...], bool]] = {}
+    for area_no, area_df in bay_numbers.groupby("YAA_AREANO"):
+        ordered = sorted(area_df["YBY_BAYNO"].tolist(), key=_bay_sort_key)
+        for idx, bay_no in enumerate(ordered):
+            bay_order[(area_no, bay_no)] = idx
+        big_bay_starts = {
+            bay_no
+            for bay_no in ordered
+            if cap_by_size["40"].get((area_no, bay_no), 0) > 0 or cap_by_size["45"].get((area_no, bay_no), 0) > 0
+        }
+        for block_index, members, adjusted in _make_yard_blocks(ordered, big_bay_starts):
+            for bay_no in members:
+                block_by_bay[(area_no, bay_no)] = (block_index, members, adjusted)
+
+    bays: dict[str, Bay] = {}
+    for (area_no, bay_no), order in bay_order.items():
+        if area_no in closed_areas or area_no not in allowed_areas:
+            continue
+        block_index, block_members, block_adjusted = block_by_bay.get((area_no, bay_no), (order + 1, (bay_no,), False))
+        bay_key = f"{area_no}-{bay_no}"
+        bays[bay_key] = Bay(
+            area_no=area_no,
+            bay_no=bay_no,
+            bay_key=bay_key,
+            block_id=f"{area_no}-B{block_index:02d}",
+            block_bays=block_members,
+            block_bay_count=len(block_members),
+            block_boundary_adjusted=block_adjusted,
+            bay_order=order,
+            cap_by_size={
+                size_mode: cap_by_size[size_mode].get((area_no, bay_no), 0)
+                for size_mode in SIZE_MODES
+            },
+            physical_capacity=physical_cap.get((area_no, bay_no), 0),
+            row_cap_by_size={
+                size_mode: row_cap_by_bay_size[size_mode].get((area_no, bay_no), {})
+                for size_mode in SIZE_MODES
+            },
+            row_physical_capacity=row_physical_by_bay.get((area_no, bay_no), {}),
+        )
+    build_bays.last_reserved_count = len(reserved_slots)
+    build_bays.last_tops_closed_bay_count = getattr(apply_tops_reservations, "last_reserved_bay_count", 0)
+    build_bays.last_misplaced_excluded_bay_count = len(excluded_bays)
+
+    _populate_existing_bay_attributes(base, bays, vessel_schedules, planning_time)
+
+    return bays
+
+
+def build_area_operations(
+    data_dir: str | Path,
+    vessel_schedules: dict[str, VoyageSchedule],
+) -> dict[str, list[AreaOperation]]:
+    base = pd.read_parquet(
+        Path(data_dir) / "bay_slots_detail.parquet",
+        columns=["HAS_CONTAINER", "YAA_AREANO", "IYC_EVOY_ID"],
+    )
+    occupied = base.loc[base["HAS_CONTAINER"] == 1, ["YAA_AREANO", "IYC_EVOY_ID"]].copy()
+    if occupied.empty:
+        return {}
+    occupied["IYC_EVOY_ID"] = _voyage_series(occupied["IYC_EVOY_ID"])
+    occupied["YAA_AREANO"] = _norm_series(occupied["YAA_AREANO"])
+    occupied = occupied[(occupied["IYC_EVOY_ID"] != "") & (occupied["YAA_AREANO"] != "")]
+    seen: set[tuple[str, str]] = set()
+    operations: defaultdict[str, list[AreaOperation]] = defaultdict(list)
+    for area_no, voyage_id in occupied.drop_duplicates().itertuples(index=False, name=None):
+        schedule = vessel_schedules.get(voyage_id)
+        if schedule is None:
+            continue
+        key = (area_no, voyage_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        operations[area_no].append(
+            AreaOperation(
+                area_no=area_no,
+                voyage_id=voyage_id,
+                start_time=schedule.berth_time,
+                end_time=schedule.departure_time,
+            )
+        )
+    for items in operations.values():
+        items.sort(key=lambda item: (item.start_time, item.end_time, item.voyage_id))
+    return dict(operations)
+
+
+def _populate_existing_bay_attributes(
+    base: pd.DataFrame,
+    bays: dict[str, Bay],
+    vessel_schedules: dict[str, VoyageSchedule],
+    planning_time: datetime,
+) -> None:
+    columns = [
+        "YAA_AREANO",
+        "YBY_BAYNO",
+        "IYC_EVOY_ID",
+        "IYC_CSZ_CSIZECD",
+        "IYC_CHEIGHTCD",
+        "IYC_POT_UNLDPORT",
+        "IYC_STS_CSTATUSCD",
+        "IYC_CTYPECD",
+        "IYC_SETTMPT",
+    ]
+    occupied = base.loc[base["HAS_CONTAINER"] == 1, columns].copy()
+    if occupied.empty:
+        return
+
+    active_voyages = {
+        voyage_id
+        for voyage_id, schedule in vessel_schedules.items()
+        if schedule.departure_time > planning_time
+    }
+    known_voyages = set(vessel_schedules)
+    occupied["_voyage"] = _voyage_series(occupied["IYC_EVOY_ID"])
+    occupied = occupied.loc[
+        occupied["_voyage"].eq("")
+        | ~occupied["_voyage"].isin(known_voyages)
+        | occupied["_voyage"].isin(active_voyages)
+    ]
+    if occupied.empty:
+        return
+
+    occupied["_area"] = _norm_series(occupied["YAA_AREANO"])
+    occupied["_bay"] = _bay_no_series(occupied["YBY_BAYNO"])
+    occupied["_bay_key"] = occupied["_area"] + "-" + occupied["_bay"]
+    occupied = occupied.loc[occupied["_bay_key"].isin(bays)]
+    if occupied.empty:
+        return
+
+    occupied["_size"] = occupied["IYC_CSZ_CSIZECD"].map(_size_mode)
+    occupied["_height"] = _norm_series(occupied["IYC_CHEIGHTCD"])
+    occupied["_port"] = _norm_series(occupied["IYC_POT_UNLDPORT"])
+    occupied["_status"] = _norm_series(occupied["IYC_STS_CSTATUSCD"])
+    occupied["_ctype"] = _norm_series(occupied["IYC_CTYPECD"])
+
+    for bay_key, values in occupied.groupby("_bay_key", sort=False):
+        bay = bays.get(str(bay_key))
+        if bay is None:
+            continue
+        bay.existing_size_modes.update(str(item) for item in values["_size"].dropna().unique() if str(item))
+        bay.existing_heights.update(str(item) for item in values["_height"].dropna().unique() if str(item))
+        bay.existing_ports.update(str(item) for item in values["_port"].dropna().unique() if str(item))
+
+        statuses = values["_status"].dropna().astype(str)
+        if statuses.str.endswith("E").any() or statuses.isin(["IE", "OE", "TE", "RE"]).any():
+            bay.fallback_reasons.add("existing_empty_container")
+        ctypes = values["_ctype"].dropna().astype(str)
+        if ctypes.eq("RF").any() or values["IYC_SETTMPT"].notna().any():
+            bay.fallback_reasons.add("existing_reefer_container")
+
+
+def apply_tops_reservations(
+    base: pd.DataFrame,
+    data_path: Path,
+    planning_time: datetime,
+    target_voyages: set[str],
+) -> tuple[pd.DataFrame, set[tuple[str, str, str]]]:
+    path = data_path / "tops_plan_info.parquet"
+    if not path.exists():
+        apply_tops_reservations.last_reserved_bay_count = 0
+        return base, set()
+    tops = pd.read_parquet(path)
+    reserved_bays: set[tuple[str, str]] = set()
+    reserved_slots: set[tuple[str, str, str]] = set()
+    bay_rows = (
+        base[["YAA_AREANO", "YBY_BAYNO", "YST_ROWNO"]]
+        .drop_duplicates()
+        .assign(
+            YAA_AREANO=lambda x: _norm_series(x["YAA_AREANO"]),
+            YBY_BAYNO=lambda x: _bay_no_series(x["YBY_BAYNO"]),
+            YST_ROWNO=lambda x: _row_no_series(x["YST_ROWNO"]),
+        )
+    )
+    bay_rows = bay_rows[(bay_rows["YAA_AREANO"] != "") & (bay_rows["YBY_BAYNO"] != "")]
+    by_area = {
+        str(area_no): set(values["YBY_BAYNO"].astype(str))
+        for area_no, values in bay_rows.groupby("YAA_AREANO", sort=False)
+    }
+    slots_by_bay = {
+        (str(area_no), str(bay_no)): set(values["YST_ROWNO"].astype(str))
+        for (area_no, bay_no), values in bay_rows.groupby(["YAA_AREANO", "YBY_BAYNO"], sort=False)
+    }
+
+    tops_cols = ["SPL_ISVALID", "SPR_ISVALID", "SPL_CONDITIONCODE", "SPL_STDATE", "SPL_EDDATE", "SPR_STBAY", "SPR_EDBAY"]
+    for row in tops.loc[:, [col for col in tops_cols if col in tops.columns]].itertuples(index=False):
+        row_data = row._asdict()
+        if _norm(row_data.get("SPL_ISVALID")).upper() != "Y" or _norm(row_data.get("SPR_ISVALID")).upper() != "Y":
+            continue
+        voyage_id = _voyage(row_data.get("SPL_CONDITIONCODE"))
+        if voyage_id in target_voyages:
+            continue
+        start = parse_datetime(row_data.get("SPL_STDATE"))
+        end = parse_datetime(row_data.get("SPL_EDDATE"))
+        if start is None or end is None or not (start <= planning_time <= end):
+            continue
+        parsed_start = _parse_tops_bay_code(row_data.get("SPR_STBAY"))
+        parsed_end = _parse_tops_bay_code(row_data.get("SPR_EDBAY"))
+        if parsed_start is None or parsed_end is None or parsed_start[0] != parsed_end[0]:
+            continue
+        area_no, start_bay = parsed_start
+        _, end_bay = parsed_end
+        for bay_no in by_area.get(area_no, set()):
+            if not _bay_between(bay_no, start_bay, end_bay):
+                continue
+            reserved_bays.add((area_no, bay_no))
+            for row_no in slots_by_bay.get((area_no, bay_no), set()):
+                reserved_slots.add((area_no, bay_no, row_no))
+    if not reserved_bays:
+        apply_tops_reservations.last_reserved_bay_count = 0
+        return base, reserved_slots
+    apply_tops_reservations.last_reserved_bay_count = len(reserved_bays)
+    return _drop_bays(base, reserved_bays), reserved_slots
+
+
+def _parse_tops_bay_code(value: object) -> tuple[str, str] | None:
+    text = _norm(value).upper()
+    if len(text) < 3:
+        return None
+    return text[:-2], _bay_no(text[-2:])
+
+
+def _bay_between(bay_no: str, start_bay: str, end_bay: str) -> bool:
+    try:
+        bay = int(bay_no)
+        start = int(start_bay)
+        end = int(end_bay)
+    except ValueError:
+        return start_bay <= bay_no <= end_bay
+    return min(start, end) <= bay <= max(start, end)
+
+
+def _row_between(row_no: str, start_row: str, end_row: str) -> bool:
+    try:
+        row = int(row_no)
+        start = int(start_row)
+        end = int(end_row)
+    except ValueError:
+        return True
+    return min(start, end) <= row <= max(start, end)
+
+
+def _released_capacity_by_bay(
+    base: pd.DataFrame,
+    vessel_schedules: dict[str, VoyageSchedule],
+    planning_time: datetime,
+) -> dict[str, Counter[tuple[str, str]]]:
+    released = {"20": Counter(), "40": Counter(), "45": Counter(), "physical": Counter()}
+    released_voyages = {
+        voyage_id
+        for voyage_id, schedule in vessel_schedules.items()
+        if schedule.departure_time <= planning_time
+    }
+    if not released_voyages:
+        return released
+
+    cols = ["YAA_AREANO", "YBY_BAYNO", "YBY_ENABLECSIZECD", "IYC_EVOY_ID"]
+    occupied = base.loc[base["HAS_CONTAINER"] == 1, cols].copy()
+    if occupied.empty:
+        return released
+
+    occupied["IYC_EVOY_ID"] = _voyage_series(occupied["IYC_EVOY_ID"])
+    occupied = occupied[occupied["IYC_EVOY_ID"].isin(released_voyages)]
+    if occupied.empty:
+        return released
+
+    occupied["YAA_AREANO"] = _norm_series(occupied["YAA_AREANO"])
+    occupied["YBY_BAYNO"] = _bay_no_series(occupied["YBY_BAYNO"])
+    occupied = occupied[(occupied["YAA_AREANO"] != "") & (occupied["YBY_BAYNO"] != "")]
+    if occupied.empty:
+        return released
+
+    physical_counts = occupied.groupby(["YAA_AREANO", "YBY_BAYNO"]).size()
+    released["physical"].update({(str(a), str(b)): int(v) for (a, b), v in physical_counts.items()})
+    for size_mode in SIZE_MODES:
+        counts = occupied.loc[_size_enabled_mask(occupied["YBY_ENABLECSIZECD"], size_mode)].groupby(
+            ["YAA_AREANO", "YBY_BAYNO"]
+        ).size()
+        released[size_mode].update({(str(a), str(b)): int(v) for (a, b), v in counts.items()})
+    return released
+
+
+def _is_occupied_at_planning_time(
+    row: dict,
+    vessel_schedules: dict[str, VoyageSchedule],
+    planning_time: datetime,
+) -> bool:
+    if row.get("HAS_CONTAINER") != 1:
+        return False
+    voyage_id = _voyage(row.get("IYC_EVOY_ID"))
+    if not voyage_id:
+        return True
+    schedule = vessel_schedules.get(voyage_id)
+    if schedule is None:
+        return True
+    return schedule.departure_time > planning_time
+
+
+def _capacity_by_bay_size(base: pd.DataFrame) -> dict[str, dict[tuple[str, str], int]]:
+    empty = _normalized_empty_slots(base, include_row=False)
+    out: dict[str, dict[tuple[str, str], int]] = {}
+    for size_mode in SIZE_MODES:
+        counts = empty.loc[_size_enabled_mask(empty["YBY_ENABLECSIZECD"], size_mode)].groupby(
+            ["YAA_AREANO", "YBY_BAYNO"]
+        ).size()
+        out[size_mode] = {(str(a), str(b)): int(v) for (a, b), v in counts.items()}
+    return out
+
+
+def _physical_capacity_by_bay(base: pd.DataFrame) -> dict[tuple[str, str], int]:
+    empty = _normalized_empty_slots(base, include_row=False)
+    counts = empty.groupby(["YAA_AREANO", "YBY_BAYNO"]).size()
+    return {(str(a), str(b)): int(v) for (a, b), v in counts.items()}
+
+
+def _capacity_by_bay_row_size(base: pd.DataFrame) -> dict[str, dict[tuple[str, str, str], int]]:
+    empty = _normalized_empty_slots(base, include_row=True)
+    out: dict[str, dict[tuple[str, str, str], int]] = {}
+    for size_mode in SIZE_MODES:
+        counts = empty.loc[_size_enabled_mask(empty["YBY_ENABLECSIZECD"], size_mode)].groupby(
+            ["YAA_AREANO", "YBY_BAYNO", "YST_ROWNO"]
+        ).size()
+        out[size_mode] = {(str(a), str(b), str(r)): int(v) for (a, b, r), v in counts.items()}
+    return out
+
+
+def _physical_capacity_by_bay_row(base: pd.DataFrame) -> dict[tuple[str, str, str], int]:
+    empty = _normalized_empty_slots(base, include_row=True)
+    counts = empty.groupby(["YAA_AREANO", "YBY_BAYNO", "YST_ROWNO"]).size()
+    return {(str(a), str(b), str(r)): int(v) for (a, b, r), v in counts.items()}
+
+
+def _normalized_empty_slots(base: pd.DataFrame, *, include_row: bool) -> pd.DataFrame:
+    columns = ["YAA_AREANO", "YBY_BAYNO", "YBY_ENABLECSIZECD"]
+    if include_row:
+        columns.append("YST_ROWNO")
+    empty = base.loc[base["HAS_CONTAINER"] == 0, columns].copy()
+    empty["YAA_AREANO"] = _norm_series(empty["YAA_AREANO"])
+    empty["YBY_BAYNO"] = _bay_no_series(empty["YBY_BAYNO"])
+    if include_row:
+        empty["YST_ROWNO"] = _row_no_series(empty["YST_ROWNO"])
+    return empty
+
+
+def _size_enabled_mask(values: pd.Series, size_mode: str) -> pd.Series:
+    text = values.astype("string")
+    stripped = text.str.strip()
+    missing = values.isna() | stripped.str.lower().isin(["", "nan", "none", "<na>"]).fillna(False)
+    enabled = stripped.str.contains(rf"(?<!\d){re.escape(size_mode)}(?!\d)", regex=True, na=False)
+    return missing | enabled
+
+
+def _drop_reserved_slots(frame: pd.DataFrame, reserved_slots: set[tuple[str, str, str]]) -> pd.DataFrame:
+    if not reserved_slots or frame.empty:
+        return frame
+    work = frame.copy()
+    area = _norm_series(work["YAA_AREANO"])
+    bay = _bay_no_series(work["YBY_BAYNO"])
+    row = _row_no_series(work["YST_ROWNO"])
+    empty = work["HAS_CONTAINER"].fillna(0).astype(int) == 0 if "HAS_CONTAINER" in work.columns else True
+    mask = [is_empty and (a, b, r) in reserved_slots for is_empty, a, b, r in zip(empty, area, bay, row)]
+    return work.loc[[not item for item in mask]].copy()
+
+
+def _drop_bays(frame: pd.DataFrame, excluded_bays: set[tuple[str, str]]) -> pd.DataFrame:
+    if not excluded_bays or frame.empty:
+        return frame
+    area = _norm_series(frame["YAA_AREANO"])
+    bay = _bay_no_series(frame["YBY_BAYNO"])
+    mask = [(a, b) in excluded_bays for a, b in zip(area, bay)]
+    return frame.loc[[not item for item in mask]].copy()
+
+
+def _misplaced_bays_to_exclude(
+    base: pd.DataFrame,
+    area_functions: dict[str, set[str]],
+    vessel_schedules: dict[str, VoyageSchedule],
+    planning_time: datetime,
+    ratio: float,
+    original_bay_capacity: Counter[tuple[str, str]] | None = None,
+    target_voyages: set[str] | None = None,
+) -> set[tuple[str, str]]:
+    if ratio <= 0:
+        return set()
+    # `base` has already had TOPS reservations removed, so TOPS is handled
+    # before misplaced-bay exclusion. The threshold denominator remains the
+    # bay's original total slot capacity before TOPS, not the current occupied
+    # count and not the TOPS-reduced capacity.
+    bay_capacity = original_bay_capacity or _total_slots_by_bay(base)
+    target_voyages = {_voyage(v) for v in (target_voyages or set())}
+    if not target_voyages:
+        return set()
+
+    occupied = base.loc[base["HAS_CONTAINER"] == 1].copy()
+    if occupied.empty:
+        return set()
+    occupied["_voyage"] = _voyage_series(occupied["IYC_EVOY_ID"])
+    occupied = occupied.loc[occupied["_voyage"].isin(target_voyages)]
+    if occupied.empty:
+        return set()
+    active_voyages = {
+        voyage_id
+        for voyage_id in target_voyages
+        if voyage_id not in vessel_schedules or vessel_schedules[voyage_id].departure_time > planning_time
+    }
+    occupied = occupied.loc[occupied["_voyage"].isin(active_voyages)]
+    if occupied.empty:
+        return set()
+
+    occupied["_area"] = _norm_series(occupied["YAA_AREANO"])
+    occupied = occupied.loc[occupied["_area"].isin(area_functions)]
+    if occupied.empty:
+        return set()
+
+    occupied["_bay"] = _bay_no_series(occupied["YBY_BAYNO"])
+    occupied["_flow"] = occupied["IYC_STS_CSTATUSCD"].map(_flow)
+    occupied = occupied.loc[occupied["_area"].ne("") & occupied["_bay"].ne("")]
+    allowed_pairs = {
+        (area_no, flow)
+        for area_no, flows in area_functions.items()
+        for flow in flows
+    }
+    area_flow_pairs = pd.MultiIndex.from_frame(occupied[["_area", "_flow"]])
+    occupied = occupied.loc[~area_flow_pairs.isin(allowed_pairs)]
+    if occupied.empty:
+        return set()
+
+    misplaced = Counter(
+        {
+            (str(area_no), str(bay_no)): int(count)
+            for (area_no, bay_no), count in occupied.groupby(["_area", "_bay"], sort=False).size().items()
+        }
+    )
+    return {
+        key
+        for key, count in misplaced.items()
+        if count > bay_capacity.get(key, 0) * ratio
+    }
+
+
+def _total_slots_by_bay(base: pd.DataFrame) -> Counter[tuple[str, str]]:
+    slots: Counter[tuple[str, str]] = Counter()
+    if base.empty:
+        return slots
+    work = base[["YAA_AREANO", "YBY_BAYNO"]].copy()
+    work["YAA_AREANO"] = _norm_series(work["YAA_AREANO"])
+    work["YBY_BAYNO"] = _bay_no_series(work["YBY_BAYNO"])
+    work = work[(work["YAA_AREANO"] != "") & (work["YBY_BAYNO"] != "")]
+    counts = work.groupby(["YAA_AREANO", "YBY_BAYNO"], sort=False).size()
+    slots.update({(str(a), str(b)): int(v) for (a, b), v in counts.items()})
+    return slots
+
+
+def _row_capacity_index_by_bay(capacity: dict[tuple[str, str, str], int]) -> dict[tuple[str, str], dict[str, int]]:
+    indexed: defaultdict[tuple[str, str], dict[str, int]] = defaultdict(dict)
+    for (area_no, bay_no, row_no), cap in capacity.items():
+        if cap > 0:
+            indexed[(area_no, bay_no)][row_no] = cap
+    return dict(indexed)
+
+
+def _enabled_size_modes(value: object) -> set[str]:
+    text = _norm(value)
+    if not text:
+        return set(SIZE_MODES)
+    modes = set()
+    for part in re.findall(r"\d+", text):
+        if part in {"20", "40", "45"}:
+            modes.add(part)
+    return modes
+
+
+def _slot_allows_size(value: object, required_size: str) -> bool:
+    enabled = _enabled_size_modes(value)
+    if enabled:
+        return required_size in enabled
+    return False
+
+
+def _make_yard_blocks(
+    ordered_bays: list[str],
+    big_bay_starts: set[str],
+    target_bay_count: int = 6,
+) -> list[tuple[int, tuple[str, ...], bool]]:
+    """鏋勯€犱腑璁″垝浣跨敤鐨勫尯鍧椼€?
+    鐩爣鏄瘡涓尯鍧楀寘鍚?6 涓繛缁皬璐濅綅銆傚鏋滆竟鐣屼細鍒囧紑涓€涓?40ft 澶ц礉浣嶅锛?    灏卞悜闄勮繎绉诲姩杈圭晫銆?5ft 鍦ㄦ湰妯″瀷涓寜 40ft 澶勭悊锛屽洜姝や笉鍐嶅崟鐙垽鏂?45ft銆?    """
+
+    blocks: list[tuple[int, tuple[str, ...], bool]] = []
+    start = 0
+    block_index = 1
+    while start < len(ordered_bays):
+        if len(ordered_bays) - start <= target_bay_count:
+            end = len(ordered_bays)
+            adjusted = False
+        else:
+            target_end = start + target_bay_count
+            end = _nearest_safe_block_end(
+                ordered_bays,
+                big_bay_starts,
+                start=start,
+                target_end=target_end,
+            )
+            adjusted = end != target_end
+        members = tuple(ordered_bays[start:end])
+        blocks.append((block_index, members, adjusted))
+        block_index += 1
+        start = end
+    return blocks
+
+
+def _nearest_safe_block_end(
+    ordered_bays: list[str],
+    big_bay_starts: set[str],
+    start: int,
+    target_end: int,
+) -> int:
+    # 如果 end-1 位置的小贝位可以作为 40ft 大贝位起点，则边界会切开
+    # 推断的大贝位对，属于不安全边界。
+    min_end = start + 1
+    max_end = len(ordered_bays)
+    for offset in range(0, len(ordered_bays) + 1):
+        probes = [target_end] if offset == 0 else [target_end + offset, target_end - offset]
+        for end in probes:
+            if not (min_end <= end <= max_end):
+                continue
+            if end == len(ordered_bays) or ordered_bays[end - 1] not in big_bay_starts:
+                return end
+    return len(ordered_bays)
+
+
+def _size_mode(value: object) -> str:
+    size = _norm(value, "40")
+    return size if size in {"20", "40", "45"} else "40"
+
+
+def _existing_special_signature(row: dict) -> str:
+    return _special_stow_code(row) or "NORMAL"
+
+
+def _bay_sort_key(value: str) -> tuple[int, str]:
+    try:
+        return int(value), value
+    except ValueError:
+        nums = re.findall(r"\d+", value)
+        return (int(nums[0]) if nums else 9999), value
+
+
+def _bay_no(value: object) -> str:
+    """缁熶竴璐濅綅鍙锋牸寮忋€?
+    涓嶅悓婧愭枃浠堕噷鍚屼竴涓礉浣嶅彲鑳藉啓鎴?`5`銆乣5.0` 鎴?`05`銆傚閲忕粺璁″拰璐濅綅瀵硅薄
+    蹇呴』浣跨敤鍚屼竴涓敭锛屽惁鍒欎細鍑虹幇鈥滄槑鏄庢湁绌轰綅锛屼絾鍖哄潡瀹归噺涓?0鈥濈殑鍋囪薄銆?    """
+    text = _norm(value)
+    if text.isdigit() and len(text) == 1:
+        return f"0{text}"
+    return text
+
+
+def _row_no(value: object) -> str:
+    text = _norm(value)
+    if text.isdigit() and len(text) == 1:
+        return f"0{text}"
+    return text
+
+
+def build_problem(
+    data_dir: str | Path,
+    big_plan: list[BigPlanRow],
+    planning_time: datetime = DEFAULT_PLANNING_TIME,
+    horizon_hours: float = 24.0,
+    target_voyages: list[str] | None = None,
+    misplaced_bay_exclusion_ratio: float = DEFAULT_MISPLACED_BAY_EXCLUSION_RATIO,
+) -> ProblemData:
+    """Build medium/small input.
+
+    Big plan volume is the full predicted volume. Medium demand is calculated
+    independently by the rolling time rule, then distributed across the big
+    plan's area/size pattern.
+    """
+    closed = read_closed_areas(data_dir)
+    area_functions = read_area_functions(data_dir)
+    function_areas = set(area_functions)
+    area_quota: dict[tuple[str, str, str], int] = {}
+    area_size_quota: dict[tuple[str, str, str, str], int] = {}
+    assigned_areas: defaultdict[tuple[str, str], set[str]] = defaultdict(set)
+    cleaned_plan: list[BigPlanRow] = []
+    target_voyages = [_voyage(v) for v in (target_voyages or list(DEFAULT_TARGET_VOYAGES))]
+    vessel_schedules = read_target_vessel_schedules(data_dir, target_voyages, planning_time, horizon_hours)
+    plan_date = planning_time.date().isoformat()
+    input_plan = [
+        row for row in big_plan
+        if row.voyage_id in target_voyages and (not row.plan_date or row.plan_date == plan_date)
+    ]
+    allowed_areas = set(function_areas)
+    for row in input_plan:
+        if row.area_no in closed:
+            raise ValueError(f"big plan uses closed area {row.area_no} for voyage {row.voyage_id}")
+        if row.flow not in area_functions.get(row.area_no, set()):
+            continue
+        cleaned_plan.append(row)
+        allowed_areas.add(row.area_no)
+        assigned_areas[(row.voyage_id, row.flow)].add(row.area_no)
+    if not cleaned_plan:
+        raise ValueError("no big-plan rows remain after target-voyage, flow, date, and closed-area filtering")
+
+    groups, _demand_rows = load_port_demand_groups(data_dir, target_voyages, planning_time)
+    small_groups = load_small_doc_groups(data_dir, target_voyages)
+    demand_by_voyage_size: Counter[tuple[str, str, str]] = Counter()
+    for group in groups:
+        demand_by_voyage_size[(group.voyage_id, group.status, group.big_plan_size_mode)] += group.demand
+
+    raw_area_quota: Counter[tuple[str, str, str]] = Counter()
+    raw_area_size_quota: Counter[tuple[str, str, str, str]] = Counter()
+    raw_all_size_area_quota: Counter[tuple[str, str, str]] = Counter()
+    for row in cleaned_plan:
+        raw_area_quota[(row.voyage_id, row.flow, row.area_no)] += row.planned_boxes
+        if row.size_mode == "ALL":
+            raw_all_size_area_quota[(row.voyage_id, row.flow, row.area_no)] += row.planned_boxes
+        else:
+            raw_area_size_quota[(row.voyage_id, row.flow, row.area_no, row.size_mode)] += row.planned_boxes
+
+    for voyage_id in target_voyages:
+        flows = sorted({flow for (v, flow, _size), qty in demand_by_voyage_size.items() if v == voyage_id and qty > 0})
+        for flow in flows:
+            for size_mode in SIZE_MODES:
+                target_qty = demand_by_voyage_size[(voyage_id, flow, size_mode)]
+                if target_qty <= 0:
+                    continue
+                exact_upper = Counter(
+                    {
+                        area_no: qty
+                        for (v, f, area_no, size), qty in raw_area_size_quota.items()
+                        if v == voyage_id and f == flow and size == size_mode and qty > 0
+                    }
+                )
+                if exact_upper:
+                    upper_total = sum(exact_upper.values())
+                    if upper_total < target_qty:
+                        raise ValueError(
+                            f"medium demand exceeds big-plan strict upper bound for "
+                            f"voyage={voyage_id}, flow={flow}, size={size_mode}: "
+                            f"demand={target_qty}, big_plan_upper={upper_total}"
+                        )
+                    for area_no, qty in exact_upper.items():
+                        area_quota[(voyage_id, flow, area_no)] = raw_area_quota[(voyage_id, flow, area_no)]
+                        area_size_quota[(voyage_id, flow, area_no, size_mode)] = qty
+                        assigned_areas[(voyage_id, flow)].add(area_no)
+                    continue
+
+                all_size_weights = Counter(
+                    {
+                        area_no: qty
+                        for (v, f, area_no), qty in raw_all_size_area_quota.items()
+                        if v == voyage_id and f == flow and qty > 0
+                    }
+                )
+                if not all_size_weights:
+                    raise ValueError(f"big plan has no area pattern for voyage={voyage_id}, flow={flow}, size={size_mode}")
+                if sum(all_size_weights.values()) < target_qty:
+                    raise ValueError(
+                        f"medium demand exceeds big-plan ALL-size strict upper bound for "
+                        f"voyage={voyage_id}, flow={flow}, size={size_mode}: "
+                        f"demand={target_qty}, big_plan_upper={sum(all_size_weights.values())}"
+                    )
+                allocations = _allocate_by_weights(dict(all_size_weights), target_qty)
+                for area_no, qty in allocations.items():
+                    if qty <= 0:
+                        continue
+                    area_quota[(voyage_id, flow, area_no)] = raw_area_quota[(voyage_id, flow, area_no)]
+                    area_size_quota[(voyage_id, flow, area_no, size_mode)] = qty
+                    assigned_areas[(voyage_id, flow)].add(area_no)
+
+    voyage_windows = _build_voyage_windows(target_voyages, vessel_schedules, horizon_hours, planning_time)
+    # `planning_time` 是当前运行分配算法的时刻，也是判断堆场已有箱是否仍占用
+    # 容量的快照时刻。不能用开港窗口开始时间覆盖它，否则诊断输出和容量判断
+    # 都会偏到第一个航次的 receive_start。
+    capacity_snapshot_time = planning_time
+    bays = build_bays(
+        data_dir,
+        allowed_areas,
+        closed,
+        planning_time=capacity_snapshot_time,
+        vessel_schedules=vessel_schedules,
+        target_voyages=set(target_voyages),
+        area_functions=area_functions,
+        misplaced_bay_exclusion_ratio=misplaced_bay_exclusion_ratio,
+    )
+    area_operations = build_area_operations(data_dir, vessel_schedules)
+    berth_distances = read_berth_distances(data_dir)
+    berth_by_voyage = {
+        voyage_id: f"B{vessel_schedules[voyage_id].berth_no}"
+        for voyage_id in target_voyages
+        if voyage_id in vessel_schedules and vessel_schedules[voyage_id].berth_no
+    }
+    return ProblemData(
+        groups=groups,
+        small_groups=small_groups,
+        bays=bays,
+        big_plan=cleaned_plan,
+        assigned_areas=dict(assigned_areas),
+        area_quota=area_quota,
+        area_size_quota=area_size_quota,
+        area_functions=area_functions,
+        business_special_codes=_collect_business_special_codes(groups),
+        planning_time=capacity_snapshot_time,
+        horizon_hours=horizon_hours,
+        voyage_windows=voyage_windows,
+        area_operations=area_operations,
+        target_voyages=target_voyages,
+        berth_distances=berth_distances,
+        berth_by_voyage=berth_by_voyage,
+        tops_reserved_slot_count=getattr(build_bays, "last_reserved_count", 0),
+        tops_closed_bay_count=getattr(build_bays, "last_tops_closed_bay_count", 0),
+        misplaced_bay_exclusion_ratio=misplaced_bay_exclusion_ratio,
+        misplaced_excluded_bay_count=getattr(build_bays, "last_misplaced_excluded_bay_count", 0),
+    )
+
+
+def _build_voyage_windows(
+    voyage_ids: list[str],
+    schedules: dict[str, VoyageSchedule],
+    horizon_hours: float,
+    fallback_start: datetime,
+) -> dict[str, tuple[datetime, datetime]]:
+    windows: dict[str, tuple[datetime, datetime]] = {}
+    for voyage_id in voyage_ids:
+        start = schedules[voyage_id].receive_start if voyage_id in schedules else fallback_start
+        windows[voyage_id] = (start, start + timedelta(hours=horizon_hours))
+    return windows
+
+
+def _collect_business_special_codes(groups: list[BoxGroup]) -> set[str]:
+    out: set[str] = set()
+    for group in groups:
+        out.update(group.special_codes)
+    return out
