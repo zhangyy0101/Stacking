@@ -182,6 +182,9 @@ class SAConfig:
     # 软约束权重。硬约束由 move feasibility 检查保证；这里的权重只影响偏好。
     group_area_split_penalty: float = 0.0
     group_area_balance_penalty: float = 18.0
+    medium_concentrated_group_threshold: int = 26
+    medium_small_group_area_split_penalty: float = 28.0
+    medium_small_group_fragment_penalty: float = 0.8
     big_plan_area_deviation_penalty: float = 1.5
     non_big_plan_area_penalty: float = 50.0
     berth_distance_penalty: float = 0.02

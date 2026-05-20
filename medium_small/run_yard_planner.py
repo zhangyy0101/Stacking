@@ -32,9 +32,9 @@ def main() -> None:
     parser.add_argument(
         "--big-plan",
         type=Path,
-        default=Path(__file__).resolve().parent.parent / "outputs_large" / "latest_run" / "allocation.csv",
+        default=Path(__file__).resolve().parent.parent / "large" / "outputs_large" / "latest_run" / "allocation.csv",
         help=(
-            "Existing big-plan CSV. The default is outputs_large/latest_run/allocation.csv. "
+            "Existing big-plan CSV. The default is large/outputs_large/latest_run/allocation.csv. "
             "For allocation.csv input, flow is preserved; missing flow defaults to OF. Supported columns include "
             "voy_id,flow,area_no,size,planned_qty or "
             "voyage_id,area_no,qty_20,qty_40[,plan_date] or "
@@ -93,6 +93,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--medium-concentrated-group-threshold",
+        type=int,
+        default=26,
+        help=(
+            "Medium-plan coarse groups with demand at or below this threshold prefer concentrated "
+            "yard-area assignment instead of proportional area balancing. Use 0 to disable."
+        ),
+    )
+    parser.add_argument(
         "--misplaced-bay-exclusion-ratio",
         type=float,
         default=DEFAULT_MISPLACED_BAY_EXCLUSION_RATIO,
@@ -143,6 +152,7 @@ def main() -> None:
         small_plan_check_every=args.small_plan_check_every,
         small_plan_proxy_height_capacity_penalty=args.small_plan_proxy_height_capacity_penalty,
         small_plan_proxy_every=args.small_plan_proxy_every,
+        medium_concentrated_group_threshold=args.medium_concentrated_group_threshold,
     )
     solver = SimulatedAnnealingSolver(problem, config)
     log("starting simulated annealing and small-plan construction")
@@ -234,7 +244,14 @@ def discover_data_dir(data_dir: Path | None) -> Path:
                 continue
             if not required_files.issubset(filenames):
                 continue
-            if all(any(candidate.glob(pattern)) for pattern in required_patterns):
+            has_container_info = any(candidate.glob("container_info_*.parquet"))
+            has_prediction = any(candidate.glob("predict_data_*.xlsx"))
+            has_area_function = all(
+                any(candidate.glob(pattern))
+                for pattern in required_patterns
+                if pattern not in {"container_info_*.parquet", "predict_data_*.xlsx"}
+            )
+            if has_container_info and has_prediction and has_area_function:
                 return candidate.resolve()
     raise FileNotFoundError(
         "No data directory found. Expected a directory containing bay_slots_detail.parquet, "

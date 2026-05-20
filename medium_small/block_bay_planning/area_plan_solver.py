@@ -168,7 +168,22 @@ class AreaPlanSolverMixin:
             return allocations
 
         preferred = {area: qty for area, qty in weights.items() if area in candidates and qty > 0}
-        if preferred:
+        if preferred and self._prefers_concentrated_medium_group(group):
+            for area_no in sorted(
+                preferred,
+                key=lambda area: (
+                    0 if self._area_free_capacity(group, area, area_load, area_size_load, quota_load) >= group.demand else 1,
+                    -self._area_free_capacity(group, area, area_load, area_size_load, quota_load),
+                    -weights.get(area, 0),
+                    area,
+                ),
+            ):
+                free = self._area_free_capacity(group, area_no, area_load, area_size_load, quota_load)
+                take = min(group.demand, free)
+                if take > 0:
+                    allocations[area_no] += take
+                    break
+        elif preferred:
             proportional = self._allocate_by_weights(preferred, group.demand)
             for area_no, qty in proportional.items():
                 free = self._area_free_capacity(group, area_no, area_load, area_size_load, quota_load)
@@ -180,9 +195,10 @@ class AreaPlanSolverMixin:
         if remaining <= 0:
             return allocations
 
-        def fill_key(area_no: str) -> tuple[int, int, str]:
+        def fill_key(area_no: str) -> tuple[int, int, int, str]:
             in_big_plan = area_no in self.problem.assigned_areas.get((group.voyage_id, group.status), set())
-            return (0 if in_big_plan else 1, -weights.get(area_no, 0), area_no)
+            free = self._area_free_capacity(group, area_no, area_load, area_size_load, quota_load)
+            return (0 if in_big_plan else 1, 0 if free >= remaining else 1, -weights.get(area_no, 0), area_no)
 
         for area_no in sorted(candidates, key=fill_key):
             trial_area_load = area_load + allocations
@@ -362,7 +378,10 @@ class AreaPlanSolverMixin:
 
         for group in self.problem.groups:
             energy += self.config.group_area_split_penalty * max(0, len(group_areas[group.group_id]) - 1)
-            energy += self._group_area_balance_energy(group, group_area_count)
+            if self._prefers_concentrated_medium_group(group):
+                energy += self._group_area_concentration_energy(group, group_area_count)
+            else:
+                energy += self._group_area_balance_energy(group, group_area_count)
         energy += self._big_plan_deviation_energy(area_size_count)
 
         for voyage_id, area_no in voyage_areas:
@@ -426,6 +445,24 @@ class AreaPlanSolverMixin:
             actual = group_area_count.get((group.group_id, area), 0)
             penalty += abs(actual - expected) / max(1.0, group.demand)
         return self.config.group_area_balance_penalty * penalty
+
+    def _prefers_concentrated_medium_group(self, group: BoxGroup) -> bool:
+        threshold = int(getattr(self.config, "medium_concentrated_group_threshold", 26) or 0)
+        return threshold > 0 and group.demand <= threshold
+
+    def _group_area_concentration_energy(self, group: BoxGroup, group_area_count: dict[tuple[str, str], int]) -> float:
+        counts = [
+            qty
+            for (group_id, _area_no), qty in group_area_count.items()
+            if group_id == group.group_id and qty > 0
+        ]
+        if len(counts) <= 1:
+            return 0.0
+        split_penalty = getattr(self.config, "medium_small_group_area_split_penalty", 28.0)
+        fragment_penalty = getattr(self.config, "medium_small_group_fragment_penalty", 0.8)
+        largest = max(counts)
+        fragments = group.demand - largest
+        return split_penalty * (len(counts) - 1) + fragment_penalty * fragments
 
     @staticmethod
     def _copy_assignment(assignment: MediumAssignment) -> MediumAssignment:

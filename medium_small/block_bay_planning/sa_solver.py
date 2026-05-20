@@ -173,6 +173,11 @@ class SimulatedAnnealingSolver(AreaPlanSolverMixin):
             ),
             "berth_distance_policy": "medium-plan soft constraint: prefer yard areas closer to the voyage berth",
             "attribute_balance_policy": "medium-plan soft constraint: distribute each flow/discharge-port/size attribute group across areas following the big-plan area pattern",
+            "medium_concentrated_group_threshold": self.config.medium_concentrated_group_threshold,
+            "medium_small_group_policy": (
+                "medium-plan coarse groups at or below the threshold prefer concentrated yard-area assignment; "
+                "larger groups keep proportional area balancing"
+            ),
             "big_plan_area_policy": (
                 "big-plan voyage/flow/area/size quantities are strict upper bounds; "
                 "medium-plan SA may rebalance within those inherited bounds but cannot use "
@@ -180,8 +185,9 @@ class SimulatedAnnealingSolver(AreaPlanSolverMixin):
             ),
             "tops_policy": "TOPS bay ranges for non-target voyages are closed before medium and small planning; TOPS records for target voyages are ignored",
             "small_plan_six_bay_policy": (
-                "small plan prefers dynamic six-small-bay continuous blocks for one fine group; "
-                "different sizes may share that preferred block but cannot share the same bay"
+                "small plan prefers dynamic six-small-bay continuous blocks first for one fine group "
+                "and then for the same voyage/flow/discharge-port/size coarse group; different sizes "
+                "may share that preferred block but cannot share the same bay"
             ),
             "small_plan_proxy_policy": (
                 "medium-plan simulated annealing includes a lightweight small-plan proxy score "
@@ -351,7 +357,9 @@ class SimulatedAnnealingSolver(AreaPlanSolverMixin):
         bay_used_size: dict[str, str] = {}
         bay_used_height: dict[str, str] = {}
         bay_affinity: dict[str, tuple] = {}
+        bay_coarse_affinity: dict[str, tuple] = {}
         block_affinity: dict[str, tuple] = {}
+        block_coarse_affinity: dict[str, tuple] = {}
         small_counter: Counter[tuple] = Counter()
         block_members_by_id: dict[str, tuple[str, ...]] = {}
 
@@ -366,7 +374,9 @@ class SimulatedAnnealingSolver(AreaPlanSolverMixin):
                     bay_used_size,
                     bay_used_height,
                     bay_affinity,
+                    bay_coarse_affinity,
                     block_affinity,
+                    block_coarse_affinity,
                     area_has_45,
                 ):
                     bay = self.bays[bay_key]
@@ -397,8 +407,10 @@ class SimulatedAnnealingSolver(AreaPlanSolverMixin):
                     bay_used_size[bay_key] = group.size
                     bay_used_height[bay_key] = group.height
                     bay_affinity.setdefault(bay_key, self._small_affinity(group))
+                    bay_coarse_affinity.setdefault(bay_key, self._small_coarse_affinity(group))
                     if block_id:
                         block_affinity.setdefault(block_id, self._small_affinity(group))
+                        block_coarse_affinity.setdefault(block_id, self._small_coarse_affinity(group))
                         block_members_by_id.setdefault(block_id, self._small_block_bay_nos(area_no, block_id))
                     remaining -= take
                     if remaining == 0:
@@ -583,6 +595,7 @@ class SimulatedAnnealingSolver(AreaPlanSolverMixin):
                     if qty > 0
                 }
             )
+            preferred_areas: Counter[str] = Counter()
             for group in sorted(groups, key=self._small_group_difficulty_key):
                 group_alloc = self._allocate_small_group_to_concentrated_areas(
                     group,
@@ -590,6 +603,7 @@ class SimulatedAnnealingSolver(AreaPlanSolverMixin):
                     weights,
                     remaining_height_cap,
                     remaining_inherited_cap,
+                    preferred_areas,
                 )
                 if sum(group_alloc.values()) != group.demand:
                     area_no = next((area for area, qty in weights.items() if qty > 0), "")
@@ -610,6 +624,7 @@ class SimulatedAnnealingSolver(AreaPlanSolverMixin):
                     remaining_pool[area_no] -= qty
                     remaining_inherited_cap[area_no] -= qty
                     remaining_height_cap[(area_no, group.size, group.height)] -= qty
+                    preferred_areas[area_no] += qty
         return allocations
 
     def _allocate_small_group_to_concentrated_areas(
@@ -619,9 +634,11 @@ class SimulatedAnnealingSolver(AreaPlanSolverMixin):
         weights: Counter[str],
         remaining_height_cap: Counter[tuple[str, str, str]],
         remaining_inherited_cap: Counter[str],
+        preferred_areas: Counter[str] | None = None,
     ) -> dict[str, int]:
         allocation: Counter[str] = Counter()
         remaining = group.demand
+        preferred_areas = preferred_areas or Counter()
         candidates = [
             area_no
             for area_no, qty in weights.items()
@@ -635,7 +652,9 @@ class SimulatedAnnealingSolver(AreaPlanSolverMixin):
         ]
         candidates.sort(
             key=lambda area_no: (
+                0 if not preferred_areas or preferred_areas[area_no] > 0 else 1,
                 0 if remaining_pool[area_no] >= group.demand else 1,
+                -preferred_areas[area_no],
                 -remaining_height_cap[(area_no, group.size, group.height)],
                 -remaining_pool[area_no],
                 -weights[area_no],
@@ -739,7 +758,9 @@ class SimulatedAnnealingSolver(AreaPlanSolverMixin):
         bay_used_size: dict[str, str],
         bay_used_height: dict[str, str],
         bay_affinity: dict[str, tuple],
+        bay_coarse_affinity: dict[str, tuple],
         block_affinity: dict[str, tuple],
+        block_coarse_affinity: dict[str, tuple],
         area_has_45: set[str],
     ) -> list[str]:
         candidates = [
@@ -756,8 +777,8 @@ class SimulatedAnnealingSolver(AreaPlanSolverMixin):
         return sorted(
             candidates,
             key=lambda bay_key: (
-                self._small_block_score(group, area_no, bay_key, block_affinity),
-                self._bay_affinity_score(group, bay_key, bay_affinity),
+                self._small_block_score(group, area_no, bay_key, block_affinity, block_coarse_affinity),
+                self._bay_affinity_score(group, bay_key, bay_affinity, bay_coarse_affinity),
                 self.bays[bay_key].is_fallback_bay,
                 0 if group.port in self.bays[bay_key].existing_ports else 1,
                 bay_load[bay_key],
@@ -811,7 +832,21 @@ class SimulatedAnnealingSolver(AreaPlanSolverMixin):
             group.special_stow_code,
         )
 
-    def _bay_affinity_score(self, group, bay_key: str, bay_affinity: dict[str, tuple]) -> int:
+    def _small_coarse_affinity(self, group) -> tuple:
+        return (
+            group.voyage_id,
+            group.status,
+            group.port,
+            group.size,
+        )
+
+    def _bay_affinity_score(
+        self,
+        group,
+        bay_key: str,
+        bay_affinity: dict[str, tuple],
+        bay_coarse_affinity: dict[str, tuple],
+    ) -> int:
         affinity = bay_affinity.get(bay_key)
         group_is_isolated = group.pre_stow or group.special_stow
         if affinity is None:
@@ -821,6 +856,8 @@ class SimulatedAnnealingSolver(AreaPlanSolverMixin):
         affinity_is_isolated = bool(affinity[-2] or affinity[-1])
         if group_is_isolated or affinity_is_isolated:
             return self.config.special_stow_isolation_penalty
+        if bay_coarse_affinity.get(bay_key) == self._small_coarse_affinity(group):
+            return 1
         return 5
 
     def _small_block_score(
@@ -829,6 +866,7 @@ class SimulatedAnnealingSolver(AreaPlanSolverMixin):
         area_no: str,
         bay_key: str,
         block_affinity: dict[str, tuple],
+        block_coarse_affinity: dict[str, tuple],
     ) -> int:
         block_id = self._small_block_id_for_bay(area_no, bay_key)
         if not block_id:
@@ -842,6 +880,8 @@ class SimulatedAnnealingSolver(AreaPlanSolverMixin):
         affinity_is_isolated = bool(affinity[-2] or affinity[-1])
         if group_is_isolated or affinity_is_isolated:
             return max(30, int(self.config.special_stow_isolation_penalty * 2))
+        if block_coarse_affinity.get(block_id) == self._small_coarse_affinity(group):
+            return 0
         return max(15, int(self.config.small_plan_proxy_six_block_conflict_penalty))
 
     def _small_block_id_for_bay(self, area_no: str, bay_key: str) -> str:
