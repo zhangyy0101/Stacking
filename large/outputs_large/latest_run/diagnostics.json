@@ -78,19 +78,19 @@
     }
   },
   "status": "OPTIMAL",
-  "objective_value": 75864.85240158331,
-  "best_bound": 75138.69031021402,
-  "mip_gap": 0.00957178546298911,
-  "runtime": 0.1419999599456787,
+  "objective_value": 75105.07922047339,
+  "best_bound": 74378.43322217543,
+  "mip_gap": 0.009675058009923201,
+  "runtime": 0.17100000381469727,
   "objective_components": {
     "miss": 0.0,
     "operation": 0.0,
-    "of_area": 22.0,
-    "distance": 2462.6950800527784,
-    "distance_raw": 21811245.97142858,
+    "of_area": 19.0,
+    "distance": 2460.369307349114,
+    "distance_raw": 21790647.400000002,
     "share": 7.0,
     "adjustment": 0.0,
-    "balance": 964.0
+    "balance": 394.0
   },
   "unmet20": {},
   "unmet40": {},
@@ -106,11 +106,11 @@
   },
   "of_area_overage": {
     "453334": 4.0,
-    "453400": 18.0
+    "453400": 15.0
   },
   "of_area_used_count": {
     "453334": 10,
-    "453400": 30
+    "453400": 27
   },
   "allocation_total_wrong_function_rows": 100,
   "allocation_new_wrong_function_rows": 0

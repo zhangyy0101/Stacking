@@ -10,7 +10,14 @@ import numpy as np
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-from planning_large_main import discover_area_function_file, discover_data_dir, normalize_code
+from planning_large_main import (
+    discover_area_function_file,
+    discover_data_dir,
+    project_root_from,
+    resolve_input_path,
+    resolve_output_path,
+    normalize_code,
+)
 
 try:
     from scipy import ndimage
@@ -24,7 +31,7 @@ DEFAULT_OUTPUT_DIR = Path("outputs_large/yard_visualization")
 ANNOTATION_Y_OFFSET = -10
 
 
-def resolve_base_image(path: Path) -> Path:
+def resolve_base_image(path: Path, base_dir: Path | None = None) -> Path:
     """
     功能：
         确定箱区俯视示意图底图路径。
@@ -39,9 +46,19 @@ def resolve_base_image(path: Path) -> Path:
         FileNotFoundError: 指定路径和自动候选路径均不存在时抛出。
     """
 
-    if path.exists():
-        return path
-    candidates = sorted(Path.cwd().glob("*.png"), key=lambda p: p.stat().st_size)
+    base_dir = base_dir or Path(__file__).resolve().parent
+    resolved = resolve_input_path(path, base_dir)
+    if resolved.exists():
+        return resolved
+
+    search_roots: list[Path] = []
+    for root in [Path.cwd().resolve(), base_dir.resolve(), project_root_from(base_dir)]:
+        if root.is_dir() and root not in search_roots:
+            search_roots.append(root)
+    candidates = sorted(
+        [candidate for root in search_roots for candidate in root.glob("*.png")],
+        key=lambda p: (0 if "原始" in p.name else 1, p.name),
+    )
     for candidate in candidates:
         if "示意" in candidate.name:
             return candidate
@@ -525,9 +542,10 @@ def main() -> None:
     """
 
     args = parse_args()
-    base_image_path = resolve_base_image(args.base_image)
-    allocation_path = args.allocation
-    output_dir = args.output_dir
+    base_dir = Path(__file__).resolve().parent
+    base_image_path = resolve_base_image(args.base_image, base_dir)
+    allocation_path = resolve_input_path(args.allocation, base_dir)
+    output_dir = resolve_output_path(args.output_dir, base_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     blank = Image.open(base_image_path).convert("RGBA")
