@@ -487,6 +487,36 @@ class SimulatedAnnealingSolver(AreaPlanSolverMixin):
             )
         return rows
 
+    def make_small_rows_from_medium_rows(self, medium_rows: list[dict]) -> list[dict]:
+        """Construct the small plan from externally supplied medium-plan rows.
+
+        The expected row format is the existing medium output CSV schema:
+        voyage_id, flow, port, size, area_no, planned_boxes. Extra columns are
+        ignored.
+        """
+        medium_counter: Counter[tuple] = Counter()
+        required = {"voyage_id", "flow", "port", "size", "area_no", "planned_boxes"}
+        for index, row in enumerate(medium_rows, start=1):
+            missing = [column for column in required if column not in row]
+            if missing:
+                raise ValueError(f"medium plan row {index} missing columns: {missing}")
+            try:
+                planned_boxes = int(round(float(row.get("planned_boxes") or 0)))
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"medium plan row {index} has invalid planned_boxes: {row.get('planned_boxes')!r}") from exc
+            if planned_boxes <= 0:
+                continue
+            medium_counter[
+                (
+                    str(row.get("voyage_id", "")).strip(),
+                    str(row.get("flow", "")).strip(),
+                    str(row.get("port", "")).strip(),
+                    str(row.get("size", "")).strip(),
+                    str(row.get("area_no", "")).strip(),
+                )
+            ] += planned_boxes
+        return self._make_doc_small_rows(medium_counter)
+
     def _small_plan_proxy_energy_from_assignment(self, medium_assignment: MediumAssignment) -> float:
         coarse_weights: defaultdict[tuple[str, str, str, str], Counter[str]] = defaultdict(Counter)
         groups_by_id = {group.group_id: group for group in self.problem.groups}

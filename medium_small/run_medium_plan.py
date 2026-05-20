@@ -15,15 +15,14 @@ from block_bay_planning.runner import (
     log,
     make_sa_config,
     write_medium_artifacts,
-    write_small_artifacts,
 )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Solve the medium yard plan from an existing big-plan CSV using simulated annealing, "
-            "then construct the small bay plan from document-container groups."
+            "Solve only the medium yard plan. The medium search still scores and probes "
+            "small-plan feasibility, but only medium-plan outputs are written."
         )
     )
     add_common_arguments(parser)
@@ -32,7 +31,7 @@ def main() -> None:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path(__file__).resolve().parent / "outputs" / "sa_plan",
+        default=Path(__file__).resolve().parent / "outputs" / "medium_plan",
     )
     args = parser.parse_args()
 
@@ -42,23 +41,20 @@ def main() -> None:
     log(f"output directory: {output_dir}")
 
     log("calculating medium demand by discharge port")
-    demand_rows = calculate_and_write_demand(data_dir, output_dir, args, planning_time)
+    calculate_and_write_demand(data_dir, output_dir, args, planning_time)
 
     config = make_sa_config(args)
     solver = SimulatedAnnealingSolver(problem, config)
-    log("starting simulated annealing and small-plan construction")
+    log("starting medium simulated annealing with small-plan feasibility scoring")
     result = solver.solve()
 
-    log("writing medium and small plan outputs")
+    log("writing medium plan outputs")
     write_medium_artifacts(output_dir, result, problem, demand_rows=None)
-    write_small_artifacts(output_dir, result.small_rows)
 
     print(json.dumps(result.diagnostics, ensure_ascii=False, indent=2))
     print(f"output_dir: {output_dir}")
     print(f"medium_demand_by_port: {output_dir / 'medium_demand_by_port.csv'}")
     print(f"medium_plan: {output_dir / 'medium_plan.csv'}")
-    print(f"small_plan: {output_dir / 'small_plan.csv'}")
-    print(f"small_plan_six_bay_blocks: {output_dir / 'small_plan_six_bay_blocks.csv'}")
     print(f"diagnostics: {output_dir / 'diagnostics.json'}")
     log("done")
 
