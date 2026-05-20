@@ -1,0 +1,12 @@
+Traceback (most recent call last):
+  File "E:\container_terminal\stacking\flat_full_yard_plan_2\run_flat_full_yard_plan.py", line 267, in <module>
+    main()
+  File "E:\container_terminal\stacking\flat_full_yard_plan_2\run_flat_full_yard_plan.py", line 100, in main
+    artifacts, state = build_large_inputs(
+  File "E:\container_terminal\stacking\flat_full_yard_plan_2\flat_yard_plan_data_io.py", line 1164, in build_large_inputs
+    of_work_lanes = {
+  File "E:\container_terminal\stacking\flat_full_yard_plan_2\flat_yard_plan_data_io.py", line 1165, in <dictcomp>
+    vessel: read_prediction_work_lanes(find_prediction_file(data_dir, vessel))
+  File "E:\container_terminal\stacking\flat_full_yard_plan_2\flat_yard_plan_data_io.py", line 915, in read_prediction_work_lanes
+    raise ValueError(f"No positive work-lane count in {path}")
+ValueError: No positive work-lane count in E:\container_terminal\stacking\flat_full_yard_plan_2\predict_data_454447.xlsx

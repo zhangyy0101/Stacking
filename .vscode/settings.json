@@ -1,3 +1,7 @@
 {
-  "python.defaultInterpreterPath": "F:\\anaconda\\python.exe"
+  "python.defaultInterpreterPath": "F:\\anaconda\\python.exe",
+  "python.envFile": "${workspaceFolder}/.vscode/python.env",
+  "terminal.integrated.env.windows": {
+    "PYTHONDONTWRITEBYTECODE": "1"
+  }
 }

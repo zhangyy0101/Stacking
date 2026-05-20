@@ -304,6 +304,17 @@ def build_daily_rolling_yard_model(
     of_area_used = model.addVars(OF_area_vessels, A, vtype=GRB.BINARY, name="of_area_used")
     of_area_over = model.addVars(OF_area_vessels, vtype=GRB.CONTINUOUS, lb=0, name="of_area_over")
 
+    # OF balance range variables. These only apply to export vessels with OF work lanes.
+    of_balance_u20 = model.addVars(OF_area_vessels, vtype=GRB.CONTINUOUS, lb=0, name="of_balance_u20")
+    of_balance_l20 = model.addVars(OF_area_vessels, vtype=GRB.CONTINUOUS, lb=0, name="of_balance_l20")
+    of_balance_u40 = model.addVars(OF_area_vessels, vtype=GRB.CONTINUOUS, lb=0, name="of_balance_u40")
+    of_balance_l40 = model.addVars(OF_area_vessels, vtype=GRB.CONTINUOUS, lb=0, name="of_balance_l40")
+    for v in OF_area_vessels:
+        of_balance_u20[v].UB = max(0.0, params["D20"][v, "OF"])
+        of_balance_l20[v].UB = max(0.0, params["D20"][v, "OF"])
+        of_balance_u40[v].UB = max(0.0, params["D40"][v, "OF"])
+        of_balance_l40[v].UB = max(0.0, params["D40"][v, "OF"])
+
     # -------------------------
     # 约束 1：需求满足约束
     # sum_a X[v,f,a] + s[v,f] = D[v,f]
@@ -507,11 +518,27 @@ def build_daily_rolling_yard_model(
     # X20[v,f,a] <= m20[v,f]，X40[v,f,a] <= m40[v,f]
     # 最小化 m 后，同一航次/流向/箱型不会过度集中到单个箱区。
     # -------------------------
-    for v in V:
-        for f in F:
+    if "OF" in F:
+        for v in OF_area_vessels:
+            big_m20 = max(0.0, params["D20"][v, "OF"])
+            big_m40 = max(0.0, params["D40"][v, "OF"])
             for a in A:
-                model.addConstr(X20[v, f, a] <= m20[v, f], name=f"balance20[{v},{f},{a}]")
-                model.addConstr(X40[v, f, a] <= m40[v, f], name=f"balance40[{v},{f},{a}]")
+                model.addConstr(
+                    X20[v, "OF", a] <= of_balance_u20[v],
+                    name=f"of_balance20_upper[{v},{a}]",
+                )
+                model.addConstr(
+                    X40[v, "OF", a] <= of_balance_u40[v],
+                    name=f"of_balance40_upper[{v},{a}]",
+                )
+                model.addConstr(
+                    X20[v, "OF", a] >= of_balance_l20[v] - big_m20 * (1 - of_area_used[v, a]),
+                    name=f"of_balance20_lower[{v},{a}]",
+                )
+                model.addConstr(
+                    X40[v, "OF", a] >= of_balance_l40[v] - big_m40 * (1 - of_area_used[v, a]),
+                    name=f"of_balance40_lower[{v},{a}]",
+                )
 
     # -------------------------
     # 目标函数分项
@@ -556,7 +583,10 @@ def build_daily_rolling_yard_model(
     Z_of_area = gp.quicksum(of_area_over[v] for v in OF_area_vessels)
 
     # Z_bal：20/40 箱型分布均衡惩罚。
-    Z_bal = gp.quicksum(m20[v, f] + m40[v, f] for v in V for f in F)
+    Z_bal = gp.quicksum(
+        (of_balance_u20[v] - of_balance_l20[v]) + (of_balance_u40[v] - of_balance_l40[v])
+        for v in OF_area_vessels
+    )
 
     # 综合目标函数：按业务优先级加权求和并最小化。
     model.setObjective(
@@ -586,6 +616,10 @@ def build_daily_rolling_yard_model(
         "s40": s40,
         "of_area_used": of_area_used,
         "of_area_over": of_area_over,
+        "of_balance_u20": of_balance_u20,
+        "of_balance_l20": of_balance_l20,
+        "of_balance_u40": of_balance_u40,
+        "of_balance_l40": of_balance_l40,
         "objective_components": {
             "miss": Z_miss,
             "operation": Z_op,

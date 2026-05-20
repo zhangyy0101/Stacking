@@ -1,0 +1,22 @@
+Flat data directory: E:\container_terminal\stacking\flat_full_yard_plan
+Run output directory: E:\container_terminal\stacking\flat_full_yard_plan\full_plan_outputs\run_flat_20260519_211859
+
+[1/2] Building flat-data large-plan inputs
+planning_time: 2026-05-08 09:30:00
+export_vessels: ['453334', '453400']
+import_vessels: ['453886', '454063']
+berth_by_vessel: {'453334': 'B3', '453400': 'B6', '453886': 'B4', '454063': 'B1'}
+area_count: 158
+flows: ['IF', 'IZ', 'OF', 'OZ', 'T']
+demand20_total: 1139.0
+demand40_total: 4501.0
+capacity20_equiv_total: 61491.0
+capacity20_direct_total: 58333.0
+capacity40_total: 61240.0
+bad_bay_count: 0
+active_tops_rows: 424
+old_vessels: []
+of_work_lanes: {'453334': 3.0, '453400': 6.0, '453886': 0.0, '454063': 0.0}
+of_area_limits: {'453334': 6.0, '453400': 12.0, '453886': 0.0, '454063': 0.0}
+
+[1/2] Solving large plan with weighted objectives
