@@ -459,6 +459,74 @@ def build_current_case_data(
     )
 
 
+def project_root_from(base_dir: Path) -> Path:
+    """
+    Return the repository root for both the old flat layout and the new large/
+    subdirectory layout.
+    """
+
+    base_dir = base_dir.resolve()
+    if (base_dir / "large").is_dir() or (base_dir / "medium_small").is_dir():
+        return base_dir
+    if (base_dir.parent / "large").is_dir() or (base_dir.parent / "medium_small").is_dir():
+        return base_dir.parent
+    return base_dir
+
+
+def _unique_paths(paths: Iterable[Path]) -> list[Path]:
+    result: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        resolved = path.resolve()
+        key = str(resolved).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(resolved)
+    return result
+
+
+def _search_roots(base_dir: Path) -> list[Path]:
+    project_root = project_root_from(base_dir)
+    return _unique_paths([base_dir, project_root, project_root / "large", Path.cwd()])
+
+
+def resolve_input_path(path: Path, base_dir: Path) -> Path:
+    """
+    Resolve a user supplied input path against cwd, script dir, and repo root.
+    """
+
+    path = Path(path)
+    if path.is_absolute():
+        return path.resolve()
+    candidates = _unique_paths([Path.cwd() / path, *[root / path for root in _search_roots(base_dir)]])
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+def resolve_output_path(path: Path, base_dir: Path) -> Path:
+    """
+    Keep relative outputs under the large/ script directory.
+    """
+
+    path = Path(path)
+    if path.is_absolute():
+        return path.resolve()
+    return (base_dir / path).resolve()
+
+
+def _looks_like_planning_data_dir(path: Path) -> bool:
+    required = [
+        "vessel_berth_info_new.csv",
+        "tops_plan_info.parquet",
+        "bay_slots_detail.parquet",
+        "箱区功能.xlsx",
+    ]
+    return all((path / name).exists() for name in required)
+
+
 def discover_data_dir(base_dir: Path, data_dir: Optional[Path]) -> Path:
     """
     功能：
@@ -475,11 +543,23 @@ def discover_data_dir(base_dir: Path, data_dir: Optional[Path]) -> Path:
         FileNotFoundError: 未显式指定目录且无法唯一找到包含 ``20260508`` 的数据目录时抛出。
     """
     if data_dir is not None:
-        return data_dir.resolve()
-    candidates = [p for p in base_dir.iterdir() if p.is_dir() and "20260508" in p.name]
-    if len(candidates) != 1:
-        raise FileNotFoundError(f"Expected one 20260508 data directory, found: {candidates}")
-    return candidates[0]
+        resolved = resolve_input_path(data_dir, base_dir)
+        if not resolved.is_dir():
+            raise FileNotFoundError(f"Data directory does not exist: {resolved}")
+        return resolved
+
+    candidates: list[Path] = []
+    for root in _search_roots(base_dir):
+        if not root.is_dir():
+            continue
+        candidates.extend(p for p in root.iterdir() if p.is_dir() and "20260508" in p.name)
+    candidates = _unique_paths(candidates)
+    usable = [p for p in candidates if _looks_like_planning_data_dir(p)]
+    if len(usable) == 1:
+        return usable[0]
+    if len(candidates) == 1:
+        return candidates[0]
+    raise FileNotFoundError(f"Expected one 20260508 data directory, found: {candidates}")
 
 
 def discover_area_function_file(data_dir: Path) -> Path:
@@ -522,15 +602,18 @@ def discover_distance_matrix(base_dir: Path) -> Path:
     异常：
         FileNotFoundError: 未找到符合工作表数量特征的距离矩阵工作簿时抛出。
     """
-    for path in base_dir.iterdir():
-        if path.suffix.lower() not in {".xlsx", ".xls"} or path.name.startswith("~"):
+    for root in _search_roots(base_dir):
+        if not root.is_dir():
             continue
-        try:
-            xls = pd.ExcelFile(path)
-        except Exception:
-            continue
-        if len(xls.sheet_names) >= 5:
-            return path
+        for path in root.iterdir():
+            if path.suffix.lower() not in {".xlsx", ".xls"} or path.name.startswith("~"):
+                continue
+            try:
+                xls = pd.ExcelFile(path)
+            except Exception:
+                continue
+            if len(xls.sheet_names) >= 5:
+                return path
     raise FileNotFoundError("Could not find the berth-area distance matrix workbook.")
 
 
@@ -1715,7 +1798,7 @@ def main() -> None:
     args = parse_args()
     base_dir = Path(__file__).resolve().parent
     planning_time = pd.Timestamp(args.planning_time)
-    state = RollingPlanningState((base_dir / args.state_dir).resolve())
+    state = RollingPlanningState(resolve_output_path(args.state_dir, base_dir))
     flow_aliases = {} if args.disable_default_flow_aliases else DEFAULT_FLOW_ALIASES
 
     artifacts = build_current_case_data(
@@ -1739,8 +1822,9 @@ def main() -> None:
     if not args.no_write_state and solution.objective_value is not None:
         state_rows = state.append_solution(planning_time, solution)
         print(f"State rows appended: {len(state_rows)} -> {state.plan_history_path}")
-    write_run_outputs((base_dir / args.output_dir).resolve(), artifacts, solution, state_rows)
-    print(f"Run outputs written to: {(base_dir / args.output_dir).resolve()}")
+    output_dir = resolve_output_path(args.output_dir, base_dir)
+    write_run_outputs(output_dir, artifacts, solution, state_rows)
+    print(f"Run outputs written to: {output_dir}")
 
 
 def print_case_summary(artifacts: PlanningInputArtifacts) -> None:

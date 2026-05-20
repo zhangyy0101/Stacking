@@ -1,0 +1,37 @@
+Flat data directory: E:\container_terminal\stacking\flat_full_yard_plan_2
+Run output directory: E:\container_terminal\stacking\flat_full_yard_plan_2\full_plan_outputs\run_flat2_20260520_153000
+export_vessels: ['453308', '453324', '453352', '453356', '453388', '453396', '453412', '453416', '454447', '454585']
+import_vessels: ['453273', '453307', '454548']
+
+[1/2] Building flat-data large-plan inputs
+planning_time: 2026-05-19 09:30:00
+export_vessels: ['453308', '453324', '453352', '453356', '453388', '453396', '453412', '453416', '454447', '454585']
+import_vessels: ['453273', '453307', '454548']
+berth_by_vessel: {'453308': 'B4', '453324': 'B6', '453352': 'B2', '453356': 'B2', '453388': 'B3', '453396': 'B6', '453412': 'B4', '453416': 'B2', '454447': 'B4', '454585': 'B6', '453273': 'B2', '453307': 'B4', '454548': 'B1'}
+area_count: 158
+flows: ['CF', 'IF', 'IZ', 'OE', 'OF', 'OZ', 'T']
+demand20_total: 7704.0
+demand40_total: 23919.0
+capacity20_equiv_total: 65944.0
+capacity20_direct_total: 62157.0
+capacity40_total: 65646.0
+bad_bay_count: 146
+active_tops_rows: 452
+old_vessels: []
+of_work_lanes: {'453308': 4.0, '453324': 4.0, '453352': 1.0, '453356': 4.0, '453388': 4.0, '453396': 6.0, '453412': 10.0, '453416': 9.0, '454447': 5.0, '454585': 5.0, '453273': 0.0, '453307': 0.0, '454548': 0.0}
+of_area_limits: {'453308': 8.0, '453324': 8.0, '453352': 2.0, '453356': 8.0, '453388': 8.0, '453396': 12.0, '453412': 20.0, '453416': 18.0, '454447': 10.0, '454585': 10.0, '453273': 0.0, '453307': 0.0, '454548': 0.0}
+
+[1/2] Solving large plan with weighted objectives
+Set parameter LicenseID to value 2791952
+status: TIME_LIMIT
+objective_value: 372280.6487904176
+mip_gap: 8.651025385621267e-06
+runtime: 300.09800004959106
+objective_components: {'miss': 131.0, 'operation': 0.0, 'of_area': 311.0, 'distance': 11073.421626347248, 'distance_raw': 98073498.74285725, 'share': 595.0, 'adjustment': 0.0, 'balance': 2638.0}
+unmet20_total: 0
+unmet40_total: 131.0
+operation_overage_total: 0
+of_area_overage_total: 311.0
+area_share_overage_total: 595
+
+[2/2] Building flat-data medium/small inputs

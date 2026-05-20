@@ -4,13 +4,15 @@ from pathlib import Path
 
 import pandas as pd
 
+from planning_large_main import discover_data_dir, resolve_output_path
+
 
 # =========================
 # 1. 参数区：按实际情况调整
 # =========================
 
 BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "堆存计划测试数据20260508补充"
+DATA_DIR = discover_data_dir(BASE_DIR, None)
 
 EXCEL_PATH = DATA_DIR / "箱区功能.xlsx"
 CLOSED_AREAS_PATH = DATA_DIR / "n_usefg_areas.txt"
@@ -561,7 +563,7 @@ def main():
     long_df, matrix_df = build_distance_tables(area_coord_df, berth_df)
 
     closed_area_df = pd.DataFrame({"area_no": sorted(closed_areas)})
-    output_path = BASE_DIR / "适放箱区_泊位距离矩阵.xlsx"
+    output_path = resolve_output_path(Path("适放箱区_泊位距离矩阵.xlsx"), BASE_DIR)
 
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
         berth_df.to_excel(writer, sheet_name="泊位坐标", index=False)

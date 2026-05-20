@@ -1,0 +1,75 @@
+{
+  "iterations": 30000,
+  "small_plan_retry_count": 0,
+  "small_plan_retry_failures": [],
+  "used_small_feasible_fallback": false,
+  "small_feasible_fallback_iteration": 21000,
+  "small_feasible_fallback_energy": 245.4012,
+  "final_small_plan_failure_before_fallback": "",
+  "small_plan_area_feedback": {},
+  "sa_energy": 245.2271,
+  "medium_energy": 245.2271,
+  "small_plan_proxy_energy": 185.0,
+  "medium_box_count": 2188,
+  "medium_decision_group_count": 6,
+  "group_count": 6,
+  "bay_count": 3943,
+  "area_count": 139,
+  "medium_row_count": 31,
+  "small_row_count": 61,
+  "small_plan_used_six_bay_block_count": 29,
+  "small_doc_group_count": 42,
+  "planning_hierarchy": "simulated annealing assigns the medium plan to yard areas; small plan uses doc containers and assigns fine groups to bays by a post-SA constructive heuristic",
+  "medium_plan_space_policy": "medium plan assigns only voyage/flow/discharge-port/size quantities by yard area; bays and six-small-bay groups belong only to the small plan",
+  "large_box_edge_policy": "small-plan hard constraint: the first and last bay of an area cannot receive 20ft boxes",
+  "size_overlap_policy": "20/40/45 capacities are size-specific by YBY_ENABLECSIZECD; total bay load also cannot exceed physical empty-slot capacity",
+  "size_modes": [
+    "20",
+    "40",
+    "45"
+  ],
+  "size_policy": "20ft, 40ft, and 45ft are planned and capacity-checked separately using YBY_ENABLECSIZECD",
+  "area_size_quota_count": 28,
+  "big_plan_volume_policy": "big plan volume is treated as the full predicted area/size pattern; medium demand is calculated separately by the rolling planning-time ratio and distributed by that pattern",
+  "voyage_windows": {
+    "453334": {
+      "window_start": "2026-05-08 10:00:00",
+      "window_end": "2026-05-09 10:00:00"
+    },
+    "453400": {
+      "window_start": "2026-05-08 11:30:00",
+      "window_end": "2026-05-09 11:30:00"
+    }
+  },
+  "operation_conflict_policy": "medium-plan soft constraint: avoid areas with loading during the voyage window; prefer areas with loading in the 24h after the voyage window",
+  "berth_distance_policy": "medium-plan soft constraint: prefer yard areas closer to the voyage berth",
+  "attribute_balance_policy": "medium-plan soft constraint: distribute each flow/discharge-port/size attribute group across areas following the big-plan area pattern",
+  "big_plan_area_policy": "big-plan voyage/flow/area/size quantities are strict upper bounds; medium-plan SA may rebalance within those inherited bounds but cannot use area-size combinations absent from the big plan",
+  "tops_policy": "TOPS bay ranges for non-target voyages are closed before medium and small planning; TOPS records for target voyages are ignored",
+  "small_plan_six_bay_policy": "small plan prefers dynamic six-small-bay continuous blocks for one fine group; different sizes may share that preferred block but cannot share the same bay",
+  "small_plan_proxy_policy": "medium-plan simulated annealing includes a lightweight small-plan proxy score for doc-container bay capacity, size/height bay capacity, 45ft edge capacity, and six-small-bay block affinity",
+  "small_plan_edge_policy": "hard constraints: 20ft cannot use area edge bays; 45ft must use area edge bays; if an area has 45ft doc boxes, its edge bays are reserved for 45ft",
+  "small_plan_height_policy": "hard constraint: boxes with different heights cannot share the same bay",
+  "small_plan_prestow_policy": "pre-stow isolation soft preference is implemented through a reserved pre_stow flag; current data has no pre-stow marker",
+  "small_plan_special_stow_policy": "small-plan soft constraint is reserved for explicit fixed special-stow markers; current data has no such marker, so no special-stow category is inferred",
+  "tops_reserved_slot_count": 4844,
+  "tops_closed_bay_count": 1215,
+  "misplaced_bay_exclusion_ratio": 0.6666666666666666,
+  "misplaced_excluded_bay_count": 0,
+  "berth_by_voyage": {
+    "453334": "B3",
+    "453400": "B6"
+  },
+  "business_special_codes": [],
+  "planning_time": "2026-05-08 09:30:00",
+  "horizon_hours": 24.0,
+  "target_voyages": [
+    "453334",
+    "453400"
+  ],
+  "energy_record_every": 3000,
+  "log_every": 1000,
+  "small_plan_check_every": 3000,
+  "small_plan_proxy_every": 1,
+  "energy_record_count": 11
+}
