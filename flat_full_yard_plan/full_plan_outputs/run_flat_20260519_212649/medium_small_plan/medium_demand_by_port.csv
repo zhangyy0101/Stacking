@@ -1,7 +1,0 @@
-﻿voyage_id,flow,port,size_mode,predicted_boxes,ratio_target_boxes,doc_boxes,planned_boxes,planning_stage,planning_ratio
-453334,OF,UNK,20,263,184,0,184,before_open_within_24h,0.7
-453334,OF,UNK,40,816,571,0,571,before_open_within_24h,0.7
-453334,OF,UNK,45,4,3,0,3,before_open_within_24h,0.7
-453400,OF,UNK,20,490,343,0,343,before_open_within_24h,0.7
-453400,OF,UNK,40,1550,1085,0,1085,before_open_within_24h,0.7
-453400,OF,UNK,45,3,2,0,2,before_open_within_24h,0.7

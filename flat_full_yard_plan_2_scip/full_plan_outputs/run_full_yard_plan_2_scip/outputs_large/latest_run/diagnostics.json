@@ -1,0 +1,286 @@
+{
+  "data_dir": "E:\\container_terminal\\stacking\\run_full_yard_plan_2_scip",
+  "area_count": 158,
+  "flows": [
+    "IF",
+    "IZ",
+    "OF",
+    "OZ",
+    "T"
+  ],
+  "flow_aliases": {
+    "IE": "IF",
+    "RF": "IF",
+    "RE": "IF"
+  },
+  "bad_bay_count": 10,
+  "bad_bay_sample": [
+    [
+      "1K",
+      "47"
+    ],
+    [
+      "1K",
+      "49"
+    ],
+    [
+      "1K",
+      "51"
+    ],
+    [
+      "1K",
+      "53"
+    ],
+    [
+      "49",
+      "01"
+    ],
+    [
+      "49",
+      "03"
+    ],
+    [
+      "76",
+      "29"
+    ],
+    [
+      "76",
+      "31"
+    ],
+    [
+      "9D",
+      "09"
+    ],
+    [
+      "9D",
+      "11"
+    ]
+  ],
+  "current_snapshot_rows": 40556,
+  "active_tops_rows": 452,
+  "capacity20_total": 65940.0,
+  "capacity20_direct_total": 62153.0,
+  "capacity40_total": 65642.0,
+  "old_vessels": [],
+  "of_work_lanes": {
+    "453250": 0.0,
+    "453308": 4.47,
+    "453324": 4.455,
+    "453352": 0.276,
+    "453356": 4.437,
+    "453388": 3.939,
+    "453396": 6.261000000000001,
+    "453412": 9.951,
+    "453416": 9.39,
+    "454549": 0.0,
+    "454585": 4.641,
+    "454710": 0.0,
+    "453273": 0.0,
+    "453307": 0.0,
+    "454548": 0.0
+  },
+  "of_area_limits": {
+    "453250": 0.0,
+    "453308": 8.94,
+    "453324": 8.91,
+    "453352": 0.552,
+    "453356": 8.874,
+    "453388": 7.878,
+    "453396": 12.522000000000002,
+    "453412": 19.902,
+    "453416": 18.78,
+    "454549": 0.0,
+    "454585": 9.282,
+    "454710": 0.0,
+    "453273": 0.0,
+    "453307": 0.0,
+    "454548": 0.0
+  },
+  "demand": {
+    "453250": {
+      "type": "export",
+      "doc_path": "E:\\container_terminal\\stacking\\run_full_yard_plan_2_scip\\container_info_453250.parquet",
+      "predict_path": null,
+      "doc_rows": 78,
+      "snapshot_rows": 3862,
+      "dedup_rows": 2255,
+      "prediction20": 0.0,
+      "prediction40": 0.0,
+      "extra_prediction20_to_OF": 0.0,
+      "extra_prediction40_to_OF": 0.0
+    },
+    "453308": {
+      "type": "export",
+      "doc_path": "E:\\container_terminal\\stacking\\run_full_yard_plan_2_scip\\container_info_453308.parquet",
+      "predict_path": "E:\\container_terminal\\stacking\\run_full_yard_plan_2_scip\\predict_data_453308.xlsx",
+      "doc_rows": 120,
+      "snapshot_rows": 4083,
+      "dedup_rows": 2429,
+      "prediction20": 464.0,
+      "prediction40": 1026.0,
+      "extra_prediction20_to_OF": 0.0,
+      "extra_prediction40_to_OF": 0.0
+    },
+    "453324": {
+      "type": "export",
+      "doc_path": "E:\\container_terminal\\stacking\\run_full_yard_plan_2_scip\\container_info_453324.parquet",
+      "predict_path": "E:\\container_terminal\\stacking\\run_full_yard_plan_2_scip\\predict_data_453324.xlsx",
+      "doc_rows": 14,
+      "snapshot_rows": 4572,
+      "dedup_rows": 2499,
+      "prediction20": 270.0,
+      "prediction40": 1215.0,
+      "extra_prediction20_to_OF": 0.0,
+      "extra_prediction40_to_OF": 0.0
+    },
+    "453352": {
+      "type": "export",
+      "doc_path": "E:\\container_terminal\\stacking\\run_full_yard_plan_2_scip\\container_info_453352.parquet",
+      "predict_path": "E:\\container_terminal\\stacking\\run_full_yard_plan_2_scip\\predict_data_453352.xlsx",
+      "doc_rows": 11,
+      "snapshot_rows": 269,
+      "dedup_rows": 149,
+      "prediction20": 25.0,
+      "prediction40": 67.0,
+      "extra_prediction20_to_OF": 18.0,
+      "extra_prediction40_to_OF": 0.0
+    },
+    "453356": {
+      "type": "export",
+      "doc_path": "E:\\container_terminal\\stacking\\run_full_yard_plan_2_scip\\container_info_453356.parquet",
+      "predict_path": "E:\\container_terminal\\stacking\\run_full_yard_plan_2_scip\\predict_data_453356.xlsx",
+      "doc_rows": 11,
+      "snapshot_rows": 2136,
+      "dedup_rows": 1118,
+      "prediction20": 280.0,
+      "prediction40": 1199.0,
+      "extra_prediction20_to_OF": 195.0,
+      "extra_prediction40_to_OF": 166.0
+    },
+    "453388": {
+      "type": "export",
+      "doc_path": "E:\\container_terminal\\stacking\\run_full_yard_plan_2_scip\\container_info_453388.parquet",
+      "predict_path": "E:\\container_terminal\\stacking\\run_full_yard_plan_2_scip\\predict_data_453388.xlsx",
+      "doc_rows": 670,
+      "snapshot_rows": 1007,
+      "dedup_rows": 1253,
+      "prediction20": 424.0,
+      "prediction40": 889.0,
+      "extra_prediction20_to_OF": 33.0,
+      "extra_prediction40_to_OF": 27.0
+    },
+    "453396": {
+      "type": "export",
+      "doc_path": "E:\\container_terminal\\stacking\\run_full_yard_plan_2_scip\\container_info_453396.parquet",
+      "predict_path": "E:\\container_terminal\\stacking\\run_full_yard_plan_2_scip\\predict_data_453396.xlsx",
+      "doc_rows": 65,
+      "snapshot_rows": 8572,
+      "dedup_rows": 4771,
+      "prediction20": 539.0,
+      "prediction40": 1548.0,
+      "extra_prediction20_to_OF": 0.0,
+      "extra_prediction40_to_OF": 0.0
+    },
+    "453412": {
+      "type": "export",
+      "doc_path": "E:\\container_terminal\\stacking\\run_full_yard_plan_2_scip\\container_info_453412.parquet",
+      "predict_path": "E:\\container_terminal\\stacking\\run_full_yard_plan_2_scip\\predict_data_453412.xlsx",
+      "doc_rows": 188,
+      "snapshot_rows": 6361,
+      "dedup_rows": 3867,
+      "prediction20": 836.0,
+      "prediction40": 2481.0,
+      "extra_prediction20_to_OF": 0.0,
+      "extra_prediction40_to_OF": 0.0
+    },
+    "453416": {
+      "type": "export",
+      "doc_path": "E:\\container_terminal\\stacking\\run_full_yard_plan_2_scip\\container_info_453416.parquet",
+      "predict_path": "E:\\container_terminal\\stacking\\run_full_yard_plan_2_scip\\predict_data_453416.xlsx",
+      "doc_rows": 501,
+      "snapshot_rows": 4324,
+      "dedup_rows": 2912,
+      "prediction20": 743.0,
+      "prediction40": 2387.0,
+      "extra_prediction20_to_OF": 157.0,
+      "extra_prediction40_to_OF": 61.0
+    },
+    "454549": {
+      "type": "export",
+      "doc_path": "E:\\container_terminal\\stacking\\run_full_yard_plan_2_scip\\container_info_454549.parquet",
+      "predict_path": null,
+      "doc_rows": 12,
+      "snapshot_rows": 3063,
+      "dedup_rows": 1734,
+      "prediction20": 0.0,
+      "prediction40": 0.0,
+      "extra_prediction20_to_OF": 0.0,
+      "extra_prediction40_to_OF": 0.0
+    },
+    "454585": {
+      "type": "export",
+      "doc_path": "E:\\container_terminal\\stacking\\run_full_yard_plan_2_scip\\container_info_454585.parquet",
+      "predict_path": "E:\\container_terminal\\stacking\\run_full_yard_plan_2_scip\\predict_data_454585.xlsx",
+      "doc_rows": 157,
+      "snapshot_rows": 2165,
+      "dedup_rows": 1355,
+      "prediction20": 611.0,
+      "prediction40": 936.0,
+      "extra_prediction20_to_OF": 371.0,
+      "extra_prediction40_to_OF": 0.0
+    },
+    "454710": {
+      "type": "export",
+      "doc_path": "E:\\container_terminal\\stacking\\run_full_yard_plan_2_scip\\container_info_454710.parquet",
+      "predict_path": null,
+      "doc_rows": 141,
+      "snapshot_rows": 142,
+      "dedup_rows": 248,
+      "prediction20": 0.0,
+      "prediction40": 0.0,
+      "extra_prediction20_to_OF": 0.0,
+      "extra_prediction40_to_OF": 0.0
+    },
+    "453273": {
+      "type": "import",
+      "doc_path": "E:\\container_terminal\\stacking\\run_full_yard_plan_2_scip\\进口卸船箱\\container_info_import_453273.parquet",
+      "doc_rows": 3561,
+      "snapshot_rows": 0,
+      "dedup_rows": 3561
+    },
+    "453307": {
+      "type": "import",
+      "doc_path": "E:\\container_terminal\\stacking\\run_full_yard_plan_2_scip\\进口卸船箱\\container_info_import_453307.parquet",
+      "doc_rows": 3373,
+      "snapshot_rows": 0,
+      "dedup_rows": 3373
+    },
+    "454548": {
+      "type": "import",
+      "doc_path": "E:\\container_terminal\\stacking\\run_full_yard_plan_2_scip\\进口卸船箱\\container_info_import_454548.parquet",
+      "doc_rows": 2773,
+      "snapshot_rows": 0,
+      "dedup_rows": 2773
+    }
+  },
+  "status": "gaplimit",
+  "status_name": "GAPLIMIT",
+  "objective_value": 396599.1675517736,
+  "best_bound": 396214.4254467441,
+  "mip_gap": 0.0009710451723097024,
+  "runtime": 33.0,
+  "objective_components": {
+    "miss": -5.384945609944793e-13,
+    "operation": 0.0,
+    "of_area": 297.36000000000007,
+    "distance": 12226.158918392304,
+    "distance_raw": 108282897.71428552,
+    "share": 756.0,
+    "adjustment": 0.0,
+    "balance": 2800.0
+  },
+  "allocation_rows": 2309,
+  "allocation_new_rows": 144,
+  "flow_function_mismatch_total": 1028,
+  "flow_function_mismatch_new": 0
+}

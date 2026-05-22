@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
+import sys
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,8 +21,11 @@ from planning_large_solver import (
 
 
 DEFAULT_PLANNING_TIME = "2026-05-08 09:30:00"
-DEFAULT_EXPORT_VESSELS = ["453334", "453400"]
-DEFAULT_IMPORT_VESSELS = ["453886", "454063"]
+DEFAULT_EXPORT_VESSELS = None
+DEFAULT_IMPORT_VESSELS = None
+IGNORED_EXPORT_VESSELS = {"454447"}
+KNOWN_EXPORT_SNAPSHOT_FLOWS = {"OF", "OZ", "T"}
+UNKNOWN_EXPORT_SNAPSHOT_FLOW_FALLBACK = "OF"
 
 # 进口资料箱中存在 IE/RF/RE，但当前箱区功能表没有这些功能。
 # 这里默认将它们映射为 IF，使进口箱能使用 IF 功能箱区；如业务口径变化，可在此修改。
@@ -246,8 +251,8 @@ def build_current_case_data(
     base_dir: Path,
     data_dir: Optional[Path],
     planning_time: pd.Timestamp,
-    export_vessels: Sequence[str],
-    import_vessels: Sequence[str],
+    export_vessels: Optional[Sequence[str]],
+    import_vessels: Optional[Sequence[str]],
     state: RollingPlanningState,
     flow_aliases: Optional[Mapping[str, str]] = None,
 ) -> PlanningInputArtifacts:
@@ -278,8 +283,12 @@ def build_current_case_data(
     flow_aliases = {normalize_code(k): normalize_code(v) for k, v in (flow_aliases or {}).items()}
 
     # 当前要规划的航次集合。出口和进口在数据来源上不同，但求解器中统一进入 V。
-    export_vessels = [normalize_code(v) for v in export_vessels if normalize_code(v)]
-    import_vessels = [normalize_code(v) for v in import_vessels if normalize_code(v)]
+    if export_vessels is None:
+        export_vessels = discover_export_vessels(data_dir)
+    if import_vessels is None:
+        import_vessels = discover_import_vessels(data_dir)
+    export_vessels = [v for v in normalize_vessel_list(export_vessels) if v not in IGNORED_EXPORT_VESSELS]
+    import_vessels = normalize_vessel_list(import_vessels)
     all_vessels = export_vessels + import_vessels
 
     # 基础静态参数：泊位距离、箱区功能、箱区作业能力。
@@ -351,7 +360,12 @@ def build_current_case_data(
         current_snapshot=current_snapshot,
         flow_aliases=flow_aliases,
     )
-    of_work_lanes = {vessel: read_prediction_work_lanes(data_dir / f"predict_data_{vessel}.xlsx") for vessel in export_vessels}
+    of_work_lanes = {
+        vessel: read_prediction_work_lanes(data_dir / f"predict_data_{vessel}.xlsx")
+        if (data_dir / f"predict_data_{vessel}.xlsx").exists()
+        else 0.0
+        for vessel in export_vessels
+    }
     of_work_lanes.update({vessel: 0.0 for vessel in import_vessels})
 
     # 流向集合 F：取箱区功能、需求、快照箱流向的并集。
@@ -518,6 +532,19 @@ def resolve_output_path(path: Path, base_dir: Path) -> Path:
 
 
 def _looks_like_planning_data_dir(path: Path) -> bool:
+    core_required = [
+        "vessel_berth_info_new.csv",
+        "tops_plan_info.parquet",
+        "bay_slots_detail.parquet",
+    ]
+    has_area_workbook = any(
+        p.suffix.lower() in {".xlsx", ".xls"}
+        and not p.name.startswith("~")
+        and "predict" not in p.name.lower()
+        for p in path.iterdir()
+    )
+    if all((path / name).exists() for name in core_required) and has_area_workbook:
+        return True
     required = [
         "vessel_berth_info_new.csv",
         "tops_plan_info.parquet",
@@ -552,14 +579,88 @@ def discover_data_dir(base_dir: Path, data_dir: Optional[Path]) -> Path:
     for root in _search_roots(base_dir):
         if not root.is_dir():
             continue
-        candidates.extend(p for p in root.iterdir() if p.is_dir() and "20260508" in p.name)
+        candidates.extend(p for p in root.iterdir() if p.is_dir() and re.search(r"20\d{6}", p.name))
     candidates = _unique_paths(candidates)
     usable = [p for p in candidates if _looks_like_planning_data_dir(p)]
     if len(usable) == 1:
         return usable[0]
+    if len(usable) > 1:
+        return sorted(usable, key=lambda p: p.name)[-1]
     if len(candidates) == 1:
         return candidates[0]
-    raise FileNotFoundError(f"Expected one 20260508 data directory, found: {candidates}")
+    raise FileNotFoundError(f"Expected one planning data directory, found: {candidates}")
+
+
+def normalize_vessel_list(values: Optional[Sequence[str]]) -> list[str]:
+    if values is None:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        vessel = normalize_code(value)
+        if not vessel or vessel in seen:
+            continue
+        seen.add(vessel)
+        out.append(vessel)
+    return out
+
+
+def discover_export_vessels(data_dir: Path) -> list[str]:
+    vessels: set[str] = set()
+    for path in data_dir.glob("predict_data_*.xlsx"):
+        match = re.fullmatch(r"predict_data_(.+)\.xlsx", path.name, flags=re.IGNORECASE)
+        if match:
+            vessel = normalize_code(match.group(1))
+            if vessel:
+                vessels.add(vessel)
+    for path in data_dir.glob("container_info_*.parquet"):
+        if path.name.lower().startswith("container_info_import"):
+            continue
+        match = re.fullmatch(r"container_info_(.+)\.parquet", path.name, flags=re.IGNORECASE)
+        if match:
+            vessel = normalize_code(match.group(1))
+            if vessel:
+                vessels.add(vessel)
+    return sorted(vessel for vessel in vessels if vessel not in IGNORED_EXPORT_VESSELS)
+
+
+def discover_import_container_dir(data_dir: Path) -> Path:
+    candidates: list[Path] = []
+    for path in data_dir.iterdir():
+        if not path.is_dir():
+            continue
+        if any(path.glob("container_info_import*.parquet")):
+            candidates.append(path)
+    if not candidates:
+        raise FileNotFoundError(f"Could not find import container directory under {data_dir}.")
+    return sorted(candidates, key=lambda p: p.name)[0]
+
+
+def discover_import_vessels(data_dir: Path) -> list[str]:
+    import_dir = discover_import_container_dir(data_dir)
+    vessels: set[str] = set()
+    for path in import_dir.glob("container_info_import*.parquet"):
+        match = re.fullmatch(r"container_info_import(?:_voy)?_(.+)\.parquet", path.name, flags=re.IGNORECASE)
+        if match:
+            vessel = normalize_code(match.group(1))
+            if vessel:
+                vessels.add(vessel)
+    return sorted(vessels)
+
+
+def resolve_import_doc_path(import_dir: Path, vessel: str) -> Path:
+    direct_candidates = [
+        import_dir / f"container_info_import_{vessel}.parquet",
+        import_dir / f"container_info_import_voy_{vessel}.parquet",
+    ]
+    for path in direct_candidates:
+        if path.exists():
+            return path
+    for path in import_dir.glob("container_info_import*.parquet"):
+        match = re.fullmatch(r"container_info_import(?:_voy)?_(.+)\.parquet", path.name, flags=re.IGNORECASE)
+        if match and normalize_code(match.group(1)) == vessel:
+            return path
+    raise FileNotFoundError(f"Missing import container info for voyage {vessel} in {import_dir}.")
 
 
 def discover_area_function_file(data_dir: Path) -> Path:
@@ -677,6 +778,13 @@ def normalize_flow(value: Any, aliases: Mapping[str, str]) -> Optional[str]:
     return aliases.get(flow, flow)
 
 
+def normalize_export_snapshot_flow(value: Any, aliases: Mapping[str, str]) -> Optional[str]:
+    flow = normalize_flow(value, aliases)
+    if flow and flow not in KNOWN_EXPORT_SNAPSHOT_FLOWS:
+        return UNKNOWN_EXPORT_SNAPSHOT_FLOW_FALLBACK
+    return flow
+
+
 def normalize_bay(value: Any) -> Optional[str]:
     """
     功能：
@@ -754,13 +862,13 @@ def read_vessel_info(path: Path) -> pd.DataFrame:
         pandas 读取或时间转换失败时会透传相应异常。
     """
 
-    df = pd.read_csv(path).copy()
+    df = pd.read_csv(path, encoding="utf-8", encoding_errors="ignore").copy()
     df["voy_id"] = df["VOY_ID"].map(normalize_code)
     df["planned_berth"] = df["VBT_BTH_PBTHNO"].map(normalize_int_string)
     df["actual_berth"] = df["VBT_BTH_ABTHNO"].map(normalize_int_string)
     df["berth"] = df["planned_berth"].fillna(df["actual_berth"]).map(lambda x: f"B{x}" if x else None)
-    df["open_time"] = pd.to_datetime(df["SCD_RCVSTDT"], format="%Y-%m-%d %H:%M:%S", errors="coerce")
-    df["close_time"] = pd.to_datetime(df["SCD_RCVEDDT"], format="%Y-%m-%d %H:%M:%S", errors="coerce")
+    df["open_time"] = pd.to_datetime(df["SCD_RCVSTDT"], errors="coerce")
+    df["close_time"] = pd.to_datetime(df["SCD_RCVEDDT"], errors="coerce")
     return df
 
 
@@ -934,9 +1042,11 @@ def extract_current_snapshot_rows(
         if row["e_voy"] in export_set:
             vessel = row["e_voy"]
             direction = "E"
+            flow = normalize_export_snapshot_flow(row["raw_flow"], flow_aliases)
         elif row["i_voy"] in import_set:
             vessel = row["i_voy"]
             direction = "I"
+            flow = normalize_flow(row["raw_flow"], flow_aliases)
         if not vessel:
             continue
         rows.append(
@@ -944,7 +1054,7 @@ def extract_current_snapshot_rows(
                 **row.to_dict(),
                 "voy_id": vessel,
                 "direction": direction,
-                "flow": normalize_flow(row["raw_flow"], flow_aliases),
+                "flow": flow,
             }
         )
     return pd.DataFrame(rows)
@@ -1157,13 +1267,16 @@ def build_demand_params(
     for vessel in export_vessels:
         doc_path = data_dir / f"container_info_{vessel}.parquet"
         predict_path = data_dir / f"predict_data_{vessel}.xlsx"
-        doc = normalize_container_frame(pd.read_parquet(doc_path), flow_aliases)
-        doc = doc[doc["e_voy"].eq(vessel)].copy()
+        if doc_path.exists():
+            doc = normalize_container_frame(pd.read_parquet(doc_path), flow_aliases)
+            doc = doc[doc["e_voy"].eq(vessel)].copy()
+        else:
+            doc = empty_normalized_container_frame()
         snap = current_snapshot[current_snapshot["voy_id"].eq(vessel)].copy()
         merged = merge_snapshot_and_doc(doc, snap)
         add_grouped_demand(merged, vessel, d20, d40)
 
-        pred20, pred40 = read_prediction_counts(predict_path)
+        pred20, pred40 = read_prediction_counts(predict_path) if predict_path.exists() else (0.0, 0.0)
         detail20 = sum(qty for (v, _), qty in d20.items() if v == vessel)
         detail40 = sum(qty for (v, _), qty in d40.items() if v == vessel)
         extra20 = max(0.0, pred20 - detail20)
@@ -1174,6 +1287,8 @@ def build_demand_params(
             d40[(vessel, "OF")] = d40.get((vessel, "OF"), 0.0) + extra40
         diagnostics[vessel] = {
             "type": "export",
+            "doc_path": str(doc_path) if doc_path.exists() else None,
+            "predict_path": str(predict_path) if predict_path.exists() else None,
             "doc_rows": int(len(doc)),
             "snapshot_rows": int(len(snap)),
             "dedup_rows": int(len(merged)),
@@ -1185,9 +1300,9 @@ def build_demand_params(
             "extra_prediction40_to_OF": float(extra40),
         }
 
-    import_dir = next(p for p in data_dir.iterdir() if p.is_dir())
+    import_dir = discover_import_container_dir(data_dir)
     for vessel in import_vessels:
-        doc_path = import_dir / f"container_info_import_voy_{vessel}.parquet"
+        doc_path = resolve_import_doc_path(import_dir, vessel)
         doc = normalize_container_frame(pd.read_parquet(doc_path), flow_aliases)
         doc = doc[doc["i_voy"].eq(vessel)].copy()
         snap = current_snapshot[current_snapshot["voy_id"].eq(vessel)].copy()
@@ -1195,11 +1310,18 @@ def build_demand_params(
         add_grouped_demand(merged, vessel, d20, d40)
         diagnostics[vessel] = {
             "type": "import",
+            "doc_path": str(doc_path),
             "doc_rows": int(len(doc)),
             "snapshot_rows": int(len(snap)),
             "dedup_rows": int(len(merged)),
         }
     return d20, d40, diagnostics
+
+
+def empty_normalized_container_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=["cntr_id", "e_voy", "i_voy", "size", "raw_flow", "flow"]
+    )
 
 
 def normalize_container_frame(df: pd.DataFrame, flow_aliases: Mapping[str, str]) -> pd.DataFrame:
@@ -1330,6 +1452,37 @@ def read_prediction_work_lanes(path: Path) -> float:
     """
 
     xls = pd.ExcelFile(path)
+    robust_sheet_name = next((name for name in xls.sheet_names if "\u4f5c\u4e1a\u8def" in str(name)), None)
+    if robust_sheet_name is None:
+        for name in xls.sheet_names:
+            preview = pd.read_excel(path, sheet_name=name, nrows=2)
+            columns = {str(col).strip() for col in preview.columns}
+            if "IYC_CSZ_CSIZECD" in columns or "IYC_POT_UNLDPORT" in columns:
+                continue
+            if len(columns) <= 3:
+                robust_sheet_name = name
+                break
+    if robust_sheet_name is not None:
+        lane_df = pd.read_excel(path, sheet_name=robust_sheet_name).copy()
+        lane_candidates: list[float] = []
+
+        def collect_lane_numeric(value: Any) -> None:
+            if value is None or pd.isna(value):
+                return
+            text = str(value).strip()
+            if not text or text == "\u4f5c\u4e1a\u8def\u6570":
+                return
+            numeric = pd.to_numeric(value, errors="coerce")
+            if pd.notna(numeric):
+                lane_candidates.append(float(numeric))
+
+        for column in lane_df.columns:
+            collect_lane_numeric(column)
+        for value in lane_df.to_numpy().ravel():
+            collect_lane_numeric(value)
+        positive_lane_candidates = [value for value in lane_candidates if value > 0]
+        if positive_lane_candidates:
+            return positive_lane_candidates[0]
     sheet_name = "作业路" if "作业路" in xls.sheet_names else None
     if sheet_name is None:
         sheet_name = next((name for name in xls.sheet_names if "作业" in str(name) and "路" in str(name)), None)
@@ -1356,7 +1509,7 @@ def read_prediction_work_lanes(path: Path) -> float:
 
     positive_candidates = [value for value in candidates if value > 0]
     if not positive_candidates:
-        raise ValueError(f"Prediction workbook {path} does not contain a positive work-lane count.")
+        return 0.0
     return positive_candidates[0]
 
 
@@ -1773,10 +1926,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--import-vessels", nargs="+", default=DEFAULT_IMPORT_VESSELS)
     parser.add_argument("--state-dir", type=Path, default=Path("outputs_large/state"))
     parser.add_argument("--output-dir", type=Path, default=Path("outputs_large/latest_run"))
+    parser.add_argument("--visualization-dir", type=Path, default=Path("outputs_large/yard_visualization"))
     parser.add_argument("--time-limit", type=float, default=120.0)
-    parser.add_argument("--mip-gap", type=float, default=0.01)
+    parser.add_argument("--mip-gap", type=float, default=0.001)
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--no-write-state", action="store_true")
+    parser.add_argument("--skip-visualization", action="store_true")
     parser.add_argument("--disable-default-flow-aliases", action="store_true")
     return parser.parse_args()
 
@@ -1825,6 +1980,33 @@ def main() -> None:
     output_dir = resolve_output_path(args.output_dir, base_dir)
     write_run_outputs(output_dir, artifacts, solution, state_rows)
     print(f"Run outputs written to: {output_dir}")
+    if not args.skip_visualization:
+        visualization_dir = resolve_output_path(args.visualization_dir, base_dir)
+        run_visualization(
+            base_dir=base_dir,
+            allocation_path=output_dir / "allocation.csv",
+            output_dir=visualization_dir,
+            data_dir=Path(artifacts.diagnostics["data_dir"]),
+        )
+        print(f"Visualization written to: {visualization_dir}")
+
+
+def run_visualization(*, base_dir: Path, allocation_path: Path, output_dir: Path, data_dir: Path) -> None:
+    """
+    Generate the yard visualization through the standalone visualization script.
+    """
+
+    cmd = [
+        sys.executable,
+        str(base_dir / "planning_large_visualize.py"),
+        "--allocation",
+        str(allocation_path),
+        "--output-dir",
+        str(output_dir),
+        "--data-dir",
+        str(data_dir),
+    ]
+    subprocess.run(cmd, cwd=base_dir, check=True)
 
 
 def print_case_summary(artifacts: PlanningInputArtifacts) -> None:

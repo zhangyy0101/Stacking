@@ -1,0 +1,90 @@
+{
+  "data_dir": "E:\\container_terminal\\stacking\\flat_full_yard_plan_scip",
+  "area_count": 158,
+  "flows": [
+    "IF",
+    "IZ",
+    "OF",
+    "OZ",
+    "T"
+  ],
+  "flow_aliases": {
+    "IE": "IF",
+    "RF": "IF",
+    "RE": "IF"
+  },
+  "bad_bay_count": 0,
+  "bad_bay_sample": [],
+  "current_snapshot_rows": 1193,
+  "active_tops_rows": 424,
+  "capacity20_total": 61491.0,
+  "capacity20_direct_total": 58333.0,
+  "capacity40_total": 61240.0,
+  "old_vessels": [],
+  "of_work_lanes": {
+    "453334": 3.0,
+    "453400": 6.0,
+    "453886": 0.0,
+    "454063": 0.0
+  },
+  "of_area_limits": {
+    "453334": 6.0,
+    "453400": 12.0,
+    "453886": 0.0,
+    "454063": 0.0
+  },
+  "demand": {
+    "453334": {
+      "type": "export",
+      "doc_rows": 182,
+      "snapshot_rows": 313,
+      "dedup_rows": 378,
+      "prediction20": 263.0,
+      "prediction40": 820.0,
+      "extra_prediction20_to_OF": 85.0,
+      "extra_prediction40_to_OF": 620.0
+    },
+    "453400": {
+      "type": "export",
+      "doc_rows": 426,
+      "snapshot_rows": 880,
+      "dedup_rows": 937,
+      "prediction20": 490.0,
+      "prediction40": 1553.0,
+      "extra_prediction20_to_OF": 273.0,
+      "extra_prediction40_to_OF": 833.0
+    },
+    "453886": {
+      "type": "import",
+      "doc_rows": 2513,
+      "snapshot_rows": 0,
+      "dedup_rows": 2513
+    },
+    "454063": {
+      "type": "import",
+      "doc_rows": 1,
+      "snapshot_rows": 0,
+      "dedup_rows": 1
+    }
+  },
+  "status": "optimal",
+  "status_name": "OPTIMAL",
+  "objective_value": 73649.57700583554,
+  "best_bound": 73649.57700583554,
+  "mip_gap": 0.0,
+  "runtime": 11.0,
+  "objective_components": {
+    "miss": 0.0,
+    "operation": 0.0,
+    "of_area": 11.0,
+    "distance": 2427.3859001945275,
+    "distance_raw": 21498524.671428576,
+    "share": 5.0,
+    "adjustment": 0.0,
+    "balance": 288.0
+  },
+  "allocation_rows": 226,
+  "allocation_new_rows": 40,
+  "flow_function_mismatch_total": 100,
+  "flow_function_mismatch_new": 0
+}
