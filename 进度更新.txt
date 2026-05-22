@@ -1,0 +1,6 @@
+1. flat_full_yard_plan当前大计划采用加权目标函数版本，求解器采用Gurobi。
+2. flat_full_yard_plan_scip当前大计划采用加权目标函数版本，求解器采用SCIP。
+以上两份完整代码的大中小计划均已经跑通。
+
+3. flat_full_yard_plan_2大计划继续采用加权目标函数版本，求解器采用SCIP。
+4. large中的planning_large_main_lex可以单独跑通，但是和中小计划在第一版数据上暂时未能接通。

@@ -1,2 +1,0 @@
-E:\container_terminal\stacking\flat_full_yard_plan\flat_yard_plan_data_io.py:345: FutureWarning: The behavior of DataFrame concatenation with empty or all-NA entries is deprecated. In a future version, this will no longer exclude empty or all-NA columns when determining the result dtypes. To retain the old behavior, exclude the relevant entries before the concat operation.
-  combined = pd.concat([old, new_rows], ignore_index=True)

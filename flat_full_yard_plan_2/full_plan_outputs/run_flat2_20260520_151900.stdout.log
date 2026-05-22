@@ -1,6 +1,0 @@
-Flat data directory: E:\container_terminal\stacking\flat_full_yard_plan_2
-Run output directory: E:\container_terminal\stacking\flat_full_yard_plan_2\full_plan_outputs\run_flat2_20260520_151900
-export_vessels: ['453308', '453324', '453352', '453356', '453388', '453396', '453412', '453416', '454447', '454585']
-import_vessels: ['453273', '453307', '454548']
-
-[1/2] Building flat-data large-plan inputs
