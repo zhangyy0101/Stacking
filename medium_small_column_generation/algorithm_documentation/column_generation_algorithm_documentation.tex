@@ -1,0 +1,399 @@
+% !TeX program = xelatex
+\documentclass[UTF8,a4paper,11pt]{ctexart}
+
+\usepackage[margin=2.0cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{ragged2e}
+\usepackage{microtype}
+
+\setCJKmainfont{Microsoft YaHei}
+\setCJKsansfont{Microsoft YaHei}
+\setmonofont{Consolas}
+\setCJKmonofont{Microsoft YaHei}
+
+\hypersetup{colorlinks=true,linkcolor=blue!60!black,urlcolor=blue!60!black}
+\lstset{basicstyle=\ttfamily\small,breaklines=true,frame=single,columns=fullflexible}
+\setlist[itemize]{leftmargin=2em}
+\setlist[enumerate]{leftmargin=2em}
+\renewcommand{\arraystretch}{1.18}
+\setlength{\LTleft}{0pt}
+\setlength{\LTright}{0pt}
+\setlength{\parskip}{0.35em}
+\emergencystretch=3em
+\sloppy
+\newcolumntype{L}[1]{>{\RaggedRight\arraybackslash}p{#1}}
+\newcommand{\code}[1]{\nolinkurl{#1}}
+
+\title{中小计划列生成算法说明\\
+\large 当前 \texttt{medium\_small\_column\_generation} 实现}
+\author{}
+\date{\today}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+\section{总体说明}
+
+\code{medium_small_column_generation} 是一套独立的中小计划 Gurobi 列生成程序。目录内包含数据读取、需求计算、模型对象、列生成求解器、运行入口和算法文档。联合生成中计划和小计划的运行入口为
+\code{medium_small_column_generation/run_column_generation_planner.py}。外部给定中计划、单独生成小计划的入口在第 \ref{sec:external-medium-input} 节说明。
+
+程序默认读取仓库根目录的 \code{allocation.csv} 作为大计划输入，默认数据目录为 \code{pro_test_data_0519}，默认规划时刻为 \code{2026-05-19 09:30:00}，默认规划窗口长度为 24 小时。若命令行没有给定 \code{--voyages}，程序从大计划中筛选当前日期的 \code{OF/OZ} 行，并将这些行对应的航次作为本次规划航次。
+
+列生成程序直接选择“需求组--贝位--箱量”的列。默认 \code{original} 需求模式下，中计划和小计划采用两个输出口径：
+\begin{itemize}
+  \item \code{medium_plan.csv} 输出中计划粗属性组箱区分配，箱量来自中计划需求。
+  \item \code{small_plan.csv} 输出当前尚未进场资料箱的贝位分配，箱量来自资料箱细属性组。
+\end{itemize}
+预测兜底组进入列生成模型，用于占用容量、继承大计划箱区配额和形成中计划预留；默认模式下，预测兜底组不写入 \code{small_plan.csv}。
+
+联合生成时，中计划输出与小计划输出保持粗属性组--箱区一致性。对每个
+\[
+(v,f,p,s,a)
+\]
+组合，小计划资料箱在该组合上的汇总箱量不超过中计划在该组合上的输出箱量。
+
+\section{代码文件}
+
+\begin{longtable}{L{0.34\linewidth}L{0.58\linewidth}}
+\toprule
+文件或目录 & 职责\\
+\midrule
+\code{run_column_generation_planner.py} & 命令行入口。读取参数，构造问题数据，调用列生成求解器，写出结果文件和运行时长。\\
+\code{column_generation_planner.py} & 列生成算法主体。定义列、配置、需求组构造、受限主问题、定价、整数主问题、贪心回退和输出汇总。\\
+\code{block_bay_planning/data_loader.py} & 本目录内的数据读取和 \code{ProblemData} 构造代码。\\
+\code{block_bay_planning/demand_calculator.py} & 中计划需求计算，包括规划阶段比例、资料箱兜底、在场箱扣减和大计划箱量上限。\\
+\code{block_bay_planning/models.py} & 数据类定义，包括 \code{BoxGroup}、\code{SmallBoxGroup}、\code{Bay}、\code{BigPlanRow} 和 \code{ProblemData}。\\
+\code{block_bay_planning/runner.py} & 列生成入口使用的参数、数据目录发现、问题构造、输出目录和日志辅助函数。\\
+\bottomrule
+\end{longtable}
+
+\section{输入与基础口径}
+
+\subsection{大计划输入}
+
+大计划默认使用 \code{allocation.csv}。当前代码支持以下主要字段形式：
+\begin{itemize}
+  \item \code{voy_id, flow, area_no, size, planned_qty}
+  \item \code{voyage_id, area_no, qty_20, qty_40[, plan_date]}
+  \item \code{voyage_id, area_no, planned_boxes[, size_mode, plan_date]}
+\end{itemize}
+
+列生成继承的是大计划的 \code{planned_qty} 或等价箱量字段。目标流向为 \code{OF} 和 \code{OZ}。大计划行用于两件事：
+\begin{itemize}
+  \item 推导默认目标航次。
+  \item 构造航次、流向、箱区、大计划尺寸口径的配额上界 \(Q_{vfa\bar{s}}\)。
+\end{itemize}
+
+真实 45ft 箱在小计划落贝时保留 45ft 规则；继承大计划箱区配额时，45ft 归入 40ft 大计划尺寸口径。
+
+\subsection{堆场与作业输入}
+
+\code{bay_slots_detail.parquet} 提供当前堆场快照、贝位容量、已有箱尺寸、已有箱高、已有箱港口和已在场箱识别信息。当前在场箱通过 \code{HAS_CONTAINER=1} 判断，并结合 \code{IYC_INYTM <= planning_time} 过滤。
+
+\code{tops_plan_info.parquet}、箱区功能表、泊位距离表和船期表用于构造以下信息：
+\begin{itemize}
+  \item 可用贝位容量和 TOPS 预留/关闭影响。
+  \item 箱区可服务流向。
+  \item 每艘船本轮规划的 24 小时作业窗口。
+  \item 箱区内其他装船作业，用于作业冲突和后续作业偏好。
+  \item 航次泊位和箱区到泊位距离。
+\end{itemize}
+
+\section{粗属性组与细属性组}
+
+\subsection{粗属性组}
+
+粗属性组是中计划的基本箱量单位。当前代码用 \code{BoxGroup} 表示粗属性组，核心分组键为：
+\[
+g=(v,f,p,s),
+\]
+其中 \(v\) 为航次，\(f\) 为流向，\(p\) 为卸港，\(s\) 为真实尺寸口径，取 20、40 或 45。粗属性组的箱量为 \code{BoxGroup.demand}，来源于中计划需求计算。
+
+粗属性组不区分箱高、重量等级和具体箱号。其输出粒度为：
+\[
+(v,f,p,s,a),
+\]
+即在粗属性组键的基础上增加箱区 \(a\)。\code{medium_plan.csv} 每一行就是一个粗属性组在一个箱区的计划箱量。
+
+\subsection{细属性组}
+
+细属性组是小计划的基本箱量单位。当前代码用 \code{SmallBoxGroup} 表示细属性组，核心分组键包含：
+\[
+h=(v,f,p,s,\eta,w,\sigma,r),
+\]
+其中 \(v\) 为航次，\(f\) 为流向，\(p\) 为卸港，\(s\) 为真实尺寸，\(\eta\) 为箱高，\(w\) 为重量等级，\(\sigma\) 为特殊积载代码，\(r\) 为是否预配/预留标记。
+
+细属性组来自 \code{container_info_\{voyage\}.parquet}。读取资料箱时，代码先用当前堆场快照中的箱号或箱 ID 剔除已经在堆场中的箱，再按上述细属性聚合。小计划输出粒度为：
+\[
+(v,h,f,p,s,\eta,w,\sigma,a,b),
+\]
+其中 \(a\) 为箱区，\(b\) 为贝位。
+
+\subsection{预测兜底组}
+
+默认 \code{original} 模式下，列生成内部还会生成预测兜底组。预测兜底组也是 \code{SmallBoxGroup}，但 \code{demand_source} 为 \code{forecast_fallback}。它用于补足中计划需求中尚未由资料箱覆盖的部分。
+
+预测兜底组的航次、流向、卸港和尺寸来自中计划粗属性组；箱高按已有资料箱箱高分布拆分，优先使用同航次、同流向、同卸港、同尺寸的箱高分布，其次逐级放宽到同航次/流向/尺寸、同流向/尺寸、同尺寸和全局分布。无可用分布时使用 \code{HQ}。
+
+\section{箱量计算}
+
+\subsection{中计划箱量}
+
+中计划箱量由 \code{calculate_medium_demands} 计算。对每个目标航次，代码先根据当前规划时刻与开港时间确定规划阶段和预测比例：
+\[
+\rho=
+\begin{cases}
+0, & \text{距离开港超过一个规划窗口;}\\
+0.70, & \text{开港前一个规划窗口内或开港第一个 24h;}\\
+0.90, & \text{开港第二个 24h;}\\
+1.00, & \text{开港第三个 24h 及以后。}
+\end{cases}
+\]
+若船舶有总进箱结束时间，规划窗口会被截断在总进箱时间段内。
+
+随后按航次、流向、尺寸和卸港读取预测箱量 \(P_{fsp}\)，并按比例得到：
+\[
+R_{fsp}=\operatorname{round\_by\_largest\_remainder}(\rho P_{fsp}).
+\]
+同一流向、同一尺寸下，代码比较比例预测总量和资料箱总量：
+\[
+\sum_p R_{fsp}
+\quad\text{与}\quad
+\sum_p D_{fsp}.
+\]
+若资料箱总量更大，则该流向尺寸使用资料箱港口分布作为计划源；否则使用比例预测港口分布作为计划源。这个比较发生在扣减已在场箱之前。
+
+然后按航次、流向、尺寸和卸港扣减当前已经在堆场的箱量 \(Y_{fsp}\)：
+\[
+M_{fsp}=\max(0, S_{fsp}-Y_{fsp}),
+\]
+其中 \(S_{fsp}\) 是上一步选出的计划源箱量。已在场箱来自 \code{bay_slots_detail.parquet} 当前快照，而不是通过资料箱数据集自行推断。
+
+最后，代码按大计划 \code{planned_qty} 对航次、流向和大计划尺寸口径设置总上限。若中计划需求超过大计划上限，则用最大余数法按现有需求比例缩放到上限内。缩放后的正箱量生成 \code{ProblemData.groups}，也就是中计划粗属性组需求。
+
+\subsection{小计划箱量}
+
+小计划箱量由 \code{load_small_doc_groups} 计算。对每个目标航次，代码读取 \code{container_info_\{voyage\}.parquet}，用当前堆场快照中的箱号和箱 ID 剔除已经在堆场中的资料箱，然后按细属性组聚合。
+
+因此，小计划规划的是“当前时刻还未进入堆场的资料箱”，不是资料箱数据集中的全部箱。默认 \code{original} 模式下，\code{small_plan.csv} 的计划箱量来自这些资料箱细属性组。
+
+\subsection{列生成内部需求组}
+
+默认 \code{original} 模式下，列生成内部需求组 \(\mathcal{H}\) 包含两部分：
+\begin{itemize}
+  \item 全部资料箱细属性组。
+  \item 为补足中计划粗属性组需求生成的预测兜底组。
+\end{itemize}
+
+资料箱抵扣中计划需求时，优先按 \((v,f,p,s)\) 精确抵扣；如果同卸港需求不足，则允许在同航次、同流向、同尺寸内跨卸港抵扣。这与小计划继承中计划箱区分布时的宽口径一致。若资料箱在同航次、同流向、同尺寸口径下超过中计划需求，超出的资料箱仍进入小计划模型；生成 \code{medium_plan.csv} 时，小计划资料箱在各 \((v,f,p,s,a)\) 上的实际分配量会作为中计划输出的下限，从而保持“小计划汇总量 \(\le\) 中计划量”的一致性。
+
+\section{列定义}
+
+一列表示一个需求组在一个贝位上的固定箱量放置方案：
+\[
+c=(h,b,q).
+\]
+其中 \(h\in\mathcal{H}\) 是资料箱细属性组或预测兜底组，\(b\) 是贝位，\(q\) 是该列放置的箱量。
+
+候选列只在满足以下条件时生成：
+\begin{itemize}
+  \item 贝位所在箱区具备需求组流向功能。
+  \item 贝位对该尺寸有正容量。
+  \item 当前已有箱尺寸和箱高不与需求组冲突。
+  \item 20ft 不放箱区边贝。
+  \item 45ft 必须放箱区边贝。
+  \item 该航次、流向、箱区和大计划尺寸口径存在正大计划配额。
+  \item 列箱量不超过需求组需求、贝位物理容量、贝位尺寸容量和大计划配额。
+\end{itemize}
+
+每个候选贝位会生成若干箱量选项，典型包括 1、最大可放量、需求对最大可放量的余数以及一半最大可放量。这样列池同时包含集中放置的大列和必要的拆分列。
+
+\section{受限主问题与定价}
+
+受限主问题选择当前列池中的列。线性松弛阶段使用连续变量，最终整数阶段使用二进制变量：
+\[
+x_c \in \{0,1\}.
+\]
+另设未放箱松弛变量 \(u_h\ge 0\)，并给予极大惩罚。
+
+主要硬约束为：
+\[
+\sum_{c:h(c)=h} q_cx_c+u_h=d_h,\quad \forall h,
+\]
+\[
+\sum_{c:b(c)=b} q_cx_c \le Cap_b,\quad \forall b,
+\]
+\[
+\sum_{c:b(c)=b,s(c)=s} q_cx_c \le Cap_{bs},\quad \forall b,s,
+\]
+\[
+\sum_{c:(v,f,a,\bar{s})} q_cx_c \le Q_{vfa\bar{s}},\quad \forall v,f,a,\bar{s}.
+\]
+最终整数主问题还加入同贝位不混尺寸、不混箱高，以及箱区边贝 45ft 保留约束。
+
+定价阶段读取覆盖约束、贝位容量、贝位尺寸容量、同组同贝位唯一和大计划配额约束的对偶价格。对候选列计算检验数，检验数为负的列加入列池。达到最大迭代次数或没有负检验数列时，进入最终整数主问题。若 Gurobi 不可用、被 \code{--no-gurobi} 禁用，或主问题没有可用解，程序使用确定性贪心回退生成可检查的数据链路输出。
+
+\section{目标函数}
+
+\subsection{细属性组集中}
+
+细属性组集中由三类惩罚控制：
+\begin{itemize}
+  \item 同一细属性组使用多个箱区，惩罚 \code{fine_group_area_penalty}。
+  \item 同一细属性组使用多个连续 6 小贝区块，惩罚 \code{fine_group_block_penalty}。
+  \item 同一细属性组使用更多贝位，每个被选列叠加 \code{fine_group_bay_penalty}。
+\end{itemize}
+
+\subsection{同箱区内粗属性组集中}
+
+对同一粗属性组 \(g=(v,f,p,s)\) 在同一箱区 \(a\) 内的分布，模型惩罚其使用多个连续 6 小贝区块和多个贝位。对应参数为
+\code{coarse_area_block_penalty} 和 \code{coarse_area_bay_penalty}。
+
+\subsection{粗属性组箱区集中与均衡}
+
+若粗属性组需求量 \(D_g\) 不超过 \code{medium_concentrated_group_threshold}，模型偏好将其集中在尽量少的箱区中，并奖励最大箱区承载更多箱量。
+
+若 \(D_g\) 超过该阈值，模型不要求单个粗属性组按大计划比例摊到所有箱区，而是在实际使用的箱区之间做均衡；同时通过 \code{medium_large_group_min_area_boxes} 和 \code{medium_large_group_small_area_penalty} 惩罚小碎片箱区。默认最小箱量为 5。
+
+\subsection{总的大计划箱区模式偏离}
+
+模型保留总的大计划箱区模式偏离目标。对同一航次、流向和大计划尺寸口径，先按本轮列生成需求总量缩放大计划在各箱区的比例：
+\[
+T_{vfa\bar{s}}
+=D_{vf\bar{s}}
+\frac{Q_{vfa\bar{s}}}{\sum_{a'}Q_{vfa'\bar{s}}}.
+\]
+然后惩罚实际分配 \(X_{vfa\bar{s}}\) 与目标 \(T_{vfa\bar{s}}\) 的绝对偏差。该目标约束的是所有粗/细需求合计后的总箱区模式，不是单个粗属性组必须按大计划比例拆分。
+
+\subsection{泊位距离与作业窗口}
+
+对被使用的航次--箱区组合，模型加入泊位距离成本、规划窗口内其他装船作业冲突惩罚，以及规划窗口后 24 小时内有后续装船作业的偏好奖励。
+
+\section{联合生成输出逻辑}
+
+\subsection{小计划输出}
+
+默认 \code{original} 模式下，\code{small_plan.csv} 只写出 \code{demand_source=document} 的资料箱列。输出字段包含：
+\begin{flushleft}\small\ttfamily
+plan\_level, voyage\_id, group\_id, demand\_source, flow, port, size, height, weight\_class,\\
+special\_stow, special\_stow\_code, area\_no, bay\_no,\\
+six\_bay\_block\_id, six\_bay\_block\_bays, six\_bay\_block\_total\_boxes, planned\_boxes
+\end{flushleft}
+
+\subsection{中计划输出}
+
+默认 \code{original} 模式下，\code{medium_plan.csv} 按 \code{ProblemData.groups} 的粗属性组需求输出。列生成求解结果提供箱区权重：
+\begin{itemize}
+  \item 优先使用该粗属性组自身被选列的箱区分布。
+  \item 若该粗属性组没有被选列，则使用同航次、同流向、同大计划尺寸口径的箱区分布。
+  \item 若仍无可用权重，则使用剩余大计划配额分布。
+\end{itemize}
+
+生成中计划行时，代码先将小计划资料箱列按 \((v,f,p,s,a)\) 汇总，并把该汇总量写入中计划计数器，作为中计划在对应粗属性组--箱区上的下限；随后对每个粗属性组计算
+\[
+\max(\text{中计划需求量},\text{小计划资料箱汇总量})
+\]
+并只分配扣除下限后的剩余箱量。剩余箱量分配遵守大计划箱区配额，并按 \code{medium_large_group_min_area_boxes} 尽量合并小于阈值的箱区碎片。输出字段为：
+\begin{flushleft}\small\ttfamily
+plan\_level, voyage\_id, flow, port, size, window\_start, window\_end,\\
+area\_loading\_during\_window, area\_loading\_after\_window\_24h, area\_no, planned\_boxes
+\end{flushleft}
+
+\subsection{其他输出}
+
+\code{small_plan_six_bay_blocks.csv} 按连续 6 小贝区块汇总小计划箱量。\code{generated_columns.csv} 写出本轮生成过的全部列。\code{big_plan_used.csv} 写出本轮继承的大计划行。\code{diagnostics.json} 写出目标航次、需求箱量、列数、Gurobi 状态、未放箱量、集中堆存指标、中小计划一致性指标、输出目录、创建时间和运行时长。其中 \code{small_medium_consistency_violations} 表示小计划汇总量超过中计划量的粗属性组--箱区数量，\code{small_medium_consistency_shortage_boxes} 表示对应超额箱量。
+
+运行结束后，终端也会打印运行时长，例如 \code{elapsed_time: 12s (12.283s)}。
+
+\section{外部中计划输入时的小计划生成}
+\label{sec:external-medium-input}
+
+当外部已经给定中计划时，入口为 \code{medium_small_column_generation/run_small_plan_from_medium.py}，配套代码为 \code{small_plan_from_medium.py}。该入口只生成小计划，不重新计算中计划需求；外部中计划作为小计划在粗属性组--箱区上的硬上限。
+
+运行命令示例：
+\begin{lstlisting}
+.\.venv\Scripts\python.exe medium_small_column_generation\run_small_plan_from_medium.py --medium-plan path\to\medium_plan.csv
+\end{lstlisting}
+
+外部 \code{medium_plan.csv} 至少需要包含航次、流向、卸港、尺寸、箱区和计划箱量。代码支持如下字段别名：航次可用 \code{voyage_id}、\code{voy_id}、\code{voyage}、\code{voy}、\code{ship_voyage}；流向可用 \code{flow}、\code{status}、\code{io_type}、\code{inout}、\code{in_out}；卸港可用 \code{port}、\code{pod}、\code{discharge_port}、\code{disc_port}、\code{unload_port}、\code{port_cd}；尺寸可用 \code{size}、\code{size_mode}、\code{cntr_size}、\code{container_size}、\code{cntr_siz_cod}；箱区可用 \code{area_no}、\code{area}、\code{yard_area}、\code{block}、\code{block_no}；箱量可用 \code{planned_boxes}、\code{planned_qty}、\code{qty}、\code{quantity}、\code{box_qty}、\code{boxes}。
+
+外部中计划读入后形成两类配额。第一类是粗属性组--箱区上限：
+\[
+E_{vfpsa},
+\]
+表示航次 \(v\)、流向 \(f\)、卸港 \(p\)、尺寸 \(s\)、箱区 \(a\) 上最多可放的小计划箱量。第二类是由外部中计划汇总得到的大计划尺寸口径配额：
+\[
+Q^{E}_{vfa\bar{s}},
+\]
+用于替代本次小计划模型中的大计划箱区配额，其中 45ft 仍归入 40ft 大计划尺寸口径。若命令行没有传入 \code{--voyages}，目标航次由外部中计划推导；若传入 \code{--voyages}，则只保留指定航次的外部中计划行。
+
+该入口的小计划箱量仍来自当前未进场资料箱。外部中计划不改变资料箱读取和在场箱剔除规则；模型需求模式固定为 \code{doc-only}，不生成预测兜底组。除联合生成主线中的贝位容量、尺寸容量、大计划配额和贝位相容性约束外，模型增加：
+\[
+\sum_{c:(v,f,p,s,a)} q_cx_c \le E_{vfpsa},\quad \forall v,f,p,s,a.
+\]
+因此，设小计划按粗属性组--箱区汇总后的箱量为 \(S^{out}_{vfpsa}\)，则满足
+\[
+S^{out}_{vfpsa}\le E_{vfpsa}.
+\]
+如果某些资料箱由于外部中计划上限、贝位容量或相容性规则无法放置，对应箱量通过未放箱变量记录在 \code{diagnostics.json} 中。
+
+输出目录包含 \code{small_plan.csv}、\code{small_plan_six_bay_blocks.csv}、\code{small_plan_medium_summary.csv}、\code{external_medium_plan_used.csv}、\code{medium_plan_big_quota.csv}、\code{generated_columns.csv} 和 \code{diagnostics.json}。\code{small_plan_medium_summary.csv} 是小计划按中计划口径汇总得到的摘要；\code{external_medium_plan_used.csv} 是本次实际使用的外部中计划行；\code{medium_plan_big_quota.csv} 是由外部中计划汇总得到的大计划尺寸口径配额。
+
+\section{运行入口}
+
+联合生成中计划和小计划的命令为：
+\begin{lstlisting}
+.\.venv\Scripts\python.exe medium_small_column_generation\run_column_generation_planner.py
+\end{lstlisting}
+
+该入口使用 \code{pro_test_data_0519} 默认数据目录、\code{allocation.csv} 默认大计划文件和当前命令行参数体系。
+
+\section{需求模式参数}
+
+\begin{longtable}{L{0.94\linewidth}}
+\toprule
+模式说明\\
+\midrule
+\code{--demand-mode original}：默认模式。中计划箱量来自 \code{ProblemData.groups}，小计划箱量来自当前未进场资料箱 \code{ProblemData.small_groups}，预测兜底组参与模型但不写入小计划。\\[0.25em]
+\code{--demand-mode medium}：总规划箱量对齐中计划需求；真实资料箱优先，不足部分生成预测兜底组；小计划输出包含资料箱和预测兜底组。\\[0.25em]
+\code{--demand-mode medium-with-doc-floor}：保留全部当前未进场资料箱，并补足中计划不足部分；当资料箱超过中计划需求时，总规划箱量可能高于中计划需求。\\[0.25em]
+\code{--demand-mode doc-only}：只规划当前未进场资料箱，不生成预测兜底组。\\
+\bottomrule
+\end{longtable}
+
+\section{主要命令行参数}
+
+\begin{longtable}{L{0.94\linewidth}}
+\toprule
+参数、默认值与含义\\
+\midrule
+\code{--max-iterations}（默认：\code{30}）：列生成线性松弛与定价的最大迭代次数。\\[0.25em]
+\code{--columns-per-iteration}（默认：\code{2500}）：每轮最多加入的负检验数列数量。\\[0.25em]
+\code{--initial-columns-per-group}（默认：\code{16}）：每个需求组初始选取多少个候选贝位生成初始列。\\[0.25em]
+\code{--max-candidate-bays-per-group}（默认：\code{500}）：每个需求组最多保留多少个候选贝位。\\[0.25em]
+\code{--mip-time-limit}（默认：\code{120}）：最终整数主问题 Gurobi 时间限制，单位秒。\\[0.25em]
+\code{--mip-gap}（默认：\code{0.01}）：最终整数主问题 MIPGap。\\[0.25em]
+\code{--fine-group-area-penalty}（默认：\code{80}）：同一细属性组使用多个箱区的惩罚。\\[0.25em]
+\code{--fine-group-block-penalty}（默认：\code{35}）：同一细属性组使用多个连续 6 小贝区块的惩罚。\\[0.25em]
+\code{--fine-group-bay-penalty}（默认：\code{8}）：同一细属性组使用更多贝位的固定惩罚。\\[0.25em]
+\code{--coarse-area-block-penalty}（默认：\code{24}）：同一粗属性组在同一箱区内使用多个连续 6 小贝区块的惩罚。\\[0.25em]
+\code{--coarse-area-bay-penalty}（默认：\code{2.5}）：同一粗属性组在同一箱区内使用更多贝位的惩罚。\\[0.25em]
+\code{--medium-concentrated-group-threshold}（默认：\code{26}）：粗属性组箱量小于等于该阈值时走集中堆存目标，大于该阈值时走箱区均衡目标。\\[0.25em]
+\code{--medium-small-group-area-split-penalty}（默认：\code{500}）：小量粗属性组使用额外箱区的惩罚。\\[0.25em]
+\code{--medium-small-group-fragment-penalty}（默认：\code{20}）：小量粗属性组没有放在最大箱区的碎片箱量惩罚。\\[0.25em]
+\code{--medium-large-group-min-area-boxes}（默认：\code{5}）：大量粗属性组选中某箱区后，不希望低于该箱量。\\[0.25em]
+\code{--medium-large-group-small-area-penalty}（默认：\code{120}）：大量粗属性组出现低于最小箱量箱区时的惩罚。\\[0.25em]
+\code{--no-gurobi}：跳过 Gurobi 主问题，使用贪心回退检查数据链路。贪心回退用于调试，不代表正式优化质量。\\
+\bottomrule
+\end{longtable}
+
+\end{document}
