@@ -8,3 +8,12 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .venv/
+
+# Local development/test data copied into the deliverable package when needed.
+test_data/
+
+# Generated run artifacts.
+flat_full_yard_plan_2_scip/full_plan_outputs/
+
+# Office temporary lock files.
+~$*

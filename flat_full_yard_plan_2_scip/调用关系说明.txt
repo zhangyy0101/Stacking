@@ -1,0 +1,93 @@
+flat_full_yard_plan_2_scip 调用关系简要说明
+
+一、运行入口
+
+run_flat_full_yard_plan.py 是总入口，负责串联大计划、中计划、小计划。
+当前目录存在 input_data.json 且没有原始 flat 数据文件时，主脚本会自动使用 input_data.json 作为输入。
+
+推荐运行方式：
+
+python run_flat_full_yard_plan.py --run-name delivery_run
+
+也可以显式指定：
+
+python run_flat_full_yard_plan.py --adapter-json input_data.json --run-name delivery_run
+
+二、数据输入与预处理模块
+
+input_data.json
+  交付数据包，保存了箱位快照、TOPS 计划、箱区功能、船舶靠泊、航次箱信息、泊位距离矩阵等输入数据。
+
+input_adapter_gd.py
+  InputAdapterGd 的序列化/反序列化模块。
+  主要作用是读取 input_data.json，并把 JSON 中的 DataFrame split 结构还原成 pandas DataFrame。
+
+adapter_input_bridge.py
+  JSON 到算法 flat 输入的桥接模块。
+  调用 input_adapter_gd.py 读取 input_data.json，然后在每次运行目录下生成 adapter_flat_data 临时数据目录。
+  生成内容包括 bay_slots_detail.parquet、tops_plan_info.parquet、vessel_berth_info_new.csv、箱区功能.xlsx、适放箱区_泊位距离矩阵.xlsx、container_info_*.parquet、predict_data_*.xlsx 等。
+
+flat_yard_plan_data_io.py
+  算法的数据装配模块。
+  从 adapter_flat_data 中读取临时 flat 数据，构建大计划 LargePlanningData 和中小计划 ProblemData。
+
+三、大计划模块
+
+run_flat_full_yard_plan.py
+  调用 build_large_inputs() 构建大计划输入。
+
+flat_yard_plan_data_io.py
+  build_large_inputs() 负责读取箱位、箱区、靠泊、TOPS、需求、距离、历史计划等数据，并组装 LargePlanningData。
+
+planning_large_solver.py
+  solve_daily_rolling_yard_plan() 是大计划求解器。
+  输入 LargePlanningData，输出航次-箱型-流向到箱区的大计划分配结果。
+
+大计划主要输出：
+  full_plan_outputs/<run_name>/outputs_large/latest_run/allocation.csv
+  full_plan_outputs/<run_name>/outputs_large/latest_run/allocation_new.csv
+  full_plan_outputs/<run_name>/outputs_large/latest_run/diagnostics.json
+
+四、中计划和小计划模块
+
+run_flat_full_yard_plan.py
+  大计划完成后，把 allocation.csv 作为中小计划输入，调用 load_medium_small_inputs()。
+
+flat_yard_plan_data_io.py
+  load_medium_small_inputs() 读取大计划结果并计算中计划需求。
+  build_problem() 进一步构建中小计划 ProblemData，包括箱组、可用 bay、箱区作业冲突、泊位距离、容量等信息。
+
+block_bay_planning/models.py
+  定义中小计划使用的数据结构和配置。
+
+block_bay_planning/sa_solver.py
+  SimulatedAnnealingSolver 是中小计划求解器。
+  负责把中计划箱区分配细化到小计划 bay/六贝位层级。
+
+中小计划主要输出：
+  full_plan_outputs/<run_name>/medium_small_plan/medium_plan.csv
+  full_plan_outputs/<run_name>/medium_small_plan/small_plan.csv
+  full_plan_outputs/<run_name>/medium_small_plan/small_plan_six_bay_blocks.csv
+  full_plan_outputs/<run_name>/medium_small_plan/medium_demand_by_port.csv
+  full_plan_outputs/<run_name>/medium_small_plan/diagnostics.json
+
+五、可视化模块
+
+planning_large_visualize.py
+  在大计划求解完成后读取 allocation.csv 和箱区底图，生成箱区分配可视化图片。
+
+可视化主要输出：
+  full_plan_outputs/<run_name>/outputs_large/yard_visualization/yard_allocation_annotated.png
+  full_plan_outputs/<run_name>/outputs_large/yard_visualization/visualization_allocation_check.csv
+
+六、整体数据流
+
+input_data.json
+  -> input_adapter_gd.py
+  -> adapter_input_bridge.py
+  -> adapter_flat_data 临时 flat 数据
+  -> flat_yard_plan_data_io.py
+  -> planning_large_solver.py 生成大计划
+  -> flat_yard_plan_data_io.py 基于大计划构建中小计划输入
+  -> block_bay_planning/sa_solver.py 生成中计划和小计划
+  -> run_flat_full_yard_plan.py 汇总输出

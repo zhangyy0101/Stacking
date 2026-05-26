@@ -13,6 +13,7 @@ sys.dont_write_bytecode = True
 import pandas as pd
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+DEFAULT_ADAPTER_JSON = SCRIPT_DIR / "input_data.json"
 
 from flat_yard_plan_data_io import (
     DEFAULT_EXPORT_VESSELS,
@@ -27,6 +28,7 @@ from flat_yard_plan_data_io import (
     write_json,
     write_large_outputs,
 )
+from adapter_input_bridge import export_adapter_json_to_flat_data
 from planning_large_solver import solve_daily_rolling_yard_plan
 from planning_large_visualize import generate_yard_visualization
 from block_bay_planning.models import SAConfig
@@ -38,9 +40,15 @@ def parse_args() -> argparse.Namespace:
         description="Run the complete large, medium, and small yard planning pipeline from one flat data folder."
     )
     parser.add_argument("--data-dir", type=Path, default=SCRIPT_DIR)
+    parser.add_argument(
+        "--adapter-json",
+        type=Path,
+        default=None,
+        help="InputAdapterGd JSON file, or a pro_test_data_* directory containing input_data.json.",
+    )
     parser.add_argument("--output-root", type=Path, default=SCRIPT_DIR / "full_plan_outputs")
     parser.add_argument("--run-name", default=None)
-    parser.add_argument("--planning-time", default=DEFAULT_PLANNING_TIME)
+    parser.add_argument("--planning-time", default=None)
     parser.add_argument("--export-vessels", nargs="+", default=DEFAULT_EXPORT_VESSELS)
     parser.add_argument("--import-vessels", nargs="+", default=DEFAULT_IMPORT_VESSELS)
     parser.add_argument("--medium-voyages", nargs="+", default=None)
@@ -65,12 +73,6 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     args = parse_args()
-    planning_time = parse_planning_time(args.planning_time)
-    medium_planning_time = parse_datetime(args.planning_time)
-    if medium_planning_time is None:
-        raise SystemExit(f"Invalid --planning-time: {args.planning_time}")
-
-    data_dir = args.data_dir.resolve()
     run_dir = create_run_dir(args.output_root.resolve(), args.run_name)
     large_output_dir = run_dir / "outputs_large" / "latest_run"
     large_state_dir = run_dir / "outputs_large" / "state"
@@ -78,6 +80,28 @@ def main() -> None:
     for path in (large_output_dir, large_state_dir, medium_small_output_dir):
         path.mkdir(parents=True, exist_ok=False)
 
+    data_dir = args.data_dir.resolve()
+    adapter_json = args.adapter_json
+    if adapter_json is None and DEFAULT_ADAPTER_JSON.exists() and not has_flat_input_files(data_dir):
+        adapter_json = DEFAULT_ADAPTER_JSON
+
+    adapter_export = None
+    if adapter_json is not None:
+        adapter_export = export_adapter_json_to_flat_data(adapter_json, run_dir / "adapter_flat_data")
+        data_dir = adapter_export.data_dir
+
+    planning_time_value = args.planning_time
+    if planning_time_value is None and adapter_export is not None:
+        planning_time_value = adapter_export.planning_time
+    planning_time_value = planning_time_value or DEFAULT_PLANNING_TIME
+    planning_time = parse_planning_time(planning_time_value)
+    medium_planning_time = parse_datetime(planning_time_value)
+    if medium_planning_time is None:
+        raise SystemExit(f"Invalid --planning-time: {planning_time_value}")
+
+    if adapter_export is not None:
+        print(f"Adapter JSON: {adapter_export.adapter_json}")
+        print(f"Adapter flat data metadata: {adapter_export.metadata_path}")
     print(f"Flat data directory: {data_dir}")
     print(f"Run output directory: {run_dir}")
 
@@ -153,6 +177,8 @@ def main() -> None:
     summary = {
         "planning_time": str(planning_time),
         "data_dir": str(data_dir),
+        "adapter_json": str(adapter_export.adapter_json) if adapter_export else None,
+        "adapter_flat_data_metadata": str(adapter_export.metadata_path) if adapter_export else None,
         "large_objective_mode": "weighted_sum",
         "large_output_dir": str(large_output_dir),
         "large_visualization_dir": str(large_visualization_dir),
@@ -181,6 +207,12 @@ def create_run_dir(output_root: Path, run_name: str | None) -> Path:
     run_dir = output_root / name
     run_dir.mkdir(parents=True, exist_ok=False)
     return run_dir
+
+
+def has_flat_input_files(data_dir: Path) -> bool:
+    return (data_dir / "bay_slots_detail.parquet").exists() and (
+        (data_dir / "vessel_berth_info_new.csv").exists() or (data_dir / "vessel_berth_info.csv").exists()
+    )
 
 
 def print_case_summary(artifacts) -> None:

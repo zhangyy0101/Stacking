@@ -605,10 +605,11 @@ def find_distance_matrix_file(data_dir: Path) -> Path:
         if path.name.startswith("~$"):
             continue
         try:
-            xls = pd.ExcelFile(path)
+            with pd.ExcelFile(path) as xls:
+                sheet_names = list(xls.sheet_names)
         except Exception:
             continue
-        if any(_sheet_has_area_and_berths(path, sheet) for sheet in xls.sheet_names):
+        if any(_sheet_has_area_and_berths(path, sheet) for sheet in sheet_names):
             return path
     raise FileNotFoundError(f"No berth-area distance matrix workbook found under {data_dir}")
 
@@ -734,13 +735,13 @@ def read_distance_matrix(
     berth_by_vessel: Mapping[str, str] | None = None,
 ) -> dict[tuple[str, str], float]:
     path = find_distance_matrix_file(data_dir)
-    xls = pd.ExcelFile(path)
     frame = None
-    for sheet in xls.sheet_names:
-        trial = pd.read_excel(path, sheet_name=sheet)
-        if "area_no" in trial.columns and any(str(column).upper().startswith("B") for column in trial.columns):
-            frame = trial
-            break
+    with pd.ExcelFile(path) as xls:
+        for sheet in xls.sheet_names:
+            trial = pd.read_excel(xls, sheet_name=sheet)
+            if "area_no" in trial.columns and any(str(column).upper().startswith("B") for column in trial.columns):
+                frame = trial
+                break
     if frame is None:
         raise KeyError(f"No distance matrix sheet with area_no and berth columns in {path}")
     area_filter = set(areas or [])
@@ -952,8 +953,8 @@ def add_grouped_demand(
 
 
 def read_prediction_counts(path: Path) -> tuple[float, float]:
-    xls = pd.ExcelFile(path)
-    frame = pd.read_excel(path, sheet_name=xls.sheet_names[0])
+    with pd.ExcelFile(path) as xls:
+        frame = pd.read_excel(xls, sheet_name=xls.sheet_names[0])
     total20 = 0.0
     total40 = 0.0
     for row in frame.to_dict("records"):
@@ -971,7 +972,7 @@ def read_prediction_work_lanes(path: Path) -> float:
     xls = pd.ExcelFile(path)
     robust_sheet_name = next((name for name in xls.sheet_names if "作业路" in str(name)), None)
     if robust_sheet_name is not None:
-        frame = pd.read_excel(path, sheet_name=robust_sheet_name)
+        frame = pd.read_excel(xls, sheet_name=robust_sheet_name)
         candidates: list[float] = []
 
         def collect_robust(value: Any) -> None:
@@ -985,9 +986,10 @@ def read_prediction_work_lanes(path: Path) -> float:
             collect_robust(column)
         for value in frame.to_numpy().ravel():
             collect_robust(value)
+        xls.close()
         return candidates[0] if candidates else 0.0
-    sheet_name = next((name for name in xls.sheet_names if "作业" in str(name) or "璺" in str(name)), xls.sheet_names[-1])
-    frame = pd.read_excel(path, sheet_name=sheet_name)
+    sheet_name = next((name for name in xls.sheet_names if "作业" in str(name) or "路" in str(name)), xls.sheet_names[-1])
+    frame = pd.read_excel(xls, sheet_name=sheet_name)
     candidates: list[float] = []
 
     def collect(value: Any) -> None:
@@ -1002,7 +1004,9 @@ def read_prediction_work_lanes(path: Path) -> float:
     for value in frame.to_numpy().ravel():
         collect(value)
     if not candidates:
+        xls.close()
         return 0.0
+    xls.close()
     return candidates[0]
 
 
@@ -1473,7 +1477,8 @@ def read_predicted_by_port_size(data_dir: Path, voyage_id: str) -> Counter[tuple
         ),
         xls.sheet_names[0],
     )
-    frame = pd.read_excel(path, sheet_name=sheet_name)
+    frame = pd.read_excel(xls, sheet_name=sheet_name)
+    xls.close()
     counter: Counter[tuple[str, str, str]] = Counter()
     for row in frame.to_dict("records"):
         size_mode = normalize_size_small(row.get("IYC_CSZ_CSIZECD"))
