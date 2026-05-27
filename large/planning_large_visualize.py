@@ -133,6 +133,10 @@ def build_area_positions() -> dict[str, tuple[int, int]]:
             "2H": (620, 978),
             "2J": (620, 1032),
             "2K": (620, 1060),
+            "3G": (850, 978),
+            "3H": (850, 1004),
+            "3J": (850, 1034),
+            "3K": (850, 1064),
             "4E": (1080, 916),
             "4F": (1080, 944),
             "4G": (1080, 978),
@@ -566,6 +570,10 @@ def main() -> None:
     )
     if unmapped:
         write_unmapped_areas(output_dir / "unmapped_areas.csv", unmapped, allocation_by_area)
+    else:
+        unmapped_path = output_dir / "unmapped_areas.csv"
+        if unmapped_path.exists():
+            unmapped_path.unlink()
 
     print(f"Base image: {base_image_path}")
     print(f"Allocation rows grouped into areas: {len(allocation_by_area)}")

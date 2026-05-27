@@ -29,6 +29,7 @@ input_adapter_gd.py
   InputAdapterGd 的序列化/反序列化模块。
   主脚本通过 InputAdapterGd.load_from_json() 读取 input_data.json。
   JSON 中的 DataFrame split 结构会在内存中还原为 pandas DataFrame。
+  计划时间直接使用 input_data.json 中的 planning_time 字段；主入口不再提供 --planning-time 手动输入。
 
 input_adapter_standard.py
   当前 adapter 对象版数据装配模块。

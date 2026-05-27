@@ -17,12 +17,7 @@ DEFAULT_ADAPTER_JSON = SCRIPT_DIR / "input_data.json"
 import input_adapter_standard as adapter_data_io
 from input_adapter_gd import InputAdapterGd
 from input_adapter_standard import (
-    DEFAULT_EXPORT_VESSELS,
-    DEFAULT_IMPORT_VESSELS,
     DEFAULT_MISPLACED_BAY_EXCLUSION_RATIO,
-    DEFAULT_PLANNING_TIME,
-    parse_datetime,
-    parse_planning_time,
     write_json,
 )
 from planning_large_solver import solve_daily_rolling_yard_plan
@@ -43,9 +38,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output-root", type=Path, default=SCRIPT_DIR / "full_plan_outputs")
     parser.add_argument("--run-name", default=None)
-    parser.add_argument("--planning-time", default=None)
-    parser.add_argument("--export-vessels", nargs="+", default=DEFAULT_EXPORT_VESSELS)
-    parser.add_argument("--import-vessels", nargs="+", default=DEFAULT_IMPORT_VESSELS)
     parser.add_argument("--medium-voyages", nargs="+", default=None)
     parser.add_argument("--large-time-limit", type=float, default=120.0)
     parser.add_argument("--large-mip-gap", type=float, default=0.001)
@@ -78,16 +70,13 @@ def main() -> None:
     adapter_json_path = resolve_adapter_json(args.adapter_json)
     adapter_input = InputAdapterGd.load_from_json(str(adapter_json_path))
 
-    planning_time_value = args.planning_time
-    if planning_time_value is None:
-        adapter_planning_time = getattr(adapter_input, "planning_time", None)
-        if adapter_planning_time is not None and not pd.isna(adapter_planning_time):
-            planning_time_value = pd.Timestamp(adapter_planning_time).strftime("%Y-%m-%d %H:%M:%S")
-    planning_time_value = planning_time_value or DEFAULT_PLANNING_TIME
-    planning_time = parse_planning_time(planning_time_value)
-    medium_planning_time = parse_datetime(planning_time_value)
-    if medium_planning_time is None:
-        raise SystemExit(f"Invalid --planning-time: {planning_time_value}")
+    adapter_planning_time = getattr(adapter_input, "planning_time", None)
+    if adapter_planning_time is None or pd.isna(adapter_planning_time):
+        raise SystemExit("InputAdapterGd JSON field planning_time is empty.")
+    planning_time = pd.Timestamp(adapter_planning_time)
+    if pd.isna(planning_time):
+        raise SystemExit(f"Invalid InputAdapterGd planning_time: {adapter_planning_time}")
+    medium_planning_time = planning_time.to_pydatetime()
 
     print(f"Adapter JSON: {adapter_json_path}")
     print("Input mode: InputAdapterGd object (no adapter_flat_data files are generated)")
@@ -97,8 +86,6 @@ def main() -> None:
     artifacts, state = adapter_data_io.build_large_inputs(
         adapter_input,
         planning_time,
-        export_vessels=args.export_vessels,
-        import_vessels=args.import_vessels,
         disable_default_flow_aliases=args.disable_default_flow_aliases,
     )
     print_case_summary(artifacts)

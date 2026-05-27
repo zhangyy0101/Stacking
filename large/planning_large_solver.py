@@ -35,6 +35,7 @@ class YardPlanningWeights:
     of_area: float = 40.0
     distance: float = 30.0
     share: float = 20.0
+    berth_conflict: float = 25.0
     adjustment: float = 10.0
     balance: float = 1.0
 
@@ -116,6 +117,9 @@ class DailyRollingYardPlanningData:
     # 出口 OF 作业路数。软约束上限为 2 * OFWorkLanes[v] 个箱区。
     OFWorkLanes: Mapping[Vessel, float] = field(default_factory=dict)
 
+    # 预计靠泊时间相近的出口航次对；模型会软惩罚这些航次共用同一箱区。
+    berth_conflict_pairs: Sequence[Tuple[Vessel, Vessel]] = field(default_factory=tuple)
+
     # 目标函数权重。
     weights: YardPlanningWeights = field(default_factory=YardPlanningWeights)
 
@@ -173,6 +177,7 @@ class DailyRollingYardPlanningSolution:
     r20_neg: Dict[VFA, float]
     r40_pos: Dict[VFA, float]
     r40_neg: Dict[VFA, float]
+    berth_conflict_shared: Dict[Tuple[Vessel, Vessel, Area], int]
     objective_components: Dict[str, float]
     model: Optional[Any] = None
 
@@ -297,8 +302,15 @@ def build_daily_rolling_yard_model(
     # of_area_used[v,a]：出口航次 v 的 OF 箱是否使用箱区 a。
     # of_area_over[v]：OF 使用箱区数超过 2 倍作业路数的超额量。
     OF_area_vessels = params["OF_area_vessels"]
+    berth_conflict_pairs = params["berth_conflict_pairs"]
+    berth_conflict_keys = params["berth_conflict_keys"]
     of_area_used = model.addVars(OF_area_vessels, A, vtype=GRB.BINARY, name="of_area_used")
     of_area_over = model.addVars(OF_area_vessels, vtype=GRB.CONTINUOUS, lb=0, name="of_area_over")
+    berth_conflict_shared = model.addVars(
+        berth_conflict_keys,
+        vtype=GRB.BINARY,
+        name="berth_conflict_shared",
+    )
 
     # OF balance range variables. These only apply to export vessels with OF work lanes.
     of_balance_u20 = model.addVars(OF_area_vessels, vtype=GRB.CONTINUOUS, lb=0, name="of_balance_u20")
@@ -467,8 +479,17 @@ def build_daily_rolling_yard_model(
                 name=f"link_y_lower[{v},{a}]",
             )
 
+    # 约束 10：预计靠泊时间接近的出口航次尽量不共用箱区。
+    # 该规则为软约束；若两个航次都使用同一箱区，则 berth_conflict_shared=1 并进入目标函数惩罚。
+    for left, right in berth_conflict_pairs:
+        for a in A:
+            shared = berth_conflict_shared[left, right, a]
+            model.addConstr(shared >= y[left, a] + y[right, a] - 1, name=f"berth_conflict_lb[{left},{right},{a}]")
+            model.addConstr(shared <= y[left, a], name=f"berth_conflict_left[{left},{right},{a}]")
+            model.addConstr(shared <= y[right, a], name=f"berth_conflict_right[{left},{right},{a}]")
+
     # -------------------------
-    # 约束 10：出口 OF 使用箱区数软约束
+    # 约束 11：出口 OF 使用箱区数软约束
     # 每个出口航次的 OF 箱使用箱区数建议不超过 2 * 作业路数；超过部分进入 of_area_over。
     # -------------------------
     if "OF" in F:
@@ -572,6 +593,9 @@ def build_daily_rolling_yard_model(
     # Z_share：单箱区服务航次数超过 2 的超额惩罚。
     Z_share = gp.quicksum(h[a] for a in A)
 
+    # Z_berth_conflict：预计靠泊时间接近的出口航次共用箱区惩罚。
+    Z_berth_conflict = gp.quicksum(berth_conflict_shared[key] for key in berth_conflict_keys)
+
     # Z_op：箱区作业能力超额惩罚。
     Z_op = gp.quicksum(o[a] for a in A)
 
@@ -591,6 +615,7 @@ def build_daily_rolling_yard_model(
         + weights.of_area * Z_of_area
         + weights.distance * Z_dist
         + weights.share * Z_share
+        + weights.berth_conflict * Z_berth_conflict
         + weights.adjustment * Z_adj
         + weights.balance * Z_bal,
         GRB.MINIMIZE,
@@ -612,6 +637,7 @@ def build_daily_rolling_yard_model(
         "s40": s40,
         "of_area_used": of_area_used,
         "of_area_over": of_area_over,
+        "berth_conflict_shared": berth_conflict_shared,
         "of_balance_u20": of_balance_u20,
         "of_balance_l20": of_balance_l20,
         "of_balance_u40": of_balance_u40,
@@ -623,6 +649,7 @@ def build_daily_rolling_yard_model(
             "distance": Z_dist,
             "distance_raw": Z_dist_raw,
             "share": Z_share,
+            "berth_conflict": Z_berth_conflict,
             "adjustment": Z_adj,
             "balance": Z_bal,
         },
@@ -693,6 +720,7 @@ def solve_daily_rolling_yard_plan(
             r20_neg={},
             r40_pos={},
             r40_neg={},
+            berth_conflict_shared={},
             objective_components={},
             model=model if keep_model else None,
         )
@@ -726,6 +754,10 @@ def solve_daily_rolling_yard_plan(
         r20_neg=_extract_float_tupledict(variables["r20_neg"], (V_old, F, A)),
         r40_pos=_extract_float_tupledict(variables["r40_pos"], (V_old, F, A)),
         r40_neg=_extract_float_tupledict(variables["r40_neg"], (V_old, F, A)),
+        berth_conflict_shared=_extract_int_tupledict(
+            variables["berth_conflict_shared"],
+            (params["berth_conflict_keys"],),
+        ),
         objective_components={name: expr.getValue() for name, expr in components.items()},
         model=model if keep_model else None,
     )
@@ -877,6 +909,8 @@ def _prepare_params(
     OFWorkLanes = {v: _num(data.OFWorkLanes, (v,), 0.0) for v in V}
     OF_area_limit = {v: 2.0 * OFWorkLanes[v] for v in V}
     OF_area_vessels = [v for v in V if "OF" in F and OFWorkLanes[v] > 0]
+    berth_conflict_pairs = _normalize_vessel_pairs(data.berth_conflict_pairs, V)
+    berth_conflict_keys = [(left, right, a) for left, right in berth_conflict_pairs for a in A]
 
     # 旧航次集合：只有 O[v]=1 的航次进入调整幅度变量和调整惩罚。
     V_old = [v for v in V if int(data.O.get(v, 0)) == 1]
@@ -923,6 +957,8 @@ def _prepare_params(
         "OFWorkLanes": OFWorkLanes,
         "OF_area_limit": OF_area_limit,
         "OF_area_vessels": OF_area_vessels,
+        "berth_conflict_pairs": berth_conflict_pairs,
+        "berth_conflict_keys": berth_conflict_keys,
     }
 
 
@@ -986,6 +1022,24 @@ def _unique_list(values: Sequence[str], name: str) -> list[str]:
     result = list(values)
     if len(result) != len(set(result)):
         raise ValueError(f"{name} contains duplicated values.")
+    return result
+
+
+def _normalize_vessel_pairs(pairs: Sequence[Tuple[Vessel, Vessel]], vessels: Sequence[Vessel]) -> list[tuple[Vessel, Vessel]]:
+    vessel_set = set(vessels)
+    seen: set[frozenset[Vessel]] = set()
+    result: list[tuple[Vessel, Vessel]] = []
+    for pair in pairs or ():
+        if len(pair) != 2:
+            continue
+        left, right = str(pair[0]), str(pair[1])
+        if left == right or left not in vessel_set or right not in vessel_set:
+            continue
+        pair_key = frozenset((left, right))
+        if pair_key in seen:
+            continue
+        seen.add(pair_key)
+        result.append((left, right))
     return result
 
 
@@ -1297,6 +1351,8 @@ def build_daily_rolling_yard_model_scip(
 
     V_old = params["V_old"]
     OF_area_vessels = params["OF_area_vessels"]
+    berth_conflict_pairs = params["berth_conflict_pairs"]
+    berth_conflict_keys = params["berth_conflict_keys"]
     weights = data.weights
 
     model = Model(data.name)
@@ -1365,6 +1421,10 @@ def build_daily_rolling_yard_model_scip(
     of_area_over = {
         v: model.addVar(vtype="C", lb=0.0, name=f"of_area_over[{v}]")
         for v in OF_area_vessels
+    }
+    berth_conflict_shared = {
+        key: model.addVar(vtype="B", name=f"berth_conflict_shared[{key[0]},{key[1]},{key[2]}]")
+        for key in berth_conflict_keys
     }
     of_balance_u20 = {
         v: model.addVar(vtype="C", lb=0.0, ub=max(0.0, params["D20"][v, "OF"]), name=f"of_balance_u20[{v}]")
@@ -1460,6 +1520,13 @@ def build_daily_rolling_yard_model_scip(
             model.addCons(total_plan <= params["M"][v] * y[v, a])
             model.addCons(total_plan >= y[v, a])
 
+    for left, right in berth_conflict_pairs:
+        for a in A:
+            shared = berth_conflict_shared[left, right, a]
+            model.addCons(shared >= y[left, a] + y[right, a] - 1.0)
+            model.addCons(shared <= y[left, a])
+            model.addCons(shared <= y[right, a])
+
     if "OF" in F:
         for v in OF_area_vessels:
             for a in A:
@@ -1517,6 +1584,7 @@ def build_daily_rolling_yard_model_scip(
         for a in A
     )
     Z_share = quicksum(h[a] for a in A)
+    Z_berth_conflict = quicksum(berth_conflict_shared[key] for key in berth_conflict_keys)
     Z_op = quicksum(o[a] for a in A)
     Z_of_area = quicksum(of_area_over[v] for v in OF_area_vessels)
     Z_bal = quicksum(
@@ -1531,6 +1599,7 @@ def build_daily_rolling_yard_model_scip(
         + weights.of_area * Z_of_area
         + weights.distance * Z_dist
         + weights.share * Z_share
+        + weights.berth_conflict * Z_berth_conflict
         + weights.adjustment * Z_adj
         + weights.balance * Z_bal,
         "minimize",
@@ -1552,6 +1621,7 @@ def build_daily_rolling_yard_model_scip(
         "s40": s40,
         "of_area_used": of_area_used,
         "of_area_over": of_area_over,
+        "berth_conflict_shared": berth_conflict_shared,
         "objective_components": {
             "miss": Z_miss,
             "operation": Z_op,
@@ -1559,6 +1629,7 @@ def build_daily_rolling_yard_model_scip(
             "distance": Z_dist,
             "distance_raw": Z_dist_raw,
             "share": Z_share,
+            "berth_conflict": Z_berth_conflict,
             "adjustment": Z_adj,
             "balance": Z_bal,
         },
@@ -1609,6 +1680,7 @@ def solve_daily_rolling_yard_plan(
             r20_neg={},
             r40_pos={},
             r40_neg={},
+            berth_conflict_shared={},
             objective_components={},
             model=model if keep_model else None,
         )
@@ -1642,6 +1714,11 @@ def solve_daily_rolling_yard_plan(
         r20_neg=_extract_scip_float_vars(model, variables["r20_neg"], (V_old, F, A)),
         r40_pos=_extract_scip_float_vars(model, variables["r40_pos"], (V_old, F, A)),
         r40_neg=_extract_scip_float_vars(model, variables["r40_neg"], (V_old, F, A)),
+        berth_conflict_shared=_extract_scip_int_vars(
+            model,
+            variables["berth_conflict_shared"],
+            (params["berth_conflict_keys"],),
+        ),
         objective_components={name: _safe_scip_expr_value(model, expr) for name, expr in components.items()},
         model=model if keep_model else None,
     )

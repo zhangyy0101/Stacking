@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import subprocess
 import sys
 import uuid
 from dataclasses import dataclass
+from itertools import combinations
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
@@ -20,12 +22,16 @@ from planning_large_solver import (
 )
 
 
-DEFAULT_PLANNING_TIME = "2026-05-08 09:30:00"
+DEFAULT_PLANNING_TIME = "2026-05-19 09:30:00"
 DEFAULT_EXPORT_VESSELS = None
 DEFAULT_IMPORT_VESSELS = None
 IGNORED_EXPORT_VESSELS = {"454447"}
 KNOWN_EXPORT_SNAPSHOT_FLOWS = {"OF", "OZ", "T"}
 UNKNOWN_EXPORT_SNAPSHOT_FLOW_FALLBACK = "OF"
+IMPORT_DIRECT_FLOWS = {"IZ", "IF", "T"}
+IMPORT_FALLBACK_FLOW = "OZ"
+UNRESTRICTED_AREA_PREFIX = "E"
+BERTH_CONFLICT_THRESHOLD_HOURS = 2.0
 
 # 进口资料箱中存在 IE/RF/RE，但当前箱区功能表没有这些功能。
 # 这里默认将它们映射为 IF，使进口箱能使用 IF 功能箱区；如业务口径变化，可在此修改。
@@ -318,6 +324,21 @@ def build_current_case_data(
     bay_total_slots = build_bay_total_slot_counts(snapshot, areas)
     bad_bays = identify_bad_bays(current_snapshot, area_functions, bay_total_slots)
     l20, l40, q20, q40 = build_snapshot_count_params(current_snapshot, area_functions, set(areas))
+    departure_deductions, departure_avoidance = compute_departure_operation_deductions(
+        vessel_info=vessel_info,
+        snapshot=snapshot,
+        planning_time=planning_time,
+        areas=areas,
+    )
+    effective_load_capacity = {
+        area: max(0.0, float(load_capacity.get(area, 0.0)) - float(departure_deductions.get(area, 0.0)))
+        for area in areas
+    }
+    close_berth_pairs, close_berth_diagnostics = build_close_export_berth_pairs(
+        vessel_info=vessel_info,
+        export_vessels=export_vessels,
+        threshold_hours=BERTH_CONFLICT_THRESHOLD_HOURS,
+    )
 
     # 容量统计：
     # 只读取未拆分 bay_slots_detail.parquet。C20 使用未拆分物理箱位行数口径；
@@ -358,6 +379,7 @@ def build_current_case_data(
         export_vessels=export_vessels,
         import_vessels=import_vessels,
         current_snapshot=current_snapshot,
+        model_areas=set(areas),
         flow_aliases=flow_aliases,
     )
     of_work_lanes = {
@@ -385,7 +407,7 @@ def build_current_case_data(
 
     # U/E：箱区用途和可用性。
     # U 只看功能是否允许；E 还会检查 TOPS 后容量是否为正。
-    u = {(a, f): int(f in area_functions.get(a, set())) for a in areas for f in flows}
+    u = {(a, f): int(area_allows_flow(a, f, area_functions)) for a in areas for f in flows}
     e20, e40 = build_availability_flags(
         vessels=all_vessels,
         flows=flows,
@@ -416,7 +438,7 @@ def build_current_case_data(
         Cbar20=cbar20,
         Cbar20Direct=cbar20_direct,
         Cbar40=cbar40,
-        H=load_capacity,
+        H=effective_load_capacity,
         distance=distance,
         U=u,
         E20=e20,
@@ -425,12 +447,14 @@ def build_current_case_data(
         P40=p40,
         O=old_flags,
         OFWorkLanes=of_work_lanes,
+        berth_conflict_pairs=close_berth_pairs,
         weights=YardPlanningWeights(
             miss=100.0,
             operation=50.0,
             of_area=40.0,
             distance=30.0,
             share=20.0,
+            berth_conflict=25.0,
             adjustment=10.0,
             balance=1.0,
         ),
@@ -453,6 +477,14 @@ def build_current_case_data(
         "capacity20_if_total": float(sum(c20[a] for a in areas if "IF" in area_functions.get(a, set()))),
         "capacity20_direct_if_total": float(sum(c20_direct[a] for a in areas if "IF" in area_functions.get(a, set()))),
         "capacity40_if_total": float(sum(c40[a] for a in areas if "IF" in area_functions.get(a, set()))),
+        "load_capacity_original_total": float(sum(load_capacity.values())),
+        "load_capacity_effective_total": float(sum(effective_load_capacity.values())),
+        "departure_operation_deduction_total": float(sum(departure_deductions.values())),
+        "departure_operation_deductions_by_area": departure_deductions,
+        "departure_operation_avoidance": departure_avoidance,
+        "close_berth_conflict_threshold_hours": BERTH_CONFLICT_THRESHOLD_HOURS,
+        "close_berth_conflict_pairs": [list(pair) for pair in close_berth_pairs],
+        "close_berth_conflict_pair_details": close_berth_diagnostics,
         "cbar20_min": float(min(cbar20.values()) if cbar20 else 0.0),
         "cbar20_direct_min": float(min(cbar20_direct.values()) if cbar20_direct else 0.0),
         "cbar40_min": float(min(cbar40.values()) if cbar40 else 0.0),
@@ -785,6 +817,28 @@ def normalize_export_snapshot_flow(value: Any, aliases: Mapping[str, str]) -> Op
     return flow
 
 
+def normalize_import_planning_flow(value: Any, aliases: Mapping[str, str]) -> Optional[str]:
+    flow = normalize_flow(value, aliases)
+    if not flow:
+        return None
+    if flow in IMPORT_DIRECT_FLOWS:
+        return flow
+    return IMPORT_FALLBACK_FLOW
+
+
+def is_unrestricted_area(area: Any) -> bool:
+    code = normalize_code(area)
+    return bool(code and code.startswith(UNRESTRICTED_AREA_PREFIX))
+
+
+def area_allows_flow(area: Any, flow: Any, area_functions: Mapping[str, set[str]]) -> bool:
+    area_code = normalize_code(area)
+    flow_code = normalize_code(flow)
+    if not area_code or not flow_code:
+        return False
+    return is_unrestricted_area(area_code) or flow_code in area_functions.get(area_code, set())
+
+
 def normalize_bay(value: Any) -> Optional[str]:
     """
     功能：
@@ -864,11 +918,14 @@ def read_vessel_info(path: Path) -> pd.DataFrame:
 
     df = pd.read_csv(path, encoding="utf-8", encoding_errors="ignore").copy()
     df["voy_id"] = df["VOY_ID"].map(normalize_code)
+    df["voyage_direction"] = df["VOY_IEFG"].map(normalize_code)
     df["planned_berth"] = df["VBT_BTH_PBTHNO"].map(normalize_int_string)
     df["actual_berth"] = df["VBT_BTH_ABTHNO"].map(normalize_int_string)
     df["berth"] = df["planned_berth"].fillna(df["actual_berth"]).map(lambda x: f"B{x}" if x else None)
     df["open_time"] = pd.to_datetime(df["SCD_RCVSTDT"], errors="coerce")
     df["close_time"] = pd.to_datetime(df["SCD_RCVEDDT"], errors="coerce")
+    df["planned_berth_time"] = pd.to_datetime(df["VBT_PBTHDT"], errors="coerce")
+    df["planned_departure_time"] = pd.to_datetime(df["VBT_PDPTDT"], errors="coerce")
     return df
 
 
@@ -1107,7 +1164,7 @@ def identify_bad_bays(
         return bad_bays
 
     rows["is_bad_flow"] = rows.apply(
-        lambda row: row.get("flow") not in area_functions.get(row.get("area_no"), set()),
+        lambda row: not area_allows_flow(row.get("area_no"), row.get("flow"), area_functions),
         axis=1,
     )
     bad_rows = rows[rows["is_bad_flow"]].copy()
@@ -1169,7 +1226,7 @@ def build_snapshot_count_params(
             continue
         if not vessel or not flow or not area or area not in model_areas or size not in {"20", "40"}:
             continue
-        flow_matches_area = flow in area_functions.get(area, set())
+        flow_matches_area = area_allows_flow(area, flow, area_functions)
         if flow_matches_area and size == "20":
             target = l20
         elif flow_matches_area and size == "40":
@@ -1235,6 +1292,7 @@ def build_demand_params(
     export_vessels: Sequence[str],
     import_vessels: Sequence[str],
     current_snapshot: pd.DataFrame,
+    model_areas: set[str],
     flow_aliases: Mapping[str, str],
 ) -> tuple[dict[tuple[str, str], float], dict[tuple[str, str], float], dict[str, Any]]:
     """
@@ -1270,15 +1328,23 @@ def build_demand_params(
         if doc_path.exists():
             doc = normalize_container_frame(pd.read_parquet(doc_path), flow_aliases)
             doc = doc[doc["e_voy"].eq(vessel)].copy()
+            doc["flow"] = "OF"
         else:
             doc = empty_normalized_container_frame()
-        snap = current_snapshot[current_snapshot["voy_id"].eq(vessel)].copy()
+        snap_all = current_snapshot[current_snapshot["voy_id"].eq(vessel)].copy()
+        snap = snap_all[snap_all["area_no"].isin(model_areas)].copy()
+        existing_ids = valid_container_ids(snap_all)
+        if existing_ids:
+            doc = doc[~doc["cntr_id"].isin(existing_ids)].copy()
         merged = merge_snapshot_and_doc(doc, snap)
         add_grouped_demand(merged, vessel, d20, d40)
 
         pred20, pred40 = read_prediction_counts(predict_path) if predict_path.exists() else (0.0, 0.0)
-        detail20 = sum(qty for (v, _), qty in d20.items() if v == vessel)
-        detail40 = sum(qty for (v, _), qty in d40.items() if v == vessel)
+        known_for_prediction = merge_snapshot_and_doc(
+            normalize_export_doc_for_prediction(doc_path, vessel, flow_aliases),
+            snap_all,
+        )
+        detail20, detail40 = count_size_totals(known_for_prediction)
         extra20 = max(0.0, pred20 - detail20)
         extra40 = max(0.0, pred40 - detail40)
         if extra20:
@@ -1290,7 +1356,8 @@ def build_demand_params(
             "doc_path": str(doc_path) if doc_path.exists() else None,
             "predict_path": str(predict_path) if predict_path.exists() else None,
             "doc_rows": int(len(doc)),
-            "snapshot_rows": int(len(snap)),
+            "snapshot_rows": int(len(snap_all)),
+            "snapshot_rows_in_model_areas": int(len(snap)),
             "dedup_rows": int(len(merged)),
             "prediction20": float(pred20),
             "prediction40": float(pred40),
@@ -1305,14 +1372,20 @@ def build_demand_params(
         doc_path = resolve_import_doc_path(import_dir, vessel)
         doc = normalize_container_frame(pd.read_parquet(doc_path), flow_aliases)
         doc = doc[doc["i_voy"].eq(vessel)].copy()
-        snap = current_snapshot[current_snapshot["voy_id"].eq(vessel)].copy()
+        doc["flow"] = doc["raw_flow"].map(lambda value: normalize_import_planning_flow(value, flow_aliases))
+        snap_all = current_snapshot[current_snapshot["voy_id"].eq(vessel)].copy()
+        snap = snap_all[snap_all["area_no"].isin(model_areas)].copy()
+        existing_ids = valid_container_ids(snap_all)
+        if existing_ids:
+            doc = doc[~doc["cntr_id"].isin(existing_ids)].copy()
         merged = merge_snapshot_and_doc(doc, snap)
         add_grouped_demand(merged, vessel, d20, d40)
         diagnostics[vessel] = {
             "type": "import",
             "doc_path": str(doc_path),
             "doc_rows": int(len(doc)),
-            "snapshot_rows": int(len(snap)),
+            "snapshot_rows": int(len(snap_all)),
+            "snapshot_rows_in_model_areas": int(len(snap)),
             "dedup_rows": int(len(merged)),
         }
     return d20, d40, diagnostics
@@ -1322,6 +1395,33 @@ def empty_normalized_container_frame() -> pd.DataFrame:
     return pd.DataFrame(
         columns=["cntr_id", "e_voy", "i_voy", "size", "raw_flow", "flow"]
     )
+
+
+def normalize_export_doc_for_prediction(
+    doc_path: Path,
+    vessel: str,
+    flow_aliases: Mapping[str, str],
+) -> pd.DataFrame:
+    if not doc_path.exists():
+        return empty_normalized_container_frame()
+    doc = normalize_container_frame(pd.read_parquet(doc_path), flow_aliases)
+    doc = doc[doc["e_voy"].eq(vessel)].copy()
+    doc["flow"] = "OF"
+    return doc
+
+
+def valid_container_ids(rows: pd.DataFrame) -> set[str]:
+    if rows.empty or "cntr_id" not in rows.columns:
+        return set()
+    values = rows["cntr_id"].dropna().map(str)
+    return {value for value in values if value and value != "-1"}
+
+
+def count_size_totals(rows: pd.DataFrame) -> tuple[float, float]:
+    if rows.empty or "size" not in rows.columns:
+        return 0.0, 0.0
+    counts = rows.groupby("size").size()
+    return float(counts.get("20", 0.0)), float(counts.get("40", 0.0))
 
 
 def normalize_container_frame(df: pd.DataFrame, flow_aliases: Mapping[str, str]) -> pd.DataFrame:
@@ -1511,6 +1611,110 @@ def read_prediction_work_lanes(path: Path) -> float:
     if not positive_candidates:
         return 0.0
     return positive_candidates[0]
+
+
+def compute_departure_operation_deductions(
+    *,
+    vessel_info: pd.DataFrame,
+    snapshot: pd.DataFrame,
+    planning_time: pd.Timestamp,
+    areas: Sequence[str],
+) -> tuple[dict[str, float], dict[str, Any]]:
+    planning_date = planning_time.date()
+    info = vessel_info.copy()
+    info = info[
+        info["voyage_direction"].eq("E")
+        & info["planned_berth_time"].notna()
+        & info["planned_departure_time"].notna()
+    ].copy()
+    if info.empty:
+        return {area: 0.0 for area in areas}, {"active_export_voyages": [], "counts_by_voyage_area": []}
+
+    berth_dates = info["planned_berth_time"].dt.date
+    departure_dates = info["planned_departure_time"].dt.date
+    active = info[(berth_dates <= planning_date) & (planning_date <= departure_dates)].copy()
+    active = active.drop_duplicates("voy_id")
+    if active.empty:
+        return {area: 0.0 for area in areas}, {"active_export_voyages": [], "counts_by_voyage_area": []}
+
+    days_remaining = {
+        row["voy_id"]: max(1, (row["planned_departure_time"].date() - planning_date).days + 1)
+        for _, row in active.iterrows()
+        if row.get("voy_id")
+    }
+    active_voyages = set(days_remaining)
+    occupied = snapshot[
+        snapshot["has_container"].eq(1)
+        & snapshot["e_voy"].isin(active_voyages)
+        & snapshot["area_no"].isin(set(areas))
+        & snapshot["cntr_id"].notna()
+    ].copy()
+    occupied = occupied[~occupied["cntr_id"].isin({"", "-1"})].copy()
+
+    deductions = {area: 0.0 for area in areas}
+    count_rows: list[dict[str, Any]] = []
+    if not occupied.empty:
+        unique_containers = occupied.sort_values(["cntr_id", "area_no"]).drop_duplicates("cntr_id", keep="first")
+        grouped = unique_containers.groupby(["e_voy", "area_no"], dropna=False)["cntr_id"].nunique()
+        for (voyage, area), count in grouped.items():
+            if not voyage or not area or area not in deductions:
+                continue
+            days = days_remaining.get(voyage, 1)
+            deduction = float(math.ceil(float(count) / float(days))) if count else 0.0
+            deductions[area] += deduction
+            count_rows.append(
+                {
+                    "voy_id": voyage,
+                    "area_no": area,
+                    "yard_container_count": int(count),
+                    "days_until_planned_departure_inclusive": int(days),
+                    "daily_departure_operation_deduction": deduction,
+                }
+            )
+
+    diagnostics = {
+        "active_export_voyages": sorted(active_voyages),
+        "counts_by_voyage_area": sorted(count_rows, key=lambda row: (row["voy_id"], row["area_no"])),
+    }
+    return deductions, diagnostics
+
+
+def build_close_export_berth_pairs(
+    *,
+    vessel_info: pd.DataFrame,
+    export_vessels: Sequence[str],
+    threshold_hours: float,
+) -> tuple[list[tuple[str, str]], list[dict[str, Any]]]:
+    export_set = set(export_vessels)
+    info = vessel_info[vessel_info["voy_id"].isin(export_set)].drop_duplicates("voy_id").copy()
+    berth_time_by_voyage = {
+        row["voy_id"]: row["planned_berth_time"]
+        for _, row in info.iterrows()
+        if row.get("voy_id") and pd.notna(row.get("planned_berth_time"))
+    }
+
+    pairs: list[tuple[str, str]] = []
+    details: list[dict[str, Any]] = []
+    for left, right in combinations(export_vessels, 2):
+        left_time = berth_time_by_voyage.get(left)
+        right_time = berth_time_by_voyage.get(right)
+        if left_time is None or right_time is None:
+            continue
+        if left_time.date() != right_time.date():
+            continue
+        delta_hours = abs((left_time - right_time).total_seconds()) / 3600.0
+        if delta_hours <= threshold_hours:
+            pairs.append((left, right))
+            details.append(
+                {
+                    "left_voy_id": left,
+                    "right_voy_id": right,
+                    "left_planned_berth_time": left_time.isoformat(),
+                    "right_planned_berth_time": right_time.isoformat(),
+                    "delta_hours": float(delta_hours),
+                }
+            )
+    return pairs, details
 
 
 def compute_tops_capacity_deductions(
@@ -1746,7 +1950,7 @@ def build_availability_flags(
     for vessel in vessels:
         for flow in flows:
             for area in areas:
-                func_ok = flow in area_functions.get(area, set())
+                func_ok = area_allows_flow(area, flow, area_functions)
                 e20[(vessel, flow, area)] = int(
                     func_ok
                     and cbar20_direct.get((vessel, area), 0.0) > 0
@@ -1827,7 +2031,7 @@ def count_flow_function_mismatch_rows(
         return 0
     return int(
         rows.apply(
-            lambda row: row["flow"] not in area_functions.get(row["area_no"], set()),
+            lambda row: not area_allows_flow(row["area_no"], row["flow"], area_functions),
             axis=1,
         ).sum()
     )
@@ -1883,6 +2087,7 @@ def write_run_outputs(
         "operation_overage": solution.o,
         "area_share_overage": solution.h,
         "of_area_overage": solution.of_area_over,
+        "berth_conflict_shared": {str(k): v for k, v in solution.berth_conflict_shared.items()},
         "of_area_used_count": {
             vessel: int(sum(used for (used_vessel, _area), used in solution.of_area_used.items() if used_vessel == vessel))
             for vessel in artifacts.export_vessels
@@ -2037,6 +2242,8 @@ def print_case_summary(artifacts: PlanningInputArtifacts) -> None:
     print("capacity40_total:", artifacts.diagnostics["capacity40_total"])
     print("bad_bay_count:", artifacts.diagnostics["bad_bay_count"])
     print("active_tops_rows:", artifacts.diagnostics["active_tops_rows"])
+    print("departure_operation_deduction_total:", artifacts.diagnostics["departure_operation_deduction_total"])
+    print("close_berth_conflict_pairs:", artifacts.diagnostics["close_berth_conflict_pairs"])
     print("old_vessels:", artifacts.diagnostics["old_vessels"])
     print("of_work_lanes:", artifacts.diagnostics["of_work_lanes"])
     print("of_area_limits:", artifacts.diagnostics["of_area_limits"])
