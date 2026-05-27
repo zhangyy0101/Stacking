@@ -1,60 +1,100 @@
-flat_full_yard_plan_2_scip 调用关系简要说明
+flat_full_yard_plan_2_scip 调用关系说明
 
 一、运行入口
 
-run_flat_full_yard_plan.py 是总入口，负责串联大计划、中计划、小计划。
-当前目录存在 input_data.json 且没有原始 flat 数据文件时，主脚本会自动使用 input_data.json 作为输入。
+run_flat_full_yard_plan.py 是完整大、中、小计划流水线入口，负责串联：
+1. InputAdapterGd 输入反序列化
+2. 大计划输入构建和求解
+3. 大计划结果可视化
+4. 中计划和小计划输入构建
+5. 中计划和小计划求解
+6. 汇总输出 pipeline_summary.json
 
 推荐运行方式：
 
-python run_flat_full_yard_plan.py --run-name delivery_run
+python run_flat_full_yard_plan.py --run-name object_input_full_check
 
-也可以显式指定：
+也可以显式指定 adapter JSON：
 
-python run_flat_full_yard_plan.py --adapter-json input_data.json --run-name delivery_run
+python run_flat_full_yard_plan.py --adapter-json input_data.json --run-name object_input_full_check
 
-二、数据输入与预处理模块
+如果不显式指定 --adapter-json，主脚本默认读取当前目录下的 input_data.json。
+
+二、当前数据输入方式
 
 input_data.json
-  交付数据包，保存了箱位快照、TOPS 计划、箱区功能、船舶靠泊、航次箱信息、泊位距离矩阵等输入数据。
+  交付数据包，保存箱位快照、TOPS 计划、箱区功能、船舶靠泊、航次箱信息、泊位距离矩阵、历史计划等输入数据。
 
 input_adapter_gd.py
   InputAdapterGd 的序列化/反序列化模块。
-  主要作用是读取 input_data.json，并把 JSON 中的 DataFrame split 结构还原成 pandas DataFrame。
+  主脚本通过 InputAdapterGd.load_from_json() 读取 input_data.json。
+  JSON 中的 DataFrame split 结构会在内存中还原为 pandas DataFrame。
 
-adapter_input_bridge.py
-  JSON 到算法 flat 输入的桥接模块。
-  调用 input_adapter_gd.py 读取 input_data.json，然后在每次运行目录下生成 adapter_flat_data 临时数据目录。
-  生成内容包括 bay_slots_detail.parquet、tops_plan_info.parquet、vessel_berth_info_new.csv、箱区功能.xlsx、适放箱区_泊位距离矩阵.xlsx、container_info_*.parquet、predict_data_*.xlsx 等。
+input_adapter_standard.py
+  当前 adapter 对象版数据装配模块。
+  算法直接从 InputAdapterGd 对象的字段读取数据，例如：
+  - bay_slots_detail
+  - tops_plan
+  - area_function_info
+  - vessel_berth_info
+  - vessel_containers
+  - berth_area_dist_matrix
+  - history_plan_info
 
-flat_yard_plan_data_io.py
-  算法的数据装配模块。
-  从 adapter_flat_data 中读取临时 flat 数据，构建大计划 LargePlanningData 和中小计划 ProblemData。
+重要说明：
+  当前主流程不再把 input_data.json 还原并导出成一批 flat 原始输入文件。
+  运行时不会生成 adapter_flat_data。
+  运行时不会生成 bay_slots_detail.parquet、tops_plan_info.parquet、vessel_berth_info_new.csv、箱区功能.xlsx、适放箱区_泊位距离矩阵.xlsx、container_info_*.parquet、predict_data_*.xlsx 等临时输入文件。
+  adapter_input_bridge.py 已删除。
+  flat_yard_plan_data_io.py 已删除。
 
 三、大计划模块
 
 run_flat_full_yard_plan.py
-  调用 build_large_inputs() 构建大计划输入。
+  在 adapter 输入模式下调用 input_adapter_standard.build_large_inputs()。
 
-flat_yard_plan_data_io.py
-  build_large_inputs() 负责读取箱位、箱区、靠泊、TOPS、需求、距离、历史计划等数据，并组装 LargePlanningData。
+input_adapter_standard.py
+  build_large_inputs() 直接读取 InputAdapterGd 对象，构建 LargePlanningData。
+  主要处理内容包括：
+  - 自动从 vessel_containers 中发现出口、进口航次
+  - 读取箱区功能、泊位、泊位距离、TOPS 计划
+  - 读取箱位快照并计算可用容量
+  - 读取航次箱清单和预测量
+  - 使用 history_plan_info 构建上一轮计划参数
 
 planning_large_solver.py
   solve_daily_rolling_yard_plan() 是大计划求解器。
-  输入 LargePlanningData，输出航次-箱型-流向到箱区的大计划分配结果。
+  输入 LargePlanningData。
+  输出航次、流向、箱型到箱区的大计划分配结果。
 
 大计划主要输出：
   full_plan_outputs/<run_name>/outputs_large/latest_run/allocation.csv
   full_plan_outputs/<run_name>/outputs_large/latest_run/allocation_new.csv
   full_plan_outputs/<run_name>/outputs_large/latest_run/diagnostics.json
+  full_plan_outputs/<run_name>/outputs_large/latest_run/state_rows_appended.csv
 
-四、中计划和小计划模块
+四、可视化模块
+
+planning_large_visualize.py
+  大计划求解完成后读取 allocation.csv。
+  在 adapter 输入模式下，箱区功能标签直接来自 adapter.area_function_info，不再读取箱区功能.xlsx。
+  生成箱区分配标注图和检查文件。
+
+可视化主要输出：
+  full_plan_outputs/<run_name>/outputs_large/yard_visualization/yard_base_original.png
+  full_plan_outputs/<run_name>/outputs_large/yard_visualization/yard_allocation_annotated.png
+  full_plan_outputs/<run_name>/outputs_large/yard_visualization/visualization_allocation_check.csv
+  full_plan_outputs/<run_name>/outputs_large/yard_visualization/unmapped_areas.csv（仅有未匹配坐标箱区时生成）
+
+五、中计划和小计划模块
 
 run_flat_full_yard_plan.py
-  大计划完成后，把 allocation.csv 作为中小计划输入，调用 load_medium_small_inputs()。
+  大计划求解完成后，不再把 allocation.csv 作为中小计划的输入文件重新读取。
+  adapter 输入模式下会把大计划 solution 转成内存 DataFrame，然后传给 input_adapter_standard.load_medium_small_inputs()。
+  pipeline_summary.json 中 large_allocation_used_by_medium_small 会记录为 in_memory。
 
-flat_yard_plan_data_io.py
-  load_medium_small_inputs() 读取大计划结果并计算中计划需求。
+input_adapter_standard.py
+  load_medium_small_inputs() 直接从 InputAdapterGd 对象和内存大计划结果构建 MediumSmallInputs。
   build_problem() 进一步构建中小计划 ProblemData，包括箱组、可用 bay、箱区作业冲突、泊位距离、容量等信息。
 
 block_bay_planning/models.py
@@ -69,25 +109,32 @@ block_bay_planning/sa_solver.py
   full_plan_outputs/<run_name>/medium_small_plan/small_plan.csv
   full_plan_outputs/<run_name>/medium_small_plan/small_plan_six_bay_blocks.csv
   full_plan_outputs/<run_name>/medium_small_plan/medium_demand_by_port.csv
+  full_plan_outputs/<run_name>/medium_small_plan/energy_convergence.csv
+  full_plan_outputs/<run_name>/medium_small_plan/big_plan_used.csv
   full_plan_outputs/<run_name>/medium_small_plan/diagnostics.json
 
-五、可视化模块
-
-planning_large_visualize.py
-  在大计划求解完成后读取 allocation.csv 和箱区底图，生成箱区分配可视化图片。
-
-可视化主要输出：
-  full_plan_outputs/<run_name>/outputs_large/yard_visualization/yard_allocation_annotated.png
-  full_plan_outputs/<run_name>/outputs_large/yard_visualization/visualization_allocation_check.csv
-
-六、整体数据流
+六、当前整体数据流
 
 input_data.json
-  -> input_adapter_gd.py
-  -> adapter_input_bridge.py
-  -> adapter_flat_data 临时 flat 数据
-  -> flat_yard_plan_data_io.py
-  -> planning_large_solver.py 生成大计划
-  -> flat_yard_plan_data_io.py 基于大计划构建中小计划输入
-  -> block_bay_planning/sa_solver.py 生成中计划和小计划
+  -> input_adapter_gd.py 反序列化为 InputAdapterGd 对象
+  -> input_adapter_standard.py 直接从对象字段构建大计划输入
+  -> planning_large_solver.py 求解大计划
+  -> planning_large_visualize.py 生成可视化
+  -> input_adapter_standard.py 使用内存大计划结果构建中小计划输入
+  -> block_bay_planning/sa_solver.py 求解中计划和小计划
   -> run_flat_full_yard_plan.py 汇总输出
+
+七、本轮验证结果
+
+本轮已清理旧 full_plan_outputs 后重新运行：
+
+python run_flat_full_yard_plan.py --run-name object_input_no_flat_io_check --large-quiet
+
+验证结论：
+1. 完整大、中、小计划执行成功。
+2. pipeline_summary.json 中 input_mode 为 adapter_object。
+3. pipeline_summary.json 中 large_allocation_used_by_medium_small 为 in_memory。
+4. 本次运行目录下未生成 adapter_flat_data。
+5. 本次运行目录下未生成 bay_slots_detail.parquet、container_info_*.parquet、predict_data_*.xlsx 等还原 flat 原始输入文件。
+6. 可视化已生成 yard_allocation_annotated.png 和 visualization_allocation_check.csv。
+7. adapter_input_bridge.py 和 flat_yard_plan_data_io.py 均已删除，主流程仍可完整运行。

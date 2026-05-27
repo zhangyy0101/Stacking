@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import csv
 import json
-import math
 import re
 import uuid
 from collections import Counter, defaultdict
@@ -12,6 +11,12 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import pandas as pd
+
+try:
+    from input_adapter_gd import InputAdapterGd
+except ImportError:  # pragma: no cover - keeps compatibility with the production package layout.
+    from adapter.input.guandong.input_adapter_gd import InputAdapterGd
+
 
 
 DEFAULT_PLANNING_TIME = "2026-05-19 09:30:00"
@@ -245,12 +250,12 @@ class MediumSmallInputs:
 
 
 class RollingPlanningState:
-    def __init__(self, state_dir: Path) -> None:
-        self.state_dir = state_dir
-        self.plan_history_path = state_dir / "plan_history.csv"
+    def __init__(self, plan_history: pd.DataFrame) -> None:
+        # self.state_dir = state_dir
+        self.history = plan_history
 
     def read_history(self) -> pd.DataFrame:
-        if not self.plan_history_path.exists():
+        if self.history is None:
             return pd.DataFrame(
                 columns=[
                     "run_id",
@@ -264,10 +269,9 @@ class RollingPlanningState:
                     "objective_value",
                 ]
             )
-        history = pd.read_csv(self.plan_history_path)
-        if "planning_time" in history.columns:
-            history["planning_time"] = pd.to_datetime(history["planning_time"], errors="coerce")
-        return history
+        if "planning_time" in self.history.columns:
+            self.history["planning_time"] = pd.to_datetime(self.history["planning_time"], errors="coerce")
+        return self.history
 
     def latest_previous_plan(self, planning_time: pd.Timestamp, vessels: Sequence[str]) -> pd.DataFrame:
         history = self.read_history()
@@ -334,7 +338,7 @@ class RollingPlanningState:
         new_rows = pd.DataFrame(rows)
         if new_rows.empty:
             return new_rows
-        self.state_dir.mkdir(parents=True, exist_ok=True)
+        # self.state_dir.mkdir(parents=True, exist_ok=True)
         old = self.read_history()
         if not old.empty:
             old["planning_time"] = pd.to_datetime(old["planning_time"], errors="coerce")
@@ -346,7 +350,7 @@ class RollingPlanningState:
                 )
             ].copy()
         combined = pd.concat([old, new_rows], ignore_index=True)
-        combined.to_csv(self.plan_history_path, index=False, encoding="utf-8-sig")
+        # combined.to_csv(self.plan_history_path, index=False, encoding="utf-8-sig")
         return new_rows
 
 
@@ -463,67 +467,37 @@ def normalize_voyage_list(values: Sequence[str] | None) -> list[str]:
     return out
 
 
-def discover_export_vessels(data_dir: Path) -> list[str]:
-    vessels: set[str] = set()
-    for path in data_dir.glob("predict_data_*.xlsx"):
-        match = re.fullmatch(r"predict_data_(.+)\.xlsx", path.name, flags=re.IGNORECASE)
-        if match:
-            voyage = normalize_voyage(match.group(1))
-            if voyage:
-                vessels.add(voyage)
-    for path in data_dir.glob("container_info_*.parquet"):
-        if path.name.lower().startswith("container_info_import"):
+def _adapter_vessel_items(input_guandong: InputAdapterGd) -> list[tuple[str, dict[str, Any]]]:
+    items: list[tuple[str, dict[str, Any]]] = []
+    for raw_voyage, content in (input_guandong.vessel_containers or {}).items():
+        voyage = normalize_voyage(raw_voyage)
+        if not voyage or not isinstance(content, dict):
             continue
-        match = re.fullmatch(r"container_info_(.+)\.parquet", path.name, flags=re.IGNORECASE)
-        if match:
-            voyage = normalize_voyage(match.group(1))
-            if voyage:
-                vessels.add(voyage)
+        items.append((voyage, content))
+    return items
+
+
+def _has_container_frame(content: Mapping[str, Any]) -> bool:
+    frame = content.get("doc_cntrs")
+    return isinstance(frame, pd.DataFrame) and not frame.empty
+
+
+def discover_export_vessels(input_guandong: InputAdapterGd) -> list[str]:
+    vessels: set[str] = set()
+    for voyage, content in _adapter_vessel_items(input_guandong):
+        vessel_type = normalize_code(content.get("type"))
+        has_prediction = bool(content.get("predict_cntrs") or content.get("cntr_volume"))
+        if vessel_type != "I" and (_has_container_frame(content) or has_prediction):
+            vessels.add(voyage)
     return sorted(vessel for vessel in vessels if vessel not in IGNORED_EXPORT_VESSELS)
 
 
-def discover_import_container_dir(data_dir: Path) -> Path:
-    candidates = [path for path in data_dir.iterdir() if path.is_dir() and any(path.glob("container_info_import*.parquet"))]
-    if not candidates:
-        raise FileNotFoundError(f"Could not find import container directory under {data_dir}")
-    return sorted(candidates, key=lambda path: path.name)[0]
-
-
-def discover_import_vessels(data_dir: Path) -> list[str]:
-    import_dir = discover_import_container_dir(data_dir)
+def discover_import_vessels(input_guandong: InputAdapterGd) -> list[str]:
     vessels: set[str] = set()
-    for path in import_dir.glob("container_info_import*.parquet"):
-        match = re.fullmatch(r"container_info_import(?:_voy)?_(.+)\.parquet", path.name, flags=re.IGNORECASE)
-        if match:
-            voyage = normalize_voyage(match.group(1))
-            if voyage:
-                vessels.add(voyage)
+    for voyage, content in _adapter_vessel_items(input_guandong):
+        if normalize_code(content.get("type")) == "I" and _has_container_frame(content):
+            vessels.add(voyage)
     return sorted(vessels)
-
-
-def resolve_import_doc_path(data_dir: Path, vessel: str) -> Path:
-    candidates = [
-        data_dir / f"container_info_import_{vessel}.parquet",
-        data_dir / f"container_info_import_voy_{vessel}.parquet",
-    ]
-    try:
-        import_dir = discover_import_container_dir(data_dir)
-    except FileNotFoundError:
-        import_dir = None
-    if import_dir is not None:
-        candidates.extend(
-            [
-                import_dir / f"container_info_import_{vessel}.parquet",
-                import_dir / f"container_info_import_voy_{vessel}.parquet",
-            ]
-        )
-    for path in candidates:
-        if path.exists():
-            return path
-    matches = list(data_dir.rglob(f"container_info_import*{vessel}.parquet"))
-    if matches:
-        return sorted(matches, key=lambda path: str(path))[0]
-    raise FileNotFoundError(f"Missing import container info for voyage {vessel}")
 
 
 def normalize_bay(value: Any) -> str:
@@ -566,54 +540,6 @@ def size_enabled_mask(values: pd.Series, size_mode: str) -> pd.Series:
     return missing | enabled
 
 
-def find_flat_file(data_dir: Path, exact: str | None = None, pattern: str | None = None) -> Path:
-    if exact:
-        path = data_dir / exact
-        if path.exists():
-            return path
-        matches = sorted(path for path in data_dir.rglob(exact) if path.is_file() and not path.name.startswith("~$"))
-        if matches:
-            return matches[0]
-    if pattern:
-        matches = sorted(path for path in data_dir.glob(pattern) if path.is_file() and not path.name.startswith("~$"))
-        if matches:
-            return matches[0]
-        matches = sorted(path for path in data_dir.rglob(pattern) if path.is_file() and not path.name.startswith("~$"))
-        if matches:
-            return matches[0]
-    raise FileNotFoundError(exact or pattern or str(data_dir))
-
-
-def find_area_function_file(data_dir: Path) -> Path:
-    for path in sorted(data_dir.glob("*.xlsx")):
-        if path.name.startswith("~$") or "predict" in path.name.lower():
-            continue
-        try:
-            frame = pd.read_excel(path, nrows=2)
-        except Exception:
-            continue
-        if {"area_no", "cntr_type"}.issubset({str(column) for column in frame.columns}):
-            return path
-    return find_flat_file(data_dir, pattern="*功能*.xlsx")
-
-
-def find_distance_matrix_file(data_dir: Path) -> Path:
-    preferred = sorted(data_dir.glob("*距离矩阵*.xlsx"))
-    if preferred:
-        return preferred[0]
-    for path in sorted(data_dir.glob("*.xlsx")):
-        if path.name.startswith("~$"):
-            continue
-        try:
-            with pd.ExcelFile(path) as xls:
-                sheet_names = list(xls.sheet_names)
-        except Exception:
-            continue
-        if any(_sheet_has_area_and_berths(path, sheet) for sheet in sheet_names):
-            return path
-    raise FileNotFoundError(f"No berth-area distance matrix workbook found under {data_dir}")
-
-
 def _sheet_has_area_and_berths(path: Path, sheet: str) -> bool:
     try:
         frame = pd.read_excel(path, sheet_name=sheet, nrows=2)
@@ -623,8 +549,8 @@ def _sheet_has_area_and_berths(path: Path, sheet: str) -> bool:
     return "area_no" in columns and any(re.fullmatch(r"B\d+", column) for column in columns)
 
 
-def read_vessel_info(data_dir: Path) -> pd.DataFrame:
-    frame = pd.read_csv(find_flat_file(data_dir, exact="vessel_berth_info_new.csv"), encoding="utf-8", encoding_errors="ignore")
+def read_vessel_info(input_guandong: InputAdapterGd) -> pd.DataFrame:
+    frame = input_guandong.vessel_berth_info
     frame = frame.copy()
     frame["voy_id"] = frame["VOY_ID"].map(normalize_voyage)
     frame["ie_flag"] = frame["VOY_IEFG"].map(normalize_code)
@@ -650,8 +576,8 @@ def read_berths_for_vessels(vessel_info: pd.DataFrame, vessels: Sequence[str]) -
     return result
 
 
-def read_vessel_schedules(data_dir: Path) -> dict[str, VoyageSchedule]:
-    frame = read_vessel_info(data_dir)
+def read_vessel_schedules(input_guandong: InputAdapterGd) -> dict[str, VoyageSchedule]:
+    frame = read_vessel_info(input_guandong)
     schedules: dict[str, VoyageSchedule] = {}
     for row in frame.to_dict("records"):
         if row.get("ie_flag") != "E":
@@ -676,13 +602,13 @@ def read_vessel_schedules(data_dir: Path) -> dict[str, VoyageSchedule]:
 
 
 def read_target_vessel_schedules(
-    data_dir: Path,
+    input_guandong: InputAdapterGd,
     target_voyages: list[str],
     planning_time: datetime,
     horizon_hours: float,
 ) -> dict[str, VoyageSchedule]:
-    schedules = read_vessel_schedules(data_dir)
-    frame = read_vessel_info(data_dir)
+    schedules = read_vessel_schedules(input_guandong)
+    frame = read_vessel_info(input_guandong)
     rows_by_voyage = {
         normalize_voyage(row.get("voy_id")): row
         for row in frame.to_dict("records")
@@ -704,8 +630,9 @@ def read_target_vessel_schedules(
     return schedules
 
 
-def read_area_functions_large(data_dir: Path) -> tuple[list[str], dict[str, set[str]], dict[str, float]]:
-    frame = pd.read_excel(find_area_function_file(data_dir))
+def read_area_functions_large(input_guandong: InputAdapterGd) -> tuple[list[str], dict[str, set[str]], dict[str, float]]:
+    # frame = pd.read_excel(find_area_function_file(input_guandong))
+    frame = input_guandong.area_function_info
     area_col = _first_existing(set(frame.columns), ["area_no", "AREA_NO", "YAA_AREANO"])
     type_col = _first_existing(set(frame.columns), ["cntr_type", "CNTR_TYPE", "function", "FUNCTION"])
     load_col = _first_existing(set(frame.columns), ["load_capacity", "H", "capacity", "作业能力"])
@@ -724,26 +651,17 @@ def read_area_functions_large(data_dir: Path) -> tuple[list[str], dict[str, set[
     return sorted(area_functions), area_functions, load_capacity
 
 
-def read_area_functions(data_dir: Path) -> dict[str, set[str]]:
-    _, area_functions, _ = read_area_functions_large(data_dir)
+def read_area_functions(input_guandong: InputAdapterGd) -> dict[str, set[str]]:
+    _, area_functions, _ = read_area_functions_large(input_guandong)
     return area_functions
 
 
 def read_distance_matrix(
-    data_dir: Path,
+    input_guandong: InputAdapterGd,
     areas: Sequence[str] | None = None,
     berth_by_vessel: Mapping[str, str] | None = None,
 ) -> dict[tuple[str, str], float]:
-    path = find_distance_matrix_file(data_dir)
-    frame = None
-    with pd.ExcelFile(path) as xls:
-        for sheet in xls.sheet_names:
-            trial = pd.read_excel(xls, sheet_name=sheet)
-            if "area_no" in trial.columns and any(str(column).upper().startswith("B") for column in trial.columns):
-                frame = trial
-                break
-    if frame is None:
-        raise KeyError(f"No distance matrix sheet with area_no and berth columns in {path}")
+    frame = input_guandong.berth_area_dist_matrix
     area_filter = set(areas or [])
     berth_columns = [column for column in frame.columns if str(column).upper().startswith("B")]
     berth_keys = {normalize_code(column): column for column in berth_columns}
@@ -776,8 +694,8 @@ def read_distance_matrix(
     return distances
 
 
-def read_snapshot(data_dir: Path) -> pd.DataFrame:
-    return pd.read_parquet(find_flat_file(data_dir, exact="bay_slots_detail.parquet"))
+def read_snapshot(input_guandong: InputAdapterGd) -> pd.DataFrame:
+    return input_guandong.bay_slots_detail
 
 
 def extract_current_snapshot_rows(
@@ -951,45 +869,26 @@ def add_grouped_demand(
         key = (vessel, str(flow))
         target[key] = target.get(key, 0.0) + float(qty)
 
-
-def read_prediction_counts(path: Path) -> tuple[float, float]:
-    with pd.ExcelFile(path) as xls:
-        frame = pd.read_excel(xls, sheet_name=xls.sheet_names[0])
+def read_prediction_counts(input_guandong: InputAdapterGd, vessel_id: str) -> tuple[float, float]:
+    content = input_guandong.vessel_containers.get(vessel_id, {})
+    predict_data = content.get("predict_cntrs") or content.get("cntr_volume") or {}
     total20 = 0.0
     total40 = 0.0
-    for row in frame.to_dict("records"):
-        size = normalize_size_large(row.get("IYC_CSZ_CSIZECD"))
-        count = pd.to_numeric(row.get("count"), errors="coerce")
-        count = float(count) if pd.notna(count) else 0.0
+    for raw_size, payload in predict_data.items():
+        size = normalize_size_large(raw_size)
+        total = pd.to_numeric((payload or {}).get("total_volume"), errors="coerce")
+        total = float(total) if pd.notna(total) else 0.0
         if size == "20":
-            total20 += count
+            total20 += total
         elif size == "40":
-            total40 += count
+            total40 += total
     return total20, total40
 
 
 def read_prediction_work_lanes(path: Path) -> float:
     xls = pd.ExcelFile(path)
-    robust_sheet_name = next((name for name in xls.sheet_names if "作业路" in str(name)), None)
-    if robust_sheet_name is not None:
-        frame = pd.read_excel(xls, sheet_name=robust_sheet_name)
-        candidates: list[float] = []
-
-        def collect_robust(value: Any) -> None:
-            if value is None or pd.isna(value):
-                return
-            numeric = pd.to_numeric(value, errors="coerce")
-            if pd.notna(numeric) and float(numeric) > 0:
-                candidates.append(float(numeric))
-
-        for column in frame.columns:
-            collect_robust(column)
-        for value in frame.to_numpy().ravel():
-            collect_robust(value)
-        xls.close()
-        return candidates[0] if candidates else 0.0
-    sheet_name = next((name for name in xls.sheet_names if "作业" in str(name) or "路" in str(name)), xls.sheet_names[-1])
-    frame = pd.read_excel(xls, sheet_name=sheet_name)
+    sheet_name = next((name for name in xls.sheet_names if "作业" in str(name) or "璺" in str(name)), xls.sheet_names[-1])
+    frame = pd.read_excel(path, sheet_name=sheet_name)
     candidates: list[float] = []
 
     def collect(value: Any) -> None:
@@ -1004,14 +903,12 @@ def read_prediction_work_lanes(path: Path) -> float:
     for value in frame.to_numpy().ravel():
         collect(value)
     if not candidates:
-        xls.close()
-        return 0.0
-    xls.close()
+        raise ValueError(f"No positive work-lane count in {path}")
     return candidates[0]
 
 
 def build_demand_params(
-    data_dir: Path,
+    input_guandong: InputAdapterGd,
     export_vessels: Sequence[str],
     import_vessels: Sequence[str],
     current_snapshot: pd.DataFrame,
@@ -1021,9 +918,9 @@ def build_demand_params(
     d40: dict[tuple[str, str], float] = {}
     diagnostics: dict[str, dict[str, Any]] = {}
     for vessel in export_vessels:
-        doc_path = data_dir / f"container_info_{vessel}.parquet"
-        if doc_path.exists():
-            doc = normalize_container_frame(pd.read_parquet(doc_path), flow_aliases)
+        doc_container = input_guandong.vessel_containers.get(vessel, {}).get("doc_cntrs", None)
+        if isinstance(doc_container, pd.DataFrame):
+            doc = normalize_container_frame(doc_container, flow_aliases)
             doc = doc[doc["e_voy"].eq(vessel)].copy()
         else:
             doc = pd.DataFrame(columns=["cntr_id", "e_voy", "i_voy", "size", "raw_flow", "flow"])
@@ -1032,8 +929,7 @@ def build_demand_params(
         detail20 = float((merged["size"] == "20").sum())
         detail40 = float((merged["size"] == "40").sum())
         add_grouped_demand(merged, vessel, d20, d40)
-        predict_path = data_dir / f"predict_data_{vessel}.xlsx"
-        pred20, pred40 = read_prediction_counts(predict_path) if predict_path.exists() else (0.0, 0.0)
+        pred20, pred40 = read_prediction_counts(input_guandong, vessel)
         extra20 = max(0.0, pred20 - detail20)
         extra40 = max(0.0, pred40 - detail40)
         if extra20 > 0:
@@ -1042,8 +938,6 @@ def build_demand_params(
             d40[(vessel, "OF")] = d40.get((vessel, "OF"), 0.0) + extra40
         diagnostics[vessel] = {
             "type": "export",
-            "doc_path": str(doc_path) if doc_path.exists() else None,
-            "predict_path": str(predict_path) if predict_path.exists() else None,
             "doc_rows": int(len(doc)),
             "snapshot_rows": int(len(snap)),
             "dedup_rows": int(len(merged)),
@@ -1053,15 +947,17 @@ def build_demand_params(
             "extra_prediction40_to_OF": float(extra40),
         }
     for vessel in import_vessels:
-        doc_path = resolve_import_doc_path(data_dir, vessel)
-        doc = normalize_container_frame(pd.read_parquet(doc_path), flow_aliases)
-        doc = doc[doc["i_voy"].eq(vessel)].copy()
+        doc_container = input_guandong.vessel_containers.get(vessel, {}).get("doc_cntrs", None)
+        if isinstance(doc_container, pd.DataFrame):
+            doc = normalize_container_frame(doc_container, flow_aliases)
+            doc = doc[doc["i_voy"].eq(vessel)].copy()
+        else:
+            doc = pd.DataFrame(columns=["cntr_id", "e_voy", "i_voy", "size", "raw_flow", "flow"])
         snap = current_snapshot[current_snapshot["voy_id"].eq(vessel)].copy()
         merged = merge_snapshot_and_doc(doc, snap)
         add_grouped_demand(merged, vessel, d20, d40)
         diagnostics[vessel] = {
             "type": "import",
-            "doc_path": str(doc_path),
             "doc_rows": int(len(doc)),
             "snapshot_rows": int(len(snap)),
             "dedup_rows": int(len(merged)),
@@ -1149,8 +1045,8 @@ def count_tops_blocked_slots(tops_rows: pd.DataFrame, slots: pd.DataFrame, vesse
     return {(vessel, area): float(len(uids)) for area, uids in blocked_by_area.items()}
 
 
-def active_tops_rows(data_dir: Path, planning_time: datetime) -> pd.DataFrame:
-    tops = pd.read_parquet(find_flat_file(data_dir, exact="tops_plan_info.parquet")).copy()
+def active_tops_rows(input_guandong: InputAdapterGd, planning_time: datetime) -> pd.DataFrame:
+    tops = input_guandong.tops_plan.copy()
     tops["condition_vessel"] = tops["SPL_CONDITIONCODE"].map(normalize_voyage)
     tops["start_time"] = parse_tops_time(tops["SPL_STDATE"])
     tops["end_time"] = parse_tops_time(tops["SPL_EDDATE"])
@@ -1162,14 +1058,14 @@ def active_tops_rows(data_dir: Path, planning_time: datetime) -> pd.DataFrame:
 
 
 def compute_tops_capacity_deductions(
-    data_dir: Path,
+    input_guandong: InputAdapterGd,
     planning_time: datetime,
     vessels: Sequence[str],
     bay20_equiv: pd.DataFrame,
     bay20_direct: pd.DataFrame,
     bay40: pd.DataFrame,
 ) -> tuple[dict[tuple[str, str], float], dict[tuple[str, str], float], dict[tuple[str, str], float], int]:
-    active = active_tops_rows(data_dir, planning_time)
+    active = active_tops_rows(input_guandong, planning_time)
     tops20: dict[tuple[str, str], float] = {}
     tops20_direct: dict[tuple[str, str], float] = {}
     tops40: dict[tuple[str, str], float] = {}
@@ -1206,30 +1102,28 @@ def build_availability_flags(
 
 
 def build_large_inputs(
-    data_dir: Path,
-    state_dir: Path,
+    input_guandong: InputAdapterGd,
     planning_time: pd.Timestamp,
     export_vessels: Sequence[str] | None = DEFAULT_EXPORT_VESSELS,
     import_vessels: Sequence[str] | None = DEFAULT_IMPORT_VESSELS,
     disable_default_flow_aliases: bool = False,
 ) -> tuple[PlanningInputArtifacts, RollingPlanningState]:
-    data_dir = data_dir.resolve()
     flow_aliases = {} if disable_default_flow_aliases else DEFAULT_FLOW_ALIASES
     if export_vessels is None:
-        export_vessels = discover_export_vessels(data_dir)
+        export_vessels = discover_export_vessels(input_guandong)
     if import_vessels is None:
-        import_vessels = discover_import_vessels(data_dir)
+        import_vessels = discover_import_vessels(input_guandong)
     export_vessels = [v for v in normalize_voyage_list(export_vessels) if v not in IGNORED_EXPORT_VESSELS]
     import_vessels = normalize_voyage_list(import_vessels)
     all_vessels = export_vessels + import_vessels
-    state = RollingPlanningState(state_dir)
+    state = RollingPlanningState(input_guandong.history_plan_info)
 
-    vessel_info = read_vessel_info(data_dir)
-    areas, area_functions, load_capacity = read_area_functions_large(data_dir)
+    vessel_info = read_vessel_info(input_guandong)
+    areas, area_functions, load_capacity = read_area_functions_large(input_guandong)
     berth_by_vessel = read_berths_for_vessels(vessel_info, all_vessels)
-    distance = read_distance_matrix(data_dir, areas, berth_by_vessel)
+    distance = read_distance_matrix(input_guandong, areas, berth_by_vessel)
 
-    snapshot = read_snapshot(data_dir)
+    snapshot = read_snapshot(input_guandong)
     current_snapshot = extract_current_snapshot_rows(snapshot, export_vessels, import_vessels, flow_aliases)
     bay_total_slots = build_bay_total_slot_counts(snapshot, areas)
     bad_bays = identify_bad_bays(current_snapshot, area_functions, bay_total_slots)
@@ -1244,7 +1138,7 @@ def build_large_inputs(
     c40 = count_slots_by_area(bay40, areas)
 
     tops20, tops20_direct, tops40, active_tops_count = compute_tops_capacity_deductions(
-        data_dir,
+        input_guandong,
         planning_time.to_pydatetime(),
         all_vessels,
         bay20_equiv,
@@ -1260,16 +1154,14 @@ def build_large_inputs(
     cbar40 = {(v, a): max(0.0, c40.get(a, 0.0) - tops40.get((v, a), 0.0)) for v in all_vessels for a in areas}
 
     d20, d40, demand_diagnostics = build_demand_params(
-        data_dir,
+        input_guandong,
         export_vessels,
         import_vessels,
         current_snapshot,
         flow_aliases,
     )
     of_work_lanes = {
-        vessel: read_prediction_work_lanes(data_dir / f"predict_data_{vessel}.xlsx")
-        if (data_dir / f"predict_data_{vessel}.xlsx").exists()
-        else 0.0
+        vessel: input_guandong.vessel_containers.get(vessel, {}).get("work_lanes", 0.0)
         for vessel in export_vessels
     }
     of_work_lanes.update({vessel: 0.0 for vessel in import_vessels})
@@ -1315,7 +1207,7 @@ def build_large_inputs(
         strict_validation=True,
     )
     diagnostics = {
-        "data_dir": str(data_dir),
+        "data_dir": "",
         "area_count": len(areas),
         "flows": flows,
         "flow_aliases": flow_aliases,
@@ -1408,27 +1300,24 @@ def write_large_outputs(output_dir: Path, artifacts: PlanningInputArtifacts, sol
     write_json(output_dir / "diagnostics.json", diagnostics)
 
 
-def read_closed_areas(data_dir: Path) -> set[str]:
-    path = data_dir / "n_usefg_areas.txt"
-    if not path.exists():
-        return set()
-    return set(re.findall(r"[A-Za-z0-9]+", path.read_text(encoding="utf-8")))
+def read_closed_areas(input_guandong: InputAdapterGd) -> set[str]:
+    return input_guandong.closed_area
 
 
 def calculate_medium_demands(
-    data_dir: Path,
+    input_guandong: InputAdapterGd,
     voyage_ids: list[str] | tuple[str, ...] = DEFAULT_TARGET_VOYAGES,
     planning_time: datetime | None = None,
 ) -> list[DemandRow]:
-    planning_time = planning_time or parse_datetime(DEFAULT_PLANNING_TIME) or datetime(2026, 5, 8, 9, 30)
-    schedules = read_vessel_schedules(data_dir)
+    planning_time = planning_time or parse_datetime(DEFAULT_PLANNING_TIME) or datetime(2026, 5, 19, 9, 30)
+    schedules = read_vessel_schedules(input_guandong)
     rows: list[DemandRow] = []
     for voyage_id in [normalize_voyage(v) for v in voyage_ids]:
         receive_start = schedules.get(voyage_id).receive_start if voyage_id in schedules else planning_time
         stage, ratio = planning_stage(receive_start, planning_time)
-        predicted = read_predicted_by_port_size(data_dir, voyage_id)
+        predicted = read_predicted_by_port_size(input_guandong, voyage_id)
         ratio_targets = ratio_targets_by_port(predicted, ratio)
-        docs = read_doc_by_port_size(data_dir, voyage_id)
+        docs = read_doc_by_port_size(input_guandong, voyage_id)
         planned_source = choose_planned_source(ratio_targets, docs)
         for flow, size_mode, port in sorted(planned_source):
             planned = planned_source[(flow, size_mode, port)]
@@ -1464,27 +1353,17 @@ def planning_stage(receive_start: datetime, planning_time: datetime) -> tuple[st
     return "open_third_24h_or_later", 0.10
 
 
-def read_predicted_by_port_size(data_dir: Path, voyage_id: str) -> Counter[tuple[str, str, str]]:
-    path = data_dir / f"predict_data_{voyage_id}.xlsx"
-    if not path.exists():
-        return Counter()
-    xls = pd.ExcelFile(path)
-    sheet_name = next(
-        (
-            name
-            for name in xls.sheet_names
-            if "港口" in str(name)
-        ),
-        xls.sheet_names[0],
-    )
-    frame = pd.read_excel(xls, sheet_name=sheet_name)
-    xls.close()
+def read_predicted_by_port_size(input_guandong: InputAdapterGd, voyage_id: str) -> Counter[tuple[str, str, str]]:
+    vessel_containers = input_guandong.vessel_containers.get(voyage_id, {}).get("predict_cntrs", {})
+
     counter: Counter[tuple[str, str, str]] = Counter()
-    for row in frame.to_dict("records"):
-        size_mode = normalize_size_small(row.get("IYC_CSZ_CSIZECD"))
-        port = normalize_text(row.get("IYC_POT_UNLDPORT"), "UNK")
-        flow = normalize_flow(row.get("IYC_STS_CSTATUSCD") or row.get("flow") or row.get("cntr_type"), default="OF")
-        counter[(flow, size_mode, port)] += int(round(float(row.get("count", 0) or 0)))
+    # for row in frame.to_dict("records"):
+    for size, volume_info in vessel_containers.items():
+        for port, volume in volume_info.get("detail_info", {}).items():
+            size_mode = normalize_size_small(size)
+            port = normalize_text(port, "UNK")
+            flow = normalize_flow("OF", default="OF")
+            counter[(flow, size_mode, port)] += int(round(float(volume or 0)))
     return counter
 
 
@@ -1503,13 +1382,10 @@ def ratio_targets_by_port(predicted: Counter[tuple[str, str, str]], ratio: float
     return targets
 
 
-def read_doc_by_port_size(data_dir: Path, voyage_id: str) -> Counter[tuple[str, str, str]]:
-    path = data_dir / f"container_info_{voyage_id}.parquet"
+def read_doc_by_port_size(input_guandong: InputAdapterGd, voyage_id: str) -> Counter[tuple[str, str, str]]:
     counter: Counter[tuple[str, str, str]] = Counter()
-    if not path.exists():
-        return counter
-    frame = pd.read_parquet(path)
-    if frame.empty:
+    frame = input_guandong.vessel_containers.get(voyage_id, {}).get("doc_cntrs", None)
+    if not isinstance(frame, pd.DataFrame) or frame.empty:
         return counter
     work = pd.DataFrame(
         {
@@ -1582,68 +1458,68 @@ def write_demand_rows(path: Path, rows: list[DemandRow]) -> None:
             writer.writerow(row.__dict__)
 
 
-def read_big_plan(path: Path) -> list[BigPlanRow]:
+def read_big_plan(large_plan: pd.DataFrame) -> list[BigPlanRow]:
     counter: Counter[tuple[str, str, str, str, str]] = Counter()
     rows: list[BigPlanRow] = []
-    with path.open(newline="", encoding="utf-8-sig") as fp:
-        reader = csv.DictReader(fp)
-        fieldnames = set(reader.fieldnames or [])
-        if {"voyage_id", "area_no"}.issubset(fieldnames) and (
-            {"qty_20", "qty_40"}.issubset(fieldnames)
-            or {"planned_20", "planned_40"}.issubset(fieldnames)
-            or {"20", "40"}.issubset(fieldnames)
-        ):
-            qty20_field = _first_existing(fieldnames, ["qty_20", "planned_20", "20", "c20", "C20"])
-            qty40_field = _first_existing(fieldnames, ["qty_40", "planned_40", "40", "c40", "C40"])
-            qty45_field = _first_existing(fieldnames, ["qty_45", "planned_45", "45", "c45", "C45"])
-            date_field = _first_existing(fieldnames, ["plan_date", "date", "work_date", "planning_date", "day"])
-            flow_field = _first_existing(fieldnames, ["flow", "cntr_type", "status"])
-            for row in reader:
-                flow = normalize_flow(row.get(flow_field), default="OF") if flow_field else "OF"
-                voyage_id = normalize_voyage(row.get("voyage_id"))
-                area_no = normalize_code(row.get("area_no"))
-                plan_date = date_key(normalize_text(row.get(date_field))) if date_field else ""
-                for size_mode, field_name in (("20", qty20_field), ("40", qty40_field), ("45", qty45_field)):
-                    if not field_name:
-                        continue
-                    boxes = int(round(float(row.get(field_name, 0) or 0)))
-                    if boxes > 0:
-                        counter[(voyage_id, flow, area_no, size_mode, plan_date)] += boxes
-        elif {"voy_id", "area_no", "planned_qty"}.issubset(fieldnames):
-            date_field = _first_existing(fieldnames, ["plan_date", "date", "work_date", "planning_date", "day"])
-            flow_field = _first_existing(fieldnames, ["flow", "cntr_type", "status"])
-            for row in reader:
-                flow = normalize_flow(row.get(flow_field), default="OF") if flow_field else "OF"
-                boxes = int(round(float(row["planned_qty"])))
+    reader = large_plan.to_dict(orient='records')
+    fieldnames = set(large_plan.columns.tolist())
+
+    if {"voyage_id", "area_no"}.issubset(fieldnames) and (
+        {"qty_20", "qty_40"}.issubset(fieldnames)
+        or {"planned_20", "planned_40"}.issubset(fieldnames)
+        or {"20", "40"}.issubset(fieldnames)
+    ):
+        qty20_field = _first_existing(fieldnames, ["qty_20", "planned_20", "20", "c20", "C20"])
+        qty40_field = _first_existing(fieldnames, ["qty_40", "planned_40", "40", "c40", "C40"])
+        qty45_field = _first_existing(fieldnames, ["qty_45", "planned_45", "45", "c45", "C45"])
+        date_field = _first_existing(fieldnames, ["plan_date", "date", "work_date", "planning_date", "day"])
+        flow_field = _first_existing(fieldnames, ["flow", "cntr_type", "status"])
+        for row in reader:
+            flow = normalize_flow(row.get(flow_field), default="OF") if flow_field else "OF"
+            voyage_id = normalize_voyage(row.get("voyage_id"))
+            area_no = normalize_code(row.get("area_no"))
+            plan_date = date_key(normalize_text(row.get(date_field))) if date_field else ""
+            for size_mode, field_name in (("20", qty20_field), ("40", qty40_field), ("45", qty45_field)):
+                if not field_name:
+                    continue
+                boxes = int(round(float(row.get(field_name, 0) or 0)))
                 if boxes > 0:
-                    counter[
-                        (
-                            normalize_voyage(row["voy_id"]),
-                            flow,
-                            normalize_code(row["area_no"]),
-                            normalize_big_plan_size(row.get("size")),
-                            date_key(normalize_text(row.get(date_field))) if date_field else "",
-                        )
-                    ] += boxes
-        elif {"voyage_id", "area_no", "planned_boxes"}.issubset(fieldnames):
-            size_field = "size_mode" if "size_mode" in fieldnames else "size"
-            date_field = _first_existing(fieldnames, ["plan_date", "date", "work_date", "planning_date", "day"])
-            flow_field = _first_existing(fieldnames, ["flow", "cntr_type", "status"])
-            for row in reader:
-                flow = normalize_flow(row.get(flow_field), default="OF") if flow_field else "OF"
-                boxes = int(round(float(row["planned_boxes"])))
-                if boxes > 0:
-                    counter[
-                        (
-                            normalize_voyage(row["voyage_id"]),
-                            flow,
-                            normalize_code(row["area_no"]),
-                            normalize_big_plan_size(row.get(size_field)),
-                            date_key(normalize_text(row.get(date_field))) if date_field else "",
-                        )
-                    ] += boxes
-        else:
-            raise ValueError(f"Unsupported big plan columns: {sorted(fieldnames)}")
+                    counter[(voyage_id, flow, area_no, size_mode, plan_date)] += boxes
+    elif {"voy_id", "area_no", "planned_qty"}.issubset(fieldnames):
+        date_field = _first_existing(fieldnames, ["plan_date", "date", "work_date", "planning_date", "day"])
+        flow_field = _first_existing(fieldnames, ["flow", "cntr_type", "status"])
+        for row in reader:
+            flow = normalize_flow(row.get(flow_field), default="OF") if flow_field else "OF"
+            boxes = int(round(float(row["planned_qty"])))
+            if boxes > 0:
+                counter[
+                    (
+                        normalize_voyage(row["voy_id"]),
+                        flow,
+                        normalize_code(row["area_no"]),
+                        normalize_big_plan_size(row.get("size")),
+                        date_key(normalize_text(row.get(date_field))) if date_field else "",
+                    )
+                ] += boxes
+    elif {"voyage_id", "area_no", "planned_boxes"}.issubset(fieldnames):
+        size_field = "size_mode" if "size_mode" in fieldnames else "size"
+        date_field = _first_existing(fieldnames, ["plan_date", "date", "work_date", "planning_date", "day"])
+        flow_field = _first_existing(fieldnames, ["flow", "cntr_type", "status"])
+        for row in reader:
+            flow = normalize_flow(row.get(flow_field), default="OF") if flow_field else "OF"
+            boxes = int(round(float(row["planned_boxes"])))
+            if boxes > 0:
+                counter[
+                    (
+                        normalize_voyage(row["voyage_id"]),
+                        flow,
+                        normalize_code(row["area_no"]),
+                        normalize_big_plan_size(row.get(size_field)),
+                        date_key(normalize_text(row.get(date_field))) if date_field else "",
+                    )
+                ] += boxes
+    else:
+        raise ValueError(f"Unsupported big plan columns: {sorted(fieldnames)}")
     rows = [
         BigPlanRow(voyage_id, flow, area_no, boxes, size_mode, plan_date)
         for (voyage_id, flow, area_no, size_mode, plan_date), boxes in sorted(counter.items())
@@ -1654,8 +1530,8 @@ def read_big_plan(path: Path) -> list[BigPlanRow]:
     return rows
 
 
-def load_port_demand_groups(data_dir: Path, voyage_ids: list[str], planning_time: datetime) -> tuple[list[BoxGroup], list[DemandRow]]:
-    demand_rows = calculate_medium_demands(data_dir, voyage_ids, planning_time)
+def load_port_demand_groups(input_guandong: InputAdapterGd, voyage_ids: list[str], planning_time: datetime) -> tuple[list[BoxGroup], list[DemandRow]]:
+    demand_rows = calculate_medium_demands(input_guandong, voyage_ids, planning_time)
     groups: list[BoxGroup] = []
     group_index: defaultdict[str, int] = defaultdict(int)
     for row in demand_rows:
@@ -1681,14 +1557,11 @@ def load_port_demand_groups(data_dir: Path, voyage_ids: list[str], planning_time
     return groups, demand_rows
 
 
-def load_small_doc_groups(data_dir: Path, voyage_ids: list[str]) -> list[SmallBoxGroup]:
+def load_small_doc_groups(input_guandong: InputAdapterGd, voyage_ids: list[str]) -> list[SmallBoxGroup]:
     groups: list[SmallBoxGroup] = []
     for voyage_id in voyage_ids:
-        path = data_dir / f"container_info_{voyage_id}.parquet"
-        if not path.exists():
-            continue
-        frame = pd.read_parquet(path)
-        if frame.empty:
+        frame = input_guandong.vessel_containers.get(voyage_id, {}).get("doc_cntrs", None)
+        if not isinstance(frame, pd.DataFrame) or frame.empty:
             continue
         work = pd.DataFrame(
             {
@@ -1742,7 +1615,7 @@ def load_small_doc_groups(data_dir: Path, voyage_ids: list[str]) -> list[SmallBo
 
 
 def build_bays(
-    data_dir: Path,
+    input_guandong: InputAdapterGd,
     allowed_areas: set[str],
     closed_areas: set[str],
     planning_time: datetime,
@@ -1751,14 +1624,14 @@ def build_bays(
     area_functions: dict[str, set[str]],
     misplaced_bay_exclusion_ratio: float,
 ) -> tuple[dict[str, Bay], int, int, int]:
-    frame = pd.read_parquet(find_flat_file(data_dir, exact="bay_slots_detail.parquet")).copy()
+    frame = input_guandong.bay_slots_detail.copy()
     frame["YAA_AREANO"] = frame["YAA_AREANO"].map(normalize_code)
     frame["YBY_BAYNO"] = frame["YBY_BAYNO"].map(normalize_bay)
     frame["YST_ROWNO"] = frame["YST_ROWNO"].map(normalize_row)
     frame = frame[frame["YAA_AREANO"].isin(allowed_areas) & ~frame["YAA_AREANO"].isin(closed_areas)].copy()
 
     original_bay_capacity = total_slots_by_bay(frame)
-    reserved_slots, closed_bays = tops_reserved_slots(data_dir, frame, planning_time, target_voyages)
+    reserved_slots, closed_bays = tops_reserved_slots(input_guandong, frame, planning_time, target_voyages)
     frame = drop_reserved_slots(frame, reserved_slots)
     excluded_bays = misplaced_bays_to_exclude(
         frame,
@@ -1830,12 +1703,12 @@ def build_bays(
 
 
 def tops_reserved_slots(
-    data_dir: Path,
+    input_guandong: InputAdapterGd,
     frame: pd.DataFrame,
     planning_time: datetime,
     target_voyages: set[str],
 ) -> tuple[set[tuple[str, str, str]], set[tuple[str, str]]]:
-    active = active_tops_rows(data_dir, planning_time)
+    active = active_tops_rows(input_guandong, planning_time)
     active = active[~active["condition_vessel"].isin({normalize_voyage(v) for v in target_voyages})].copy()
     reserved: set[tuple[str, str, str]] = set()
     closed_bays: set[tuple[str, str]] = set()
@@ -2034,9 +1907,9 @@ def nearest_safe_block_end(ordered_bays: list[str], big_bay_starts: set[str], st
     return len(ordered_bays)
 
 
-def build_area_operations(data_dir: Path, vessel_schedules: dict[str, VoyageSchedule]) -> dict[str, list[AreaOperation]]:
+def build_area_operations(input_guandong: InputAdapterGd, vessel_schedules: dict[str, VoyageSchedule]) -> dict[str, list[AreaOperation]]:
     operations: defaultdict[str, list[AreaOperation]] = defaultdict(list)
-    tops = active_tops_rows(data_dir, datetime.max.replace(year=2099))
+    tops = active_tops_rows(input_guandong, datetime.max.replace(year=2099))
     if tops.empty:
         return dict(operations)
     for row in tops.to_dict("records"):
@@ -2052,23 +1925,22 @@ def build_area_operations(data_dir: Path, vessel_schedules: dict[str, VoyageSche
 
 
 def build_problem(
-    data_dir: Path,
+    input_guandong: InputAdapterGd,
     big_plan: list[BigPlanRow],
     planning_time: datetime,
     horizon_hours: float,
     target_voyages: list[str],
     misplaced_bay_exclusion_ratio: float,
 ) -> ProblemData:
-    data_dir = data_dir.resolve()
-    closed = read_closed_areas(data_dir)
-    area_functions = read_area_functions(data_dir)
+    closed = read_closed_areas(input_guandong)
+    area_functions = read_area_functions(input_guandong)
     function_areas = set(area_functions)
     area_quota: dict[tuple[str, str, str], int] = {}
     area_size_quota: dict[tuple[str, str, str, str], int] = {}
     assigned_areas: defaultdict[tuple[str, str], set[str]] = defaultdict(set)
     cleaned_plan: list[BigPlanRow] = []
     target_voyages = [normalize_voyage(v) for v in target_voyages]
-    vessel_schedules = read_target_vessel_schedules(data_dir, target_voyages, planning_time, horizon_hours)
+    vessel_schedules = read_target_vessel_schedules(input_guandong, target_voyages, planning_time, horizon_hours)
     plan_date = planning_time.date().isoformat()
     input_plan = [
         row for row in big_plan if row.voyage_id in target_voyages and (not row.plan_date or row.plan_date == plan_date)
@@ -2084,8 +1956,8 @@ def build_problem(
         assigned_areas[(row.voyage_id, row.flow)].add(row.area_no)
     if not cleaned_plan:
         raise ValueError("no big-plan rows remain after target-voyage, flow, date, and closed-area filtering")
-    groups, _demand_rows = load_port_demand_groups(data_dir, target_voyages, planning_time)
-    small_groups = load_small_doc_groups(data_dir, target_voyages)
+    groups, _demand_rows = load_port_demand_groups(input_guandong, target_voyages, planning_time)
+    small_groups = load_small_doc_groups(input_guandong, target_voyages)
     demand_by_voyage_size: Counter[tuple[str, str, str]] = Counter()
     for group in groups:
         demand_by_voyage_size[(group.voyage_id, group.status, group.big_plan_size_mode)] += group.demand
@@ -2113,8 +1985,12 @@ def build_problem(
                     }
                 )
                 if exact_upper:
-                    if sum(exact_upper.values()) < target_qty:
-                        exact_upper = Counter(allocate_by_weights(dict(exact_upper), target_qty))
+                    # if sum(exact_upper.values()) < target_qty:
+                    #     raise ValueError(
+                    #         f"medium demand exceeds big-plan strict upper bound for "
+                    #         f"voyage={voyage_id}, flow={flow}, size={size_mode}: "
+                    #         f"demand={target_qty}, big_plan_upper={sum(exact_upper.values())}"
+                    #     )
                     for area_no, qty in exact_upper.items():
                         area_quota[(voyage_id, flow, area_no)] = raw_area_quota[(voyage_id, flow, area_no)]
                         area_size_quota[(voyage_id, flow, area_no, size_mode)] = qty
@@ -2129,6 +2005,12 @@ def build_problem(
                 )
                 if not all_size_weights:
                     raise ValueError(f"big plan has no area pattern for voyage={voyage_id}, flow={flow}, size={size_mode}")
+                if sum(all_size_weights.values()) < target_qty:
+                    raise ValueError(
+                        f"medium demand exceeds big-plan ALL-size strict upper bound for "
+                        f"voyage={voyage_id}, flow={flow}, size={size_mode}: "
+                        f"demand={target_qty}, big_plan_upper={sum(all_size_weights.values())}"
+                    )
                 allocations = allocate_by_weights(dict(all_size_weights), target_qty)
                 for area_no, qty in allocations.items():
                     if qty <= 0:
@@ -2145,7 +2027,7 @@ def build_problem(
         for voyage_id in target_voyages
     }
     bays, reserved_count, closed_bay_count, misplaced_count = build_bays(
-        data_dir,
+        input_guandong,
         allowed_areas,
         closed,
         planning_time,
@@ -2154,8 +2036,8 @@ def build_problem(
         area_functions,
         misplaced_bay_exclusion_ratio,
     )
-    area_operations = build_area_operations(data_dir, vessel_schedules)
-    berth_distances = read_distance_matrix(data_dir)
+    area_operations = build_area_operations(input_guandong, vessel_schedules)
+    berth_distances = read_distance_matrix(input_guandong)
     berth_by_voyage = {
         voyage_id: f"B{vessel_schedules[voyage_id].berth_no}"
         for voyage_id in target_voyages
@@ -2186,24 +2068,29 @@ def build_problem(
 
 
 def load_medium_small_inputs(
-    data_dir: Path,
-    big_plan_path: Path,
+    input_guandong: InputAdapterGd,
     planning_time: datetime,
     voyages: Sequence[str],
     horizon_hours: float,
     misplaced_bay_exclusion_ratio: float,
+    big_plan: pd.DataFrame | Sequence[BigPlanRow] | None = None,
 ) -> MediumSmallInputs:
-    big_plan = read_big_plan(big_plan_path)
-    demand_rows = calculate_medium_demands(data_dir, list(voyages), planning_time)
+    if big_plan is None:
+        big_plan_rows = read_big_plan(input_guandong.large_plan)
+    elif isinstance(big_plan, pd.DataFrame):
+        big_plan_rows = read_big_plan(big_plan)
+    else:
+        big_plan_rows = list(big_plan)
+    demand_rows = calculate_medium_demands(input_guandong, list(voyages), planning_time)
     problem = build_problem(
-        data_dir,
-        big_plan,
+        input_guandong,
+        big_plan_rows,
         planning_time=planning_time,
         horizon_hours=horizon_hours,
         target_voyages=list(voyages),
         misplaced_bay_exclusion_ratio=misplaced_bay_exclusion_ratio,
     )
-    return MediumSmallInputs(big_plan=big_plan, demand_rows=demand_rows, problem=problem)
+    return MediumSmallInputs(big_plan=big_plan_rows, demand_rows=demand_rows, problem=problem)
 
 
 def allocate_by_weights(weights: dict[str, int], target_total: int) -> dict[str, int]:
@@ -2298,6 +2185,7 @@ __all__ = [
     "MediumSmallInputs",
     "PlanningInputArtifacts",
     "RollingPlanningState",
+    "allocation_output_rows",
     "build_large_inputs",
     "load_medium_small_inputs",
     "parse_datetime",

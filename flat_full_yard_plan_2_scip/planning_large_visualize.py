@@ -353,13 +353,27 @@ def read_area_work_type_labels(base_dir: Path, data_dir: Path | None) -> dict[st
 
     resolved_data_dir = discover_data_dir(base_dir, data_dir)
     area_file = discover_area_function_file(resolved_data_dir)
-    df = pd.read_excel(area_file).copy()
-    required = {"area_no", "cntr_type"}
-    missing = required - set(df.columns)
-    if missing:
-        raise KeyError(f"Area function file is missing columns: {sorted(missing)}")
+    return area_work_type_labels_from_frame(pd.read_excel(area_file))
 
-    df["area_no"] = df["area_no"].map(normalize_code)
+
+def area_work_type_labels_from_frame(frame: pd.DataFrame) -> dict[str, str]:
+    df = frame.copy()
+    columns = {str(column): column for column in df.columns}
+    area_col = next((columns[name] for name in ["area_no", "AREA_NO", "YAA_AREANO"] if name in columns), None)
+    type_col = next(
+        (columns[name] for name in ["cntr_type", "CNTR_TYPE", "function", "FUNCTION"] if name in columns),
+        None,
+    )
+    missing = []
+    if area_col is None:
+        missing.append("area_no")
+    if type_col is None:
+        missing.append("cntr_type")
+    if missing:
+        raise KeyError(f"Area function data is missing columns: {missing}")
+
+    df["area_no"] = df[area_col].map(normalize_code)
+    df["cntr_type"] = df[type_col]
     df = df[df["area_no"].notna()].drop_duplicates("area_no", keep="first")
 
     labels: dict[str, str] = {}
@@ -578,6 +592,7 @@ def generate_yard_visualization(
     output_dir: Path,
     data_dir: Path | None = None,
     base_image_path: Path | None = None,
+    area_function_info: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     base_dir = Path(__file__).resolve().parent
     base_image = resolve_base_image(base_image_path or DEFAULT_BASE_IMAGE, base_dir)
@@ -587,7 +602,10 @@ def generate_yard_visualization(
 
     blank = Image.open(base_image).convert("RGBA")
     allocation_by_area = read_allocation_summary(resolved_allocation)
-    area_work_type_labels = read_area_work_type_labels(base_dir, data_dir or base_dir)
+    if area_function_info is not None:
+        area_work_type_labels = area_work_type_labels_from_frame(area_function_info)
+    else:
+        area_work_type_labels = read_area_work_type_labels(base_dir, data_dir or base_dir)
     area_positions = build_area_positions()
     annotated, unmapped = draw_annotations(blank, allocation_by_area, area_positions, area_work_type_labels)
 
