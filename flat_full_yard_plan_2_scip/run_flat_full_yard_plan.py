@@ -211,7 +211,11 @@ def print_case_summary(artifacts) -> None:
     print(f"capacity40_total: {sum(data.C40.values())}")
     print(f"bad_bay_count: {artifacts.diagnostics.get('bad_bay_count')}")
     print(f"active_tops_rows: {artifacts.diagnostics.get('active_tops_rows')}")
+    print(f"user_design_active: {artifacts.diagnostics.get('user_design_active')}")
+    print(f"user_design_large_plan_area: {artifacts.diagnostics.get('user_design_large_plan_area')}")
     print(f"old_vessels: {artifacts.diagnostics.get('old_vessels')}")
+    print(f"departure_operation_deduction_total: {artifacts.diagnostics.get('departure_operation_deduction_total')}")
+    print(f"close_berth_conflict_pairs: {artifacts.diagnostics.get('close_berth_conflict_pairs')}")
     print(f"of_work_lanes: {artifacts.diagnostics.get('of_work_lanes')}")
     print(f"of_area_limits: {artifacts.diagnostics.get('of_area_limits')}")
 
@@ -227,6 +231,7 @@ def print_solution_summary(solution) -> None:
     print(f"operation_overage_total: {sum(solution.o.values())}")
     print(f"of_area_overage_total: {sum(solution.of_area_over.values())}")
     print(f"area_share_overage_total: {sum(solution.h.values())}")
+    print(f"required_area_unmet: {getattr(solution, 'required_area_unmet', {})}")
 
 
 def write_rows(path: Path, rows: list[dict]) -> None:

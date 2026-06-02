@@ -13,6 +13,89 @@
     "RF": "IF",
     "RE": "IF"
   },
+  "user_design_requested": false,
+  "user_design_active": false,
+  "user_design_large_plan_area": [],
+  "user_design_large_plan_area_ignored": [],
+  "adjust_plan_info_large_plan_present": false,
+  "adjust_plan_unknown_areas": {},
+  "area_controls_by_vessel": {
+    "453250": {
+      "allowed_count": 158,
+      "required_areas": [],
+      "removed_areas": []
+    },
+    "453308": {
+      "allowed_count": 158,
+      "required_areas": [],
+      "removed_areas": []
+    },
+    "453324": {
+      "allowed_count": 158,
+      "required_areas": [],
+      "removed_areas": []
+    },
+    "453352": {
+      "allowed_count": 158,
+      "required_areas": [],
+      "removed_areas": []
+    },
+    "453356": {
+      "allowed_count": 158,
+      "required_areas": [],
+      "removed_areas": []
+    },
+    "453388": {
+      "allowed_count": 158,
+      "required_areas": [],
+      "removed_areas": []
+    },
+    "453396": {
+      "allowed_count": 158,
+      "required_areas": [],
+      "removed_areas": []
+    },
+    "453412": {
+      "allowed_count": 158,
+      "required_areas": [],
+      "removed_areas": []
+    },
+    "453416": {
+      "allowed_count": 158,
+      "required_areas": [],
+      "removed_areas": []
+    },
+    "454549": {
+      "allowed_count": 158,
+      "required_areas": [],
+      "removed_areas": []
+    },
+    "454585": {
+      "allowed_count": 158,
+      "required_areas": [],
+      "removed_areas": []
+    },
+    "454710": {
+      "allowed_count": 158,
+      "required_areas": [],
+      "removed_areas": []
+    },
+    "453273": {
+      "allowed_count": 158,
+      "required_areas": [],
+      "removed_areas": []
+    },
+    "453307": {
+      "allowed_count": 158,
+      "required_areas": [],
+      "removed_areas": []
+    },
+    "454548": {
+      "allowed_count": 158,
+      "required_areas": [],
+      "removed_areas": []
+    }
+  },
   "bad_bay_count": 10,
   "bad_bay_sample": [
     [
@@ -4417,7 +4500,7 @@
   "objective_value": 427729.09658013936,
   "best_bound": 427342.5999369384,
   "mip_gap": 0.0009044187105568611,
-  "runtime": 32.0,
+  "runtime": 30.0,
   "objective_components": {
     "miss": -2.1316282072803006e-14,
     "operation": 366.0000000000002,
@@ -4426,6 +4509,7 @@
     "distance_raw": 111534746.042857,
     "share": 762.0,
     "berth_conflict": 70.0,
+    "required_area": 0.0,
     "adjustment": 0.0,
     "balance": 2825.0
   },
@@ -4639,6 +4723,7 @@
     "('453308', '454549', '94')": 1,
     "('453308', '454549', '78')": 1
   },
+  "required_area_unmet": {},
   "of_area_used_count": {
     "453250": 0,
     "453308": 70,

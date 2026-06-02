@@ -120,8 +120,14 @@ class DailyRollingYardPlanningData:
     # 预计靠泊时间相近的出口航次对；模型会软惩罚这些航次共用同一箱区。
     berth_conflict_pairs: Sequence[Tuple[Vessel, Vessel]] = field(default_factory=tuple)
 
+    # 人工指定的航次-箱区控制。allowed 限制新增箱只能进入这些箱区；
+    # required 通过高权重软惩罚尽量让航次使用指定箱区。
+    allowed_areas_by_vessel: Mapping[Vessel, Sequence[Area]] = field(default_factory=dict)
+    required_areas_by_vessel: Mapping[Vessel, Sequence[Area]] = field(default_factory=dict)
+
     # 目标函数权重。
     weights: YardPlanningWeights = field(default_factory=YardPlanningWeights)
+    required_area_penalty: float = 10000.0
 
     # 是否允许未满足需求。True 时用 s 变量承接不可满足需求；False 时强制 s=0。
     allow_unmet_demand: bool = True
@@ -178,6 +184,7 @@ class DailyRollingYardPlanningSolution:
     r40_pos: Dict[VFA, float]
     r40_neg: Dict[VFA, float]
     berth_conflict_shared: Dict[Tuple[Vessel, Vessel, Area], int]
+    required_area_unmet: Dict[VA, float]
     objective_components: Dict[str, float]
     model: Optional[Any] = None
 
@@ -304,12 +311,20 @@ def build_daily_rolling_yard_model(
     OF_area_vessels = params["OF_area_vessels"]
     berth_conflict_pairs = params["berth_conflict_pairs"]
     berth_conflict_keys = params["berth_conflict_keys"]
+    required_area_keys = params["required_area_keys"]
     of_area_used = model.addVars(OF_area_vessels, A, vtype=GRB.BINARY, name="of_area_used")
     of_area_over = model.addVars(OF_area_vessels, vtype=GRB.CONTINUOUS, lb=0, name="of_area_over")
     berth_conflict_shared = model.addVars(
         berth_conflict_keys,
         vtype=GRB.BINARY,
         name="berth_conflict_shared",
+    )
+    required_area_unmet = model.addVars(
+        required_area_keys,
+        vtype=GRB.CONTINUOUS,
+        lb=0,
+        ub=1,
+        name="required_area_unmet",
     )
 
     # OF balance range variables. These only apply to export vessels with OF work lanes.
@@ -488,8 +503,12 @@ def build_daily_rolling_yard_model(
             model.addConstr(shared <= y[left, a], name=f"berth_conflict_left[{left},{right},{a}]")
             model.addConstr(shared <= y[right, a], name=f"berth_conflict_right[{left},{right},{a}]")
 
+    # 约束 11：人工 add 箱区尽量被使用；若容量或功能原因放不进去，required_area_unmet 会记录。
+    for v, a in required_area_keys:
+        model.addConstr(required_area_unmet[v, a] >= 1 - y[v, a], name=f"required_area_unmet[{v},{a}]")
+
     # -------------------------
-    # 约束 11：出口 OF 使用箱区数软约束
+    # 约束 12：出口 OF 使用箱区数软约束
     # 每个出口航次的 OF 箱使用箱区数建议不超过 2 * 作业路数；超过部分进入 of_area_over。
     # -------------------------
     if "OF" in F:
@@ -596,6 +615,9 @@ def build_daily_rolling_yard_model(
     # Z_berth_conflict：预计靠泊时间接近的出口航次共用箱区惩罚。
     Z_berth_conflict = gp.quicksum(berth_conflict_shared[key] for key in berth_conflict_keys)
 
+    # Z_required_area：人工 add 箱区未被使用的软惩罚。
+    Z_required_area = gp.quicksum(required_area_unmet[key] for key in required_area_keys)
+
     # Z_op：箱区作业能力超额惩罚。
     Z_op = gp.quicksum(o[a] for a in A)
 
@@ -616,6 +638,7 @@ def build_daily_rolling_yard_model(
         + weights.distance * Z_dist
         + weights.share * Z_share
         + weights.berth_conflict * Z_berth_conflict
+        + data.required_area_penalty * Z_required_area
         + weights.adjustment * Z_adj
         + weights.balance * Z_bal,
         GRB.MINIMIZE,
@@ -638,6 +661,7 @@ def build_daily_rolling_yard_model(
         "of_area_used": of_area_used,
         "of_area_over": of_area_over,
         "berth_conflict_shared": berth_conflict_shared,
+        "required_area_unmet": required_area_unmet,
         "of_balance_u20": of_balance_u20,
         "of_balance_l20": of_balance_l20,
         "of_balance_u40": of_balance_u40,
@@ -650,6 +674,7 @@ def build_daily_rolling_yard_model(
             "distance_raw": Z_dist_raw,
             "share": Z_share,
             "berth_conflict": Z_berth_conflict,
+            "required_area": Z_required_area,
             "adjustment": Z_adj,
             "balance": Z_bal,
         },
@@ -721,6 +746,7 @@ def solve_daily_rolling_yard_plan(
             r40_pos={},
             r40_neg={},
             berth_conflict_shared={},
+            required_area_unmet={},
             objective_components={},
             model=model if keep_model else None,
         )
@@ -757,6 +783,10 @@ def solve_daily_rolling_yard_plan(
         berth_conflict_shared=_extract_int_tupledict(
             variables["berth_conflict_shared"],
             (params["berth_conflict_keys"],),
+        ),
+        required_area_unmet=_extract_float_tupledict(
+            variables["required_area_unmet"],
+            (params["required_area_keys"],),
         ),
         objective_components={name: expr.getValue() for name, expr in components.items()},
         model=model if keep_model else None,
@@ -878,6 +908,18 @@ def _prepare_params(
     U = {(a, f): _binary(data.U, (a, f), data.default_U) for a in A for f in F}
     E20 = {(v, f, a): _binary(data.E20, (v, f, a), data.default_E20) for v in V for f in F for a in A}
     E40 = {(v, f, a): _binary(data.E40, (v, f, a), data.default_E40) for v in V for f in F for a in A}
+    allowed_areas_by_vessel, required_areas_by_vessel = _normalize_area_controls(
+        data.allowed_areas_by_vessel,
+        data.required_areas_by_vessel,
+        V,
+        A,
+    )
+    for v, allowed_areas in allowed_areas_by_vessel.items():
+        for f in F:
+            for a in A:
+                if a not in allowed_areas:
+                    E20[v, f, a] = 0
+                    E40[v, f, a] = 0
 
     # 航次级 TOPS 扣减后容量。若外部直接传 Cbar，则使用外部值；否则用 C - TOPS 自动计算。
     Cbar20 = {}
@@ -911,6 +953,11 @@ def _prepare_params(
     OF_area_vessels = [v for v in V if "OF" in F and OFWorkLanes[v] > 0]
     berth_conflict_pairs = _normalize_vessel_pairs(data.berth_conflict_pairs, V)
     berth_conflict_keys = [(left, right, a) for left, right in berth_conflict_pairs for a in A]
+    required_area_keys = [
+        (v, a)
+        for v, required_areas in required_areas_by_vessel.items()
+        for a in sorted(required_areas)
+    ]
 
     # 旧航次集合：只有 O[v]=1 的航次进入调整幅度变量和调整惩罚。
     V_old = [v for v in V if int(data.O.get(v, 0)) == 1]
@@ -959,6 +1006,9 @@ def _prepare_params(
         "OF_area_vessels": OF_area_vessels,
         "berth_conflict_pairs": berth_conflict_pairs,
         "berth_conflict_keys": berth_conflict_keys,
+        "allowed_areas_by_vessel": allowed_areas_by_vessel,
+        "required_areas_by_vessel": required_areas_by_vessel,
+        "required_area_keys": required_area_keys,
     }
 
 
@@ -1041,6 +1091,37 @@ def _normalize_vessel_pairs(pairs: Sequence[Tuple[Vessel, Vessel]], vessels: Seq
         seen.add(pair_key)
         result.append((left, right))
     return result
+
+
+def _normalize_area_controls(
+    allowed: Mapping[Vessel, Sequence[Area]],
+    required: Mapping[Vessel, Sequence[Area]],
+    vessels: Sequence[Vessel],
+    areas: Sequence[Area],
+) -> tuple[dict[Vessel, set[Area]], dict[Vessel, set[Area]]]:
+    vessel_set = set(vessels)
+    area_set = set(areas)
+    allowed_result: dict[Vessel, set[Area]] = {}
+    required_result: dict[Vessel, set[Area]] = {}
+
+    for raw_vessel, raw_areas in (allowed or {}).items():
+        vessel = str(raw_vessel)
+        if vessel not in vessel_set:
+            continue
+        normalized = {str(area) for area in (raw_areas or ()) if str(area) in area_set}
+        allowed_result[vessel] = normalized
+
+    for raw_vessel, raw_areas in (required or {}).items():
+        vessel = str(raw_vessel)
+        if vessel not in vessel_set:
+            continue
+        normalized = {str(area) for area in (raw_areas or ()) if str(area) in area_set}
+        if vessel in allowed_result:
+            normalized &= allowed_result[vessel]
+        if normalized:
+            required_result[vessel] = normalized
+
+    return allowed_result, required_result
 
 
 def _num(mapping: Optional[Mapping[Any, Any]], key: tuple[Any, ...], default: float = 0.0) -> float:
@@ -1300,6 +1381,10 @@ def _iter_keys(dimensions: tuple[Sequence[Any], ...]) -> Any:
         raise ValueError("Only 1D, 2D, and 3D tupledict extraction is supported.")
 
 
+build_daily_rolling_yard_model_gurobi = build_daily_rolling_yard_model
+solve_daily_rolling_yard_plan_gurobi = solve_daily_rolling_yard_plan
+
+
 __all__ = [
     "Area",
     "DailyRollingYardPlanningData",
@@ -1308,7 +1393,9 @@ __all__ = [
     "Vessel",
     "YardPlanningWeights",
     "build_daily_rolling_yard_model",
+    "build_daily_rolling_yard_model_gurobi",
     "solve_daily_rolling_yard_plan",
+    "solve_daily_rolling_yard_plan_gurobi",
 ]
 
 
@@ -1353,6 +1440,7 @@ def build_daily_rolling_yard_model_scip(
     OF_area_vessels = params["OF_area_vessels"]
     berth_conflict_pairs = params["berth_conflict_pairs"]
     berth_conflict_keys = params["berth_conflict_keys"]
+    required_area_keys = params["required_area_keys"]
     weights = data.weights
 
     model = Model(data.name)
@@ -1425,6 +1513,10 @@ def build_daily_rolling_yard_model_scip(
     berth_conflict_shared = {
         key: model.addVar(vtype="B", name=f"berth_conflict_shared[{key[0]},{key[1]},{key[2]}]")
         for key in berth_conflict_keys
+    }
+    required_area_unmet = {
+        key: model.addVar(vtype="C", lb=0.0, ub=1.0, name=f"required_area_unmet[{key[0]},{key[1]}]")
+        for key in required_area_keys
     }
     of_balance_u20 = {
         v: model.addVar(vtype="C", lb=0.0, ub=max(0.0, params["D20"][v, "OF"]), name=f"of_balance_u20[{v}]")
@@ -1527,6 +1619,9 @@ def build_daily_rolling_yard_model_scip(
             model.addCons(shared <= y[left, a])
             model.addCons(shared <= y[right, a])
 
+    for v, a in required_area_keys:
+        model.addCons(required_area_unmet[v, a] >= 1.0 - y[v, a])
+
     if "OF" in F:
         for v in OF_area_vessels:
             for a in A:
@@ -1585,6 +1680,7 @@ def build_daily_rolling_yard_model_scip(
     )
     Z_share = quicksum(h[a] for a in A)
     Z_berth_conflict = quicksum(berth_conflict_shared[key] for key in berth_conflict_keys)
+    Z_required_area = quicksum(required_area_unmet[key] for key in required_area_keys)
     Z_op = quicksum(o[a] for a in A)
     Z_of_area = quicksum(of_area_over[v] for v in OF_area_vessels)
     Z_bal = quicksum(
@@ -1600,6 +1696,7 @@ def build_daily_rolling_yard_model_scip(
         + weights.distance * Z_dist
         + weights.share * Z_share
         + weights.berth_conflict * Z_berth_conflict
+        + data.required_area_penalty * Z_required_area
         + weights.adjustment * Z_adj
         + weights.balance * Z_bal,
         "minimize",
@@ -1622,6 +1719,7 @@ def build_daily_rolling_yard_model_scip(
         "of_area_used": of_area_used,
         "of_area_over": of_area_over,
         "berth_conflict_shared": berth_conflict_shared,
+        "required_area_unmet": required_area_unmet,
         "objective_components": {
             "miss": Z_miss,
             "operation": Z_op,
@@ -1630,6 +1728,7 @@ def build_daily_rolling_yard_model_scip(
             "distance_raw": Z_dist_raw,
             "share": Z_share,
             "berth_conflict": Z_berth_conflict,
+            "required_area": Z_required_area,
             "adjustment": Z_adj,
             "balance": Z_bal,
         },
@@ -1681,6 +1780,7 @@ def solve_daily_rolling_yard_plan(
             r40_pos={},
             r40_neg={},
             berth_conflict_shared={},
+            required_area_unmet={},
             objective_components={},
             model=model if keep_model else None,
         )
@@ -1718,6 +1818,11 @@ def solve_daily_rolling_yard_plan(
             model,
             variables["berth_conflict_shared"],
             (params["berth_conflict_keys"],),
+        ),
+        required_area_unmet=_extract_scip_float_vars(
+            model,
+            variables["required_area_unmet"],
+            (params["required_area_keys"],),
         ),
         objective_components={name: _safe_scip_expr_value(model, expr) for name, expr in components.items()},
         model=model if keep_model else None,

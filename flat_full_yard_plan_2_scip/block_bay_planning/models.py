@@ -162,6 +162,7 @@ class ProblemData:
     target_voyages: list[str]
     berth_distances: dict[tuple[str, str], float] = field(default_factory=dict)
     berth_by_voyage: dict[str, str] = field(default_factory=dict)
+    allowed_areas_by_voyage: dict[str, set[str]] = field(default_factory=dict)
     tops_reserved_slot_count: int = 0
     tops_closed_bay_count: int = 0
     misplaced_bay_exclusion_ratio: float = 0.0

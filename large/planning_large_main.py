@@ -261,6 +261,9 @@ def build_current_case_data(
     import_vessels: Optional[Sequence[str]],
     state: RollingPlanningState,
     flow_aliases: Optional[Mapping[str, str]] = None,
+    user_design: bool = False,
+    user_design_large_plan_area: Optional[Sequence[str]] = None,
+    adjust_plan_info: Optional[Mapping[str, Any]] = None,
 ) -> PlanningInputArtifacts:
     """
     功能：
@@ -307,6 +310,14 @@ def build_current_case_data(
         read_berths_for_vessels(vessel_info, all_vessels),
     )
     berth_by_vessel = read_berths_for_vessels(vessel_info, all_vessels)
+    allowed_areas_by_vessel, required_areas_by_vessel, area_control_diagnostics = build_large_area_controls(
+        vessels=all_vessels,
+        areas=areas,
+        user_design=user_design,
+        user_design_large_plan_area=user_design_large_plan_area or [],
+        adjust_plan_info=adjust_plan_info or {},
+    )
+    user_design_active = bool(area_control_diagnostics["user_design_active"])
 
     # 堆场快照：识别当前规划航次已经在场的箱子。
     snapshot = read_snapshot(data_dir / "bay_slots_detail.parquet")
@@ -324,21 +335,32 @@ def build_current_case_data(
     bay_total_slots = build_bay_total_slot_counts(snapshot, areas)
     bad_bays = identify_bad_bays(current_snapshot, area_functions, bay_total_slots)
     l20, l40, q20, q40 = build_snapshot_count_params(current_snapshot, area_functions, set(areas))
-    departure_deductions, departure_avoidance = compute_departure_operation_deductions(
-        vessel_info=vessel_info,
-        snapshot=snapshot,
-        planning_time=planning_time,
-        areas=areas,
-    )
-    effective_load_capacity = {
-        area: max(0.0, float(load_capacity.get(area, 0.0)) - float(departure_deductions.get(area, 0.0)))
-        for area in areas
-    }
-    close_berth_pairs, close_berth_diagnostics = build_close_export_berth_pairs(
-        vessel_info=vessel_info,
-        export_vessels=export_vessels,
-        threshold_hours=BERTH_CONFLICT_THRESHOLD_HOURS,
-    )
+    if user_design_active:
+        departure_deductions = {area: 0.0 for area in areas}
+        departure_avoidance = {
+            "active_export_voyages": [],
+            "counts_by_voyage_area": [],
+            "disabled_reason": "user_design_large_plan_area",
+        }
+        effective_load_capacity = dict(load_capacity)
+        close_berth_pairs: list[tuple[str, str]] = []
+        close_berth_diagnostics: list[dict[str, Any]] = []
+    else:
+        departure_deductions, departure_avoidance = compute_departure_operation_deductions(
+            vessel_info=vessel_info,
+            snapshot=snapshot,
+            planning_time=planning_time,
+            areas=areas,
+        )
+        effective_load_capacity = {
+            area: max(0.0, float(load_capacity.get(area, 0.0)) - float(departure_deductions.get(area, 0.0)))
+            for area in areas
+        }
+        close_berth_pairs, close_berth_diagnostics = build_close_export_berth_pairs(
+            vessel_info=vessel_info,
+            export_vessels=export_vessels,
+            threshold_hours=BERTH_CONFLICT_THRESHOLD_HOURS,
+        )
 
     # 容量统计：
     # 只读取未拆分 bay_slots_detail.parquet。C20 使用未拆分物理箱位行数口径；
@@ -448,6 +470,8 @@ def build_current_case_data(
         O=old_flags,
         OFWorkLanes=of_work_lanes,
         berth_conflict_pairs=close_berth_pairs,
+        allowed_areas_by_vessel=allowed_areas_by_vessel,
+        required_areas_by_vessel=required_areas_by_vessel,
         weights=YardPlanningWeights(
             miss=100.0,
             operation=50.0,
@@ -467,6 +491,7 @@ def build_current_case_data(
         "area_count": len(areas),
         "flows": flows,
         "flow_aliases": flow_aliases,
+        **area_control_diagnostics,
         "bad_bay_count": len(bad_bays),
         "bad_bay_sample": sorted(list(bad_bays))[:20],
         "current_snapshot_rows": int(len(current_snapshot)),
@@ -635,6 +660,112 @@ def normalize_vessel_list(values: Optional[Sequence[str]]) -> list[str]:
         seen.add(vessel)
         out.append(vessel)
     return out
+
+
+def normalize_area_list(values: Any) -> list[str]:
+    if values is None:
+        return []
+    if isinstance(values, str):
+        values = [values]
+    out: list[str] = []
+    seen: set[str] = set()
+    try:
+        iterator = list(values)
+    except TypeError:
+        iterator = [values]
+    for value in iterator:
+        area = normalize_code(value)
+        if not area or area in seen:
+            continue
+        seen.add(area)
+        out.append(area)
+    return out
+
+
+def large_plan_adjust_entry(adjust_plan_info: Mapping[str, Any] | None, vessel: str) -> Mapping[str, Any]:
+    if not isinstance(adjust_plan_info, Mapping):
+        return {}
+    source = adjust_plan_info.get("adjust_plan_info", adjust_plan_info)
+    if not isinstance(source, Mapping):
+        return {}
+    large_plan = source.get("large_plan", source)
+    if not isinstance(large_plan, Mapping):
+        return {}
+    if "add" in large_plan or "remove" in large_plan:
+        return large_plan
+    return (
+        large_plan.get(vessel)
+        or large_plan.get(str(vessel))
+        or large_plan.get(normalize_code(vessel))
+        or {}
+    )
+
+
+def build_large_area_controls(
+    *,
+    vessels: Sequence[str],
+    areas: Sequence[str],
+    user_design: bool,
+    user_design_large_plan_area: Sequence[str] | None,
+    adjust_plan_info: Mapping[str, Any] | None,
+) -> tuple[dict[str, list[str]], dict[str, list[str]], dict[str, Any]]:
+    area_set = set(areas)
+    design_areas_raw = normalize_area_list(user_design_large_plan_area)
+    design_areas = [area for area in design_areas_raw if area in area_set]
+    active_user_design = bool(user_design and design_areas)
+
+    allowed_by_vessel: dict[str, list[str]] = {}
+    required_by_vessel: dict[str, list[str]] = {}
+    per_vessel: dict[str, dict[str, Any]] = {}
+    unknown_areas: dict[str, list[str]] = {}
+
+    for vessel in vessels:
+        entry = large_plan_adjust_entry(adjust_plan_info, vessel)
+        add_raw = normalize_area_list(entry.get("add")) if isinstance(entry, Mapping) else []
+        remove_raw = normalize_area_list(entry.get("remove")) if isinstance(entry, Mapping) else []
+        add = [area for area in add_raw if area in area_set]
+        remove = [area for area in remove_raw if area in area_set]
+        unknown = sorted((set(add_raw) | set(remove_raw)) - area_set)
+        if unknown:
+            unknown_areas[vessel] = unknown
+
+        allowed = set(design_areas if active_user_design else areas)
+        allowed.update(add)
+        allowed.difference_update(remove)
+        required = sorted(set(add) & allowed)
+
+        allowed_by_vessel[vessel] = sorted(allowed)
+        if required:
+            required_by_vessel[vessel] = required
+        per_vessel[vessel] = {
+            "allowed_count": len(allowed),
+            "required_areas": required,
+            "removed_areas": sorted(set(remove)),
+        }
+
+    diagnostics = {
+        "user_design_requested": bool(user_design),
+        "user_design_active": active_user_design,
+        "user_design_large_plan_area": design_areas,
+        "user_design_large_plan_area_ignored": sorted(set(design_areas_raw) - area_set),
+        "adjust_plan_info_large_plan_present": bool(
+            isinstance(adjust_plan_info, Mapping) and adjust_plan_info.get("large_plan", adjust_plan_info)
+        ),
+        "adjust_plan_unknown_areas": unknown_areas,
+        "area_controls_by_vessel": per_vessel,
+    }
+    return allowed_by_vessel, required_by_vessel, diagnostics
+
+
+def read_adjust_plan_info(path: Optional[Path]) -> dict[str, Any]:
+    if path is None:
+        return {}
+    with path.open("r", encoding="utf-8") as fp:
+        data = json.load(fp)
+    if not isinstance(data, dict):
+        return {}
+    adjust_plan_info = data.get("adjust_plan_info", data)
+    return adjust_plan_info if isinstance(adjust_plan_info, dict) else {}
 
 
 def discover_export_vessels(data_dir: Path) -> list[str]:
@@ -2088,6 +2219,7 @@ def write_run_outputs(
         "area_share_overage": solution.h,
         "of_area_overage": solution.of_area_over,
         "berth_conflict_shared": {str(k): v for k, v in solution.berth_conflict_shared.items()},
+        "required_area_unmet": {str(k): v for k, v in solution.required_area_unmet.items()},
         "of_area_used_count": {
             vessel: int(sum(used for (used_vessel, _area), used in solution.of_area_used.items() if used_vessel == vessel))
             for vessel in artifacts.export_vessels
@@ -2138,6 +2270,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-write-state", action="store_true")
     parser.add_argument("--skip-visualization", action="store_true")
     parser.add_argument("--disable-default-flow-aliases", action="store_true")
+    parser.add_argument(
+        "--user-design-large-plan-area",
+        nargs="+",
+        default=None,
+        help="Restrict new large-plan allocation to these yard areas for every planned vessel.",
+    )
+    parser.add_argument(
+        "--adjust-plan-info-json",
+        type=Path,
+        default=None,
+        help="JSON file containing adjust_plan_info; large_plan[voy_id].add/remove controls large-plan areas.",
+    )
     return parser.parse_args()
 
 
@@ -2160,6 +2304,7 @@ def main() -> None:
     planning_time = pd.Timestamp(args.planning_time)
     state = RollingPlanningState(resolve_output_path(args.state_dir, base_dir))
     flow_aliases = {} if args.disable_default_flow_aliases else DEFAULT_FLOW_ALIASES
+    adjust_plan_info = read_adjust_plan_info(args.adjust_plan_info_json)
 
     artifacts = build_current_case_data(
         base_dir=base_dir,
@@ -2169,6 +2314,9 @@ def main() -> None:
         import_vessels=args.import_vessels,
         state=state,
         flow_aliases=flow_aliases,
+        user_design=bool(args.user_design_large_plan_area),
+        user_design_large_plan_area=args.user_design_large_plan_area,
+        adjust_plan_info=adjust_plan_info,
     )
     print_case_summary(artifacts)
     solution = solve_daily_rolling_yard_plan(
@@ -2242,6 +2390,8 @@ def print_case_summary(artifacts: PlanningInputArtifacts) -> None:
     print("capacity40_total:", artifacts.diagnostics["capacity40_total"])
     print("bad_bay_count:", artifacts.diagnostics["bad_bay_count"])
     print("active_tops_rows:", artifacts.diagnostics["active_tops_rows"])
+    print("user_design_active:", artifacts.diagnostics["user_design_active"])
+    print("user_design_large_plan_area:", artifacts.diagnostics["user_design_large_plan_area"])
     print("departure_operation_deduction_total:", artifacts.diagnostics["departure_operation_deduction_total"])
     print("close_berth_conflict_pairs:", artifacts.diagnostics["close_berth_conflict_pairs"])
     print("old_vessels:", artifacts.diagnostics["old_vessels"])
@@ -2270,6 +2420,7 @@ def print_solution_summary(solution: DailyRollingYardPlanningSolution) -> None:
     print("operation_overage_total:", sum(solution.o.values()))
     print("of_area_overage_total:", sum(solution.of_area_over.values()))
     print("area_share_overage_total:", sum(solution.h.values()))
+    print("required_area_unmet:", solution.required_area_unmet)
 
 
 if __name__ == "__main__":

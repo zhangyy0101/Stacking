@@ -101,6 +101,42 @@ class InputAdapterGd():
         self.voyage_predict: Dict = {}                    # 航次预测信息,已融合到vessel_containers中
         self.large_plan: Dict = {}                        # 大计划计算结果,大计划的计算结果，转成中计划输入所需的dict形式，存入这个成员变量，供中计划使用
         self.adjust_plan_info: Dict = {}                  # 计划的人工调整信息
+        """
+        {
+        "large_plan":
+            {
+                "voyid":{
+                    "add": [],  # 添加的箱区为必须使用箱区
+                    "remove": []  # 删除的箱区为不能用的箱区
+                },
+            },
+        "medium_plan":
+            {
+                "voyid":{
+                    "20_port":{
+                    "add": [],  # 添加的箱区为必须使用箱区
+                    "remove": []  # 删除的箱区为不能用的箱区
+                    },
+                    "40_port":{
+                    "add": [],  # 添加的箱区为必须使用箱区
+                    "remove": []  # 删除的箱区为不能用的箱区
+                },
+            },
+        "small_plan":{
+            {
+                "voyid":{
+                    "20_port_hq":{
+                    "add": [],  # 添加的箱区、贝为必须使用箱区
+                    "remove": []  # 删除的箱区、贝为不能用的箱区
+                    },
+                    "40_port_hq":{
+                    "add": [],  # 添加的箱区、贝为必须使用箱区
+                    "remove": []  # 删除的箱区、贝为不能用的箱区
+                },
+            }
+        """
+        self.user_design: bool = True                     # 是否用户指定大计划区域，区域放在user_design_large_plan_area里
+        self.user_design_large_plan_area: List[str] = []     # 用户指定的大计划区域列表
         self.is_data_local: bool = False                  # 是否本地加载信息
         self.local_path: str = None                       # 本地加载文件地址
         self.need_save_data: bool = True                  # 是否保存输入信息
@@ -122,6 +158,8 @@ class InputAdapterGd():
             "voyage_predict": clean_for_json(self.voyage_predict),
             "large_plan": clean_for_json(self.large_plan),
             "adjust_plan_info": clean_for_json(self.adjust_plan_info),
+            "user_design": self.user_design,
+            "user_design_large_plan_area": clean_for_json(self.user_design_large_plan_area),
             "is_data_local": self.is_data_local,
             "local_path": self.local_path,
             "need_save_data": self.need_save_data,
@@ -160,6 +198,8 @@ class InputAdapterGd():
         obj.voyage_predict = data.get("voyage_predict", {})
         obj.large_plan = data.get("large_plan", {})
         obj.adjust_plan_info = data.get("adjust_plan_info", {})
+        obj.user_design = bool(data.get("user_design", obj.user_design))
+        obj.user_design_large_plan_area = data.get("user_design_large_plan_area", obj.user_design_large_plan_area)
         obj.is_data_local = data.get("is_data_local", False)
         obj.local_path = data.get("local_path")
         obj.need_save_data = data.get("need_save_data", True)
