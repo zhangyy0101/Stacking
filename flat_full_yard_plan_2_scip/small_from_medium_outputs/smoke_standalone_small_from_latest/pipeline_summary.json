@@ -1,0 +1,11 @@
+{
+  "planning_time": "2026-05-19 09:40:00",
+  "adapter_json": "C:\\python files\\Stacking\\flat_full_yard_plan_2_scip\\input_data.json",
+  "medium_plan_input": "C:\\python files\\Stacking\\flat_full_yard_plan_2_scip\\full_plan_outputs\\run_20260602_191836\\medium_small_plan\\medium_plan.csv",
+  "large_allocation_input": "C:\\python files\\Stacking\\flat_full_yard_plan_2_scip\\full_plan_outputs\\run_20260602_191836\\outputs_large\\latest_run\\allocation.csv",
+  "small_plan_output_dir": "C:\\python files\\Stacking\\flat_full_yard_plan_2_scip\\small_from_medium_outputs\\smoke_standalone_small_from_latest",
+  "small_row_count": 461,
+  "medium_algorithm": "flat_json_small_plan_from_external_medium_column_generation",
+  "medium_master_status": null,
+  "medium_unplaced_boxes": 14
+}

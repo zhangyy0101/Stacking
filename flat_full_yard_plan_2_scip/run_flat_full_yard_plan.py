@@ -12,6 +12,9 @@ sys.dont_write_bytecode = True
 import pandas as pd
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 DEFAULT_ADAPTER_JSON = SCRIPT_DIR / "input_data.json"
 
 import input_adapter_standard as adapter_data_io
@@ -21,9 +24,21 @@ from input_adapter_standard import (
     write_json,
 )
 from planning_large_solver import solve_daily_rolling_yard_plan
-from planning_large_visualize import generate_yard_visualization
-from block_bay_planning.models import SAConfig
-from block_bay_planning.sa_solver import SimulatedAnnealingSolver
+try:
+    from planning_large_visualize import generate_yard_visualization
+except ModuleNotFoundError as exc:
+    generate_yard_visualization = None
+    VISUALIZATION_IMPORT_ERROR = str(exc)
+else:
+    VISUALIZATION_IMPORT_ERROR = ""
+from medium_small_column_generation_bridge import (
+    add_column_generation_arguments,
+    build_problem_from_large_plan_records_json,
+    make_config,
+    print_diagnostics_summary,
+    solve_medium_small_problem,
+    write_medium_demand_rows,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -44,16 +59,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--large-quiet", action="store_true")
     parser.add_argument("--no-write-large-state", action="store_true")
     parser.add_argument("--disable-default-flow-aliases", action="store_true")
-    parser.add_argument("--medium-iterations", type=int, default=30000)
-    parser.add_argument("--medium-seed", type=int, default=7)
     parser.add_argument("--horizon-hours", type=float, default=24.0)
-    parser.add_argument("--energy-record-every", type=int, default=3000)
-    parser.add_argument("--log-every", type=int, default=1000)
-    parser.add_argument("--max-small-plan-retries", type=int, default=5)
-    parser.add_argument("--small-plan-check-every", type=int, default=3000)
-    parser.add_argument("--small-plan-proxy-height-capacity-penalty", type=float, default=240.0)
-    parser.add_argument("--small-plan-proxy-every", type=int, default=1)
     parser.add_argument("--misplaced-bay-exclusion-ratio", type=float, default=DEFAULT_MISPLACED_BAY_EXCLUSION_RATIO)
+    add_column_generation_arguments(parser)
     return parser.parse_args()
 
 
@@ -103,52 +111,59 @@ def main() -> None:
     large_state_rows = pd.DataFrame()
     if not args.no_write_large_state and large_solution.objective_value is not None:
         large_state_rows = state.append_solution(planning_time, large_solution)
+    large_allocation_rows = adapter_data_io.allocation_output_rows(large_solution, artifacts.data)
     adapter_data_io.write_large_outputs(large_output_dir, artifacts, large_solution, large_state_rows)
 
     large_allocation_path = large_output_dir / "allocation.csv"
-    if not large_allocation_path.exists():
-        raise FileNotFoundError(f"Large allocation was not written: {large_allocation_path}")
     large_visualization_dir = run_dir / "outputs_large" / "yard_visualization"
     visualization_kwargs = {
         "allocation_path": large_allocation_path,
         "output_dir": large_visualization_dir,
         "area_function_info": adapter_input.area_function_info,
     }
-    visualization_info = generate_yard_visualization(**visualization_kwargs)
-    print(f"large_visualization: {large_visualization_dir}")
+    if generate_yard_visualization is None:
+        visualization_info = {"skipped": True, "reason": VISUALIZATION_IMPORT_ERROR}
+        print(f"large_visualization skipped: {VISUALIZATION_IMPORT_ERROR}")
+    elif not large_allocation_path.exists():
+        visualization_info = {"skipped": True, "reason": f"allocation output not found: {large_allocation_path}"}
+        print(f"large_visualization skipped: allocation output not found: {large_allocation_path}")
+    else:
+        visualization_info = generate_yard_visualization(**visualization_kwargs)
+        print(f"large_visualization: {large_visualization_dir}")
 
-    print("\n[2/2] Building medium/small inputs")
-    large_allocation_frame = pd.DataFrame(adapter_data_io.allocation_output_rows(large_solution, artifacts.data))
-    medium_inputs = adapter_data_io.load_medium_small_inputs(
-        adapter_input,
+    print("\n[2/2] Building medium/small inputs for SCIP column generation")
+    data_dir, medium_problem, medium_big_plan = build_problem_from_large_plan_records_json(
+        adapter_json_path,
+        large_allocation_rows,
         planning_time=medium_planning_time,
         voyages=medium_voyages,
         horizon_hours=args.horizon_hours,
         misplaced_bay_exclusion_ratio=args.misplaced_bay_exclusion_ratio,
-        big_plan=large_allocation_frame,
     )
-    adapter_data_io.write_demand_rows(medium_small_output_dir / "medium_demand_by_port.csv", medium_inputs.demand_rows)
-
-    print("[2/2] Solving medium and small plans")
-    config = SAConfig(
-        iterations=args.medium_iterations,
-        seed=args.medium_seed,
-        progress_every=args.energy_record_every,
-        log_every=args.log_every,
-        max_small_plan_retries=args.max_small_plan_retries,
-        small_plan_check_every=args.small_plan_check_every,
-        small_plan_proxy_height_capacity_penalty=args.small_plan_proxy_height_capacity_penalty,
-        small_plan_proxy_every=args.small_plan_proxy_every,
+    write_medium_demand_rows(
+        medium_small_output_dir / "medium_demand_by_port.csv",
+        data_dir,
+        medium_big_plan,
+        medium_problem.target_voyages,
+        medium_planning_time,
+        args.horizon_hours,
     )
-    solver = SimulatedAnnealingSolver(medium_inputs.problem, config)
-    result = solver.solve()
 
-    write_rows(medium_small_output_dir / "medium_plan.csv", result.medium_rows)
-    write_rows(medium_small_output_dir / "small_plan.csv", result.small_rows)
-    write_rows(medium_small_output_dir / "small_plan_six_bay_blocks.csv", make_six_bay_block_rows(result.small_rows))
-    write_rows(medium_small_output_dir / "energy_convergence.csv", result.convergence_rows)
-    write_rows(medium_small_output_dir / "big_plan_used.csv", [row.__dict__ for row in medium_inputs.problem.big_plan])
-    write_json(medium_small_output_dir / "diagnostics.json", result.diagnostics)
+    print("[2/2] Solving medium and small plans with SCIP column generation")
+    result, medium_diagnostics = solve_medium_small_problem(
+        medium_problem,
+        make_config(args),
+        medium_small_output_dir,
+        diagnostics_context={
+            "adapter_json": str(adapter_json_path),
+            "data_dir": str(data_dir),
+            "planning_time": medium_planning_time.isoformat(sep=" "),
+            "large_allocation_input": "in_memory_large_solution",
+            "large_allocation_output": str(large_allocation_path),
+            "flat_pipeline_mode": "large_then_embedded_column_generation_scip",
+        },
+    )
+    print_diagnostics_summary(medium_diagnostics)
 
     summary = {
         "planning_time": str(planning_time),
@@ -162,13 +177,16 @@ def main() -> None:
         "large_visualization": visualization_info,
         "medium_small_output_dir": str(medium_small_output_dir),
         "large_allocation_output": str(large_allocation_path),
-        "large_allocation_used_by_medium_small": "in_memory",
+        "large_allocation_used_by_medium_small": "in_memory_large_solution",
         "export_vessels": list(artifacts.export_vessels),
         "import_vessels": list(artifacts.import_vessels),
         "medium_voyages": medium_voyages,
         "large_status": large_solution.status_name,
         "large_objective_value": large_solution.objective_value,
-        "medium_energy": result.energy,
+        "medium_objective": medium_diagnostics.get("final_objective"),
+        "medium_algorithm": medium_diagnostics.get("algorithm"),
+        "medium_master_status": medium_diagnostics.get("master_status"),
+        "medium_unplaced_boxes": medium_diagnostics.get("unplaced_boxes"),
         "medium_row_count": len(result.medium_rows),
         "small_row_count": len(result.small_rows),
     }
