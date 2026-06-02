@@ -46,14 +46,22 @@ def main() -> None:
 
     solver = SimulatedAnnealingSolver(problem)
     log(f"reading medium plan: {args.medium_plan}")
-    small_rows = solver.make_small_rows_from_medium_rows(medium_rows)
+    repaired_medium_rows, small_rows = solver.make_small_and_repaired_medium_rows_from_medium_rows(medium_rows)
 
     diagnostics = {
         "mode": "small_only",
         "big_plan": str(args.big_plan.resolve()),
         "medium_plan": str(args.medium_plan.resolve()),
         "medium_row_count": len(medium_rows),
+        "repaired_medium_row_count": len(repaired_medium_rows),
         "small_row_count": len(small_rows),
+        "small_plan_construction_mode": solver.small_plan_construction_mode,
+        "small_plan_medium_repair_added_boxes": solver.small_plan_medium_repair_added_boxes,
+        "small_unplaced_boxes": sum(solver.small_unplaced_by_group.values()),
+        "small_unplaced_by_group": {
+            key: qty for key, qty in sorted(solver.small_unplaced_by_group.items()) if qty > 0
+        },
+        "final_small_plan_failure_before_repair": solver.final_small_plan_failure,
         "small_plan_used_six_bay_block_count": len(
             {row.get("six_bay_block_id") for row in small_rows if row.get("six_bay_block_id")}
         ),
@@ -64,12 +72,14 @@ def main() -> None:
 
     log("writing small plan outputs")
     write_rows(output_dir / "medium_plan_used.csv", medium_rows)
+    write_rows(output_dir / "medium_plan_repaired.csv", repaired_medium_rows)
     write_small_artifacts(output_dir, small_rows)
     write_json(output_dir / "diagnostics.json", diagnostics)
 
     print(json.dumps(diagnostics, ensure_ascii=False, indent=2))
     print(f"output_dir: {output_dir}")
     print(f"medium_plan_used: {output_dir / 'medium_plan_used.csv'}")
+    print(f"medium_plan_repaired: {output_dir / 'medium_plan_repaired.csv'}")
     print(f"small_plan: {output_dir / 'small_plan.csv'}")
     print(f"small_plan_six_bay_blocks: {output_dir / 'small_plan_six_bay_blocks.csv'}")
     print(f"diagnostics: {output_dir / 'diagnostics.json'}")

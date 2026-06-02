@@ -4,6 +4,28 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 
+DEFAULT_COARSE_GROUP_ATTRIBUTES = ("voyage_id", "status", "port", "size")
+DEFAULT_FINE_GROUP_ATTRIBUTES = ("voyage_id", "status", "port", "size", "height", "weight_class", "special_stow_code", "pre_stow")
+DEFAULT_BAY_NO_MIX_ATTRIBUTES = ("size", "height")
+DEFAULT_ROW_NO_MIX_ATTRIBUTES = ("port",)
+
+
+@dataclass(frozen=True)
+class AttributeRules:
+    coarse_group_attributes: tuple[str, ...] = DEFAULT_COARSE_GROUP_ATTRIBUTES
+    fine_group_attributes: tuple[str, ...] = DEFAULT_FINE_GROUP_ATTRIBUTES
+    bay_no_mix_attributes: tuple[str, ...] = DEFAULT_BAY_NO_MIX_ATTRIBUTES
+    row_no_mix_attributes: tuple[str, ...] = DEFAULT_ROW_NO_MIX_ATTRIBUTES
+
+    def as_dict(self) -> dict[str, list[str]]:
+        return {
+            "coarse_group_attributes": list(self.coarse_group_attributes),
+            "fine_group_attributes": list(self.fine_group_attributes),
+            "bay_no_mix_attributes": list(self.bay_no_mix_attributes),
+            "row_no_mix_attributes": list(self.row_no_mix_attributes),
+        }
+
+
 @dataclass(frozen=True)
 class BoxGroup:
     """同一类出口箱需求。
@@ -74,10 +96,15 @@ class Bay:
     physical_capacity: int = 0
     row_cap_by_size: dict[str, dict[str, int]] = field(default_factory=dict)
     row_physical_capacity: dict[str, int] = field(default_factory=dict)
+    large_bay_partner_no: str = ""
+    large_bay_partner_key: str = ""
     existing_size_modes: set[str] = field(default_factory=set)
     existing_heights: set[str] = field(default_factory=set)
     existing_special_signatures: set[str] = field(default_factory=set)
     existing_ports: set[str] = field(default_factory=set)
+    existing_ports_by_row: dict[str, set[str]] = field(default_factory=dict)
+    existing_attrs: dict[str, set[str]] = field(default_factory=dict)
+    existing_attrs_by_row: dict[str, dict[str, set[str]]] = field(default_factory=dict)
     fallback_reasons: set[str] = field(default_factory=set)
     locked: bool = False
 
@@ -166,37 +193,56 @@ class ProblemData:
     tops_closed_bay_count: int = 0
     misplaced_bay_exclusion_ratio: float = 0.0
     misplaced_excluded_bay_count: int = 0
+    medium_doc_floor_added_boxes: int = 0
+    medium_doc_floor_added_groups: int = 0
+    medium_doc_floor_shifted_boxes: int = 0
+    medium_doc_floor_shifted_groups: int = 0
+    medium_doc_floor_by_coarse_group: dict[str, int] = field(default_factory=dict)
+    medium_doc_floor_added_by_coarse_group: dict[str, int] = field(default_factory=dict)
+    medium_doc_floor_shifted_by_coarse_group: dict[str, int] = field(default_factory=dict)
+    user_voyage_area_allowlist: dict[str, set[str]] = field(default_factory=dict)
+    user_voyage_area_blocklist: dict[str, set[str]] = field(default_factory=dict)
+    user_voyage_area_requirements: dict[str, set[str]] = field(default_factory=dict)
+    user_area_constraint_summary: dict[str, dict[str, list[str]]] = field(default_factory=dict)
+    attribute_rules: AttributeRules = field(default_factory=AttributeRules)
 
 
 @dataclass
 class SAConfig:
     seed: int = 7
-    iterations: int = 30000
+    iterations: int = 10000
     initial_temperature: float = 80.0
     final_temperature: float = 0.2
     progress_every: int = 3000
     log_every: int = 1000
     max_small_plan_retries: int = 5
-    small_plan_check_every: int = 3000
+    small_plan_check_every: int = 1000
+    medium_initial_assignment_attempts: int = 30
 
     # 软约束权重。硬约束由 move feasibility 检查保证；这里的权重只影响偏好。
     group_area_split_penalty: float = 0.0
     group_area_balance_penalty: float = 18.0
     medium_concentrated_group_threshold: int = 26
-    medium_small_group_area_split_penalty: float = 28.0
-    medium_small_group_fragment_penalty: float = 0.8
-    big_plan_area_deviation_penalty: float = 1.5
-    non_big_plan_area_penalty: float = 50.0
-    berth_distance_penalty: float = 0.02
+    medium_small_group_area_split_penalty: float = 1500.0
+    medium_small_group_fragment_penalty: float = 80.0
+    medium_large_group_min_area_boxes: int = 10
+    medium_large_group_small_area_penalty: float = 1500.0
+    big_plan_area_deviation_penalty: float = 30.0
+    big_plan_fallback_tier_penalty: float = 500.0
+    berth_distance_penalty: float = 3.0
     special_stow_isolation_penalty: float = 18.0
-    active_loading_area_penalty: float = 16.0
-    post_window_loading_area_reward: float = 5.0
+    active_loading_area_penalty: float = 1000.0
+    post_window_loading_area_reward: float = 1000.0
     small_plan_feedback_penalty: float = 250.0
+    small_plan_strict_feedback_penalty: float = 45.0
+    small_plan_repair_failure_feedback_multiplier: float = 4.0
     small_plan_proxy_capacity_penalty: float = 120.0
     small_plan_proxy_height_capacity_penalty: float = 240.0
     small_plan_proxy_six_block_conflict_penalty: float = 10.0
-    small_plan_group_area_split_penalty: float = 35.0
-    small_plan_proxy_every: int = 1
+    small_plan_group_area_split_penalty: float = 80.0
+    small_plan_proxy_every: int = 0
+    medium_small_feedback_iterations: int = 3
+    medium_small_feedback_cap_penalty: float = 20000.0
 
 
 @dataclass

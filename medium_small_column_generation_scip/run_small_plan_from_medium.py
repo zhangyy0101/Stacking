@@ -92,6 +92,7 @@ def main() -> None:
             "external_medium_row_count": len(external_plan.rows),
             "external_medium_box_count": sum(int(row["planned_boxes"]) for row in external_plan.rows),
             "external_medium_quota_count": len(external_plan.coarse_area_quota),
+            "external_medium_bay_quota_count": len(external_plan.coarse_bay_quota),
             "data_dir": str(data_dir),
             "dataset": args.dataset,
             "big_plan": str(args.big_plan),

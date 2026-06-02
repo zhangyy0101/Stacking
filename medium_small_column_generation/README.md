@@ -4,7 +4,7 @@
 
 ## 口径
 
-- 默认数据目录仍为仓库根目录的 `pro_test_data_0519`。
+- 默认数据目录为仓库根目录的 `堆存计划测试数据20260519` 原始数据目录。
 - 默认大计划仍为仓库根目录的 `allocation.csv`。
 - 目标航次、OF/OZ 继承池、当前堆场快照过滤、规划窗口等输入口径沿用现有 0519 版本。
 - 默认 `--demand-mode original` 对齐原模拟退火+启发式输出口径：
@@ -46,8 +46,7 @@
 
 ```powershell
 .\.venv\Scripts\python.exe medium_small_column_generation\run_column_generation_planner.py `
-  --big-plan allocation.csv `
-  --planning-time "2026-05-19 09:30:00"
+  --big-plan allocation.csv
 ```
 
 如果当前用户的 Gurobi license 不可用，可以先跑贪心回退检查数据链路：
@@ -55,7 +54,6 @@
 ```powershell
 .\.venv\Scripts\python.exe medium_small_column_generation\run_column_generation_planner.py `
   --big-plan allocation.csv `
-  --planning-time "2026-05-19 09:30:00" `
   --no-gurobi
 ```
 
@@ -66,8 +64,7 @@
 ```powershell
 .\.venv\Scripts\python.exe medium_small_column_generation\run_small_plan_from_medium.py `
   --medium-plan path\to\medium_plan.csv `
-  --big-plan allocation.csv `
-  --planning-time "2026-05-19 09:30:00"
+  --big-plan allocation.csv
 ```
 
 该入口固定使用资料箱小计划口径，不生成预测兜底组；`--demand-mode` 参数即使传入也会被覆盖为 `doc-only`。输出目录包含 `small_plan.csv`、`small_plan_six_bay_blocks.csv`、`small_plan_medium_summary.csv`、`external_medium_plan_used.csv`、`medium_plan_big_quota.csv`、`generated_columns.csv` 和 `diagnostics.json`。
@@ -84,5 +81,5 @@
 - `--medium-concentrated-group-threshold`：粗属性组箱量小于等于该阈值时走集中堆存目标，大于该阈值时走箱区均衡目标，默认 `26`。
 - `--medium-small-group-area-split-penalty`：小量粗属性组使用额外箱区的惩罚，默认 `500`。
 - `--medium-small-group-fragment-penalty`：小量粗属性组没有放在最大箱区的碎片箱量惩罚，默认 `20`。
-- `--medium-large-group-min-area-boxes`：大量粗属性组选中某个箱区后，低于该箱量会被视为小碎片并惩罚，默认 `5`。
-- `--medium-large-group-small-area-penalty`：大量粗属性组小碎片箱区的惩罚，默认 `120`。
+- `--medium-large-group-min-area-boxes`：大量粗属性组选中某个箱区后，低于该箱量会被视为小碎片并惩罚，默认 `10`。
+- `--medium-large-group-small-area-penalty`：大量粗属性组小碎片箱区的惩罚，默认 `300`。

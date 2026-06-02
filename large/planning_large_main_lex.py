@@ -16,6 +16,7 @@ from planning_large_main import (
     build_current_case_data,
     print_case_summary,
     print_solution_summary,
+    read_adjust_plan_info,
     resolve_output_path,
     write_run_outputs,
 )
@@ -26,16 +27,18 @@ from planning_large_solver import (
     _extract_int_tupledict,
     _safe_model_attr,
     _status_name,
-    build_daily_rolling_yard_model,
+    build_daily_rolling_yard_model_gurobi,
 )
 
 
 LEX_OBJECTIVES: tuple[tuple[str, int], ...] = (
     ("miss", 70),
+    ("required_area", 65),
     ("operation", 60),
     ("of_area", 50),
     ("distance", 40),
     ("share", 30),
+    ("berth_conflict", 25),
     ("adjustment", 20),
     ("balance", 10),
 )
@@ -54,7 +57,7 @@ def solve_daily_rolling_yard_plan_lex(
     Solve the large yard planning model with Gurobi lexicographic multi-objectives.
     """
 
-    model, variables, params = build_daily_rolling_yard_model(
+    model, variables, params = build_daily_rolling_yard_model_gurobi(
         data,
         time_limit=time_limit,
         mip_gap=mip_gap,
@@ -100,6 +103,8 @@ def solve_daily_rolling_yard_plan_lex(
             r20_neg={},
             r40_pos={},
             r40_neg={},
+            berth_conflict_shared={},
+            required_area_unmet={},
             objective_components={},
             model=model if keep_model else None,
         )
@@ -109,6 +114,8 @@ def solve_daily_rolling_yard_plan_lex(
     A = params["A"]
     V_old = params["V_old"]
     OF_area_vessels = params["OF_area_vessels"]
+    berth_conflict_keys = params["berth_conflict_keys"]
+    required_area_keys = params["required_area_keys"]
 
     return DailyRollingYardPlanningSolution(
         status=model.Status,
@@ -132,6 +139,14 @@ def solve_daily_rolling_yard_plan_lex(
         r20_neg=_extract_float_tupledict(variables["r20_neg"], (V_old, F, A)),
         r40_pos=_extract_float_tupledict(variables["r40_pos"], (V_old, F, A)),
         r40_neg=_extract_float_tupledict(variables["r40_neg"], (V_old, F, A)),
+        berth_conflict_shared=_extract_int_tupledict(
+            variables["berth_conflict_shared"],
+            (berth_conflict_keys,),
+        ),
+        required_area_unmet=_extract_float_tupledict(
+            variables["required_area_unmet"],
+            (required_area_keys,),
+        ),
         objective_components={name: expr.getValue() for name, expr in components.items()},
         model=model if keep_model else None,
     )
@@ -150,6 +165,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--no-write-state", action="store_true")
     parser.add_argument("--disable-default-flow-aliases", action="store_true")
+    parser.add_argument(
+        "--user-design-large-plan-area",
+        nargs="+",
+        default=None,
+        help="Restrict new large-plan allocation to these yard areas for every planned vessel.",
+    )
+    parser.add_argument(
+        "--adjust-plan-info-json",
+        type=Path,
+        default=None,
+        help="JSON file containing adjust_plan_info; large_plan[voy_id].add/remove controls large-plan areas.",
+    )
     return parser.parse_args()
 
 
@@ -159,6 +186,7 @@ def main() -> None:
     planning_time = pd.Timestamp(args.planning_time)
     state = RollingPlanningState(resolve_output_path(args.state_dir, base_dir))
     flow_aliases = {} if args.disable_default_flow_aliases else DEFAULT_FLOW_ALIASES
+    adjust_plan_info = read_adjust_plan_info(args.adjust_plan_info_json)
 
     artifacts = build_current_case_data(
         base_dir=base_dir,
@@ -168,6 +196,9 @@ def main() -> None:
         import_vessels=args.import_vessels,
         state=state,
         flow_aliases=flow_aliases,
+        user_design=bool(args.user_design_large_plan_area),
+        user_design_large_plan_area=args.user_design_large_plan_area,
+        adjust_plan_info=adjust_plan_info,
     )
     print_case_summary(artifacts)
     print("lex_objectives:", list(LEX_OBJECTIVES))

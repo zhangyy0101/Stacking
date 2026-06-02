@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import os
 import sys
 from datetime import datetime
@@ -13,19 +12,13 @@ sys.dont_write_bytecode = True
 import pandas as pd
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+DEFAULT_ADAPTER_JSON = SCRIPT_DIR / "input_data.json"
 
-from flat_yard_plan_data_io import (
-    DEFAULT_EXPORT_VESSELS,
-    DEFAULT_IMPORT_VESSELS,
+import input_adapter_standard as adapter_data_io
+from input_adapter_gd import InputAdapterGd
+from input_adapter_standard import (
     DEFAULT_MISPLACED_BAY_EXCLUSION_RATIO,
-    DEFAULT_PLANNING_TIME,
-    build_large_inputs,
-    load_medium_small_inputs,
-    parse_datetime,
-    parse_planning_time,
-    write_demand_rows,
     write_json,
-    write_large_outputs,
 )
 from planning_large_solver import solve_daily_rolling_yard_plan
 from planning_large_visualize import generate_yard_visualization
@@ -35,14 +28,16 @@ from block_bay_planning.sa_solver import SimulatedAnnealingSolver
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run the complete large, medium, and small yard planning pipeline from one flat data folder."
+        description="Run the complete large, medium, and small yard planning pipeline from an InputAdapterGd JSON file."
     )
-    parser.add_argument("--data-dir", type=Path, default=SCRIPT_DIR)
+    parser.add_argument(
+        "--adapter-json",
+        type=Path,
+        default=DEFAULT_ADAPTER_JSON,
+        help="InputAdapterGd JSON file, or a pro_test_data_* directory containing input_data.json.",
+    )
     parser.add_argument("--output-root", type=Path, default=SCRIPT_DIR / "full_plan_outputs")
     parser.add_argument("--run-name", default=None)
-    parser.add_argument("--planning-time", default=DEFAULT_PLANNING_TIME)
-    parser.add_argument("--export-vessels", nargs="+", default=DEFAULT_EXPORT_VESSELS)
-    parser.add_argument("--import-vessels", nargs="+", default=DEFAULT_IMPORT_VESSELS)
     parser.add_argument("--medium-voyages", nargs="+", default=None)
     parser.add_argument("--large-time-limit", type=float, default=120.0)
     parser.add_argument("--large-mip-gap", type=float, default=0.001)
@@ -65,12 +60,6 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     args = parse_args()
-    planning_time = parse_planning_time(args.planning_time)
-    medium_planning_time = parse_datetime(args.planning_time)
-    if medium_planning_time is None:
-        raise SystemExit(f"Invalid --planning-time: {args.planning_time}")
-
-    data_dir = args.data_dir.resolve()
     run_dir = create_run_dir(args.output_root.resolve(), args.run_name)
     large_output_dir = run_dir / "outputs_large" / "latest_run"
     large_state_dir = run_dir / "outputs_large" / "state"
@@ -78,16 +67,25 @@ def main() -> None:
     for path in (large_output_dir, large_state_dir, medium_small_output_dir):
         path.mkdir(parents=True, exist_ok=False)
 
-    print(f"Flat data directory: {data_dir}")
+    adapter_json_path = resolve_adapter_json(args.adapter_json)
+    adapter_input = InputAdapterGd.load_from_json(str(adapter_json_path))
+
+    adapter_planning_time = getattr(adapter_input, "planning_time", None)
+    if adapter_planning_time is None or pd.isna(adapter_planning_time):
+        raise SystemExit("InputAdapterGd JSON field planning_time is empty.")
+    planning_time = pd.Timestamp(adapter_planning_time)
+    if pd.isna(planning_time):
+        raise SystemExit(f"Invalid InputAdapterGd planning_time: {adapter_planning_time}")
+    medium_planning_time = planning_time.to_pydatetime()
+
+    print(f"Adapter JSON: {adapter_json_path}")
+    print("Input mode: InputAdapterGd object (no adapter_flat_data files are generated)")
     print(f"Run output directory: {run_dir}")
 
-    print("\n[1/2] Building flat-data large-plan inputs")
-    artifacts, state = build_large_inputs(
-        data_dir,
-        large_state_dir,
+    print("\n[1/2] Building large-plan inputs")
+    artifacts, state = adapter_data_io.build_large_inputs(
+        adapter_input,
         planning_time,
-        export_vessels=args.export_vessels,
-        import_vessels=args.import_vessels,
         disable_default_flow_aliases=args.disable_default_flow_aliases,
     )
     print_case_summary(artifacts)
@@ -105,29 +103,31 @@ def main() -> None:
     large_state_rows = pd.DataFrame()
     if not args.no_write_large_state and large_solution.objective_value is not None:
         large_state_rows = state.append_solution(planning_time, large_solution)
-    write_large_outputs(large_output_dir, artifacts, large_solution, large_state_rows)
+    adapter_data_io.write_large_outputs(large_output_dir, artifacts, large_solution, large_state_rows)
 
     large_allocation_path = large_output_dir / "allocation.csv"
     if not large_allocation_path.exists():
         raise FileNotFoundError(f"Large allocation was not written: {large_allocation_path}")
     large_visualization_dir = run_dir / "outputs_large" / "yard_visualization"
-    visualization_info = generate_yard_visualization(
-        allocation_path=large_allocation_path,
-        output_dir=large_visualization_dir,
-        data_dir=data_dir,
-    )
+    visualization_kwargs = {
+        "allocation_path": large_allocation_path,
+        "output_dir": large_visualization_dir,
+        "area_function_info": adapter_input.area_function_info,
+    }
+    visualization_info = generate_yard_visualization(**visualization_kwargs)
     print(f"large_visualization: {large_visualization_dir}")
 
-    print("\n[2/2] Building flat-data medium/small inputs")
-    medium_inputs = load_medium_small_inputs(
-        data_dir,
-        large_allocation_path,
+    print("\n[2/2] Building medium/small inputs")
+    large_allocation_frame = pd.DataFrame(adapter_data_io.allocation_output_rows(large_solution, artifacts.data))
+    medium_inputs = adapter_data_io.load_medium_small_inputs(
+        adapter_input,
         planning_time=medium_planning_time,
         voyages=medium_voyages,
         horizon_hours=args.horizon_hours,
         misplaced_bay_exclusion_ratio=args.misplaced_bay_exclusion_ratio,
+        big_plan=large_allocation_frame,
     )
-    write_demand_rows(medium_small_output_dir / "medium_demand_by_port.csv", medium_inputs.demand_rows)
+    adapter_data_io.write_demand_rows(medium_small_output_dir / "medium_demand_by_port.csv", medium_inputs.demand_rows)
 
     print("[2/2] Solving medium and small plans")
     config = SAConfig(
@@ -152,13 +152,17 @@ def main() -> None:
 
     summary = {
         "planning_time": str(planning_time),
-        "data_dir": str(data_dir),
+        "input_mode": "adapter_object",
+        "data_dir": None,
+        "adapter_json": str(adapter_json_path),
+        "adapter_flat_data_metadata": None,
         "large_objective_mode": "weighted_sum",
         "large_output_dir": str(large_output_dir),
         "large_visualization_dir": str(large_visualization_dir),
         "large_visualization": visualization_info,
         "medium_small_output_dir": str(medium_small_output_dir),
-        "large_allocation_used_by_medium_small": str(large_allocation_path),
+        "large_allocation_output": str(large_allocation_path),
+        "large_allocation_used_by_medium_small": "in_memory",
         "export_vessels": list(artifacts.export_vessels),
         "import_vessels": list(artifacts.import_vessels),
         "medium_voyages": medium_voyages,
@@ -183,6 +187,15 @@ def create_run_dir(output_root: Path, run_name: str | None) -> Path:
     return run_dir
 
 
+def resolve_adapter_json(path: Path) -> Path:
+    resolved = Path(path).resolve()
+    if resolved.is_dir():
+        resolved = resolved / "input_data.json"
+    if not resolved.exists():
+        raise FileNotFoundError(f"InputAdapterGd JSON not found: {resolved}")
+    return resolved
+
+
 def print_case_summary(artifacts) -> None:
     data = artifacts.data
     print(f"planning_time: {artifacts.planning_time}")
@@ -198,7 +211,11 @@ def print_case_summary(artifacts) -> None:
     print(f"capacity40_total: {sum(data.C40.values())}")
     print(f"bad_bay_count: {artifacts.diagnostics.get('bad_bay_count')}")
     print(f"active_tops_rows: {artifacts.diagnostics.get('active_tops_rows')}")
+    print(f"user_design_active: {artifacts.diagnostics.get('user_design_active')}")
+    print(f"user_design_large_plan_area: {artifacts.diagnostics.get('user_design_large_plan_area')}")
     print(f"old_vessels: {artifacts.diagnostics.get('old_vessels')}")
+    print(f"departure_operation_deduction_total: {artifacts.diagnostics.get('departure_operation_deduction_total')}")
+    print(f"close_berth_conflict_pairs: {artifacts.diagnostics.get('close_berth_conflict_pairs')}")
     print(f"of_work_lanes: {artifacts.diagnostics.get('of_work_lanes')}")
     print(f"of_area_limits: {artifacts.diagnostics.get('of_area_limits')}")
 
@@ -214,6 +231,7 @@ def print_solution_summary(solution) -> None:
     print(f"operation_overage_total: {sum(solution.o.values())}")
     print(f"of_area_overage_total: {sum(solution.of_area_over.values())}")
     print(f"area_share_overage_total: {sum(solution.h.values())}")
+    print(f"required_area_unmet: {getattr(solution, 'required_area_unmet', {})}")
 
 
 def write_rows(path: Path, rows: list[dict]) -> None:

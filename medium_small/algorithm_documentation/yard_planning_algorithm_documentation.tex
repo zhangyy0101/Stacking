@@ -12,7 +12,6 @@
 \usepackage{listings}
 \usepackage{ragged2e}
 \usepackage{microtype}
-\usepackage{seqsplit}
 
 \setCJKmainfont{Microsoft YaHei}
 \setCJKsansfont{Microsoft YaHei}
@@ -32,8 +31,8 @@
 \newcolumntype{L}[1]{>{\RaggedRight\arraybackslash}p{#1}}
 \newcommand{\code}[1]{\nolinkurl{#1}}
 
-\title{中计划模拟退火与小计划启发式算法说明\\
-\large 基于 \texttt{0514plan\_medium\&small} 当前代码实现}
+\title{中小计划模拟退火算法说明\\
+\large 当前 \texttt{medium\_small} 实现}
 \author{}
 \date{\today}
 
@@ -42,556 +41,333 @@
 \tableofcontents
 \newpage
 
-\section{说明}
+\section{总体说明}
 
-本文档描述当前代码实际实现的模型和算法。一个重要口径是：\textbf{中计划只到箱区层面，不再有区块、贝位、6 小贝等空间层级}。小计划在中计划给定的箱区方案内继续细化到贝位，并在小计划层面识别连续 6 小贝空间。
+\code{medium_small} 使用两层求解流程：
+\begin{itemize}
+  \item 中计划在箱区层面分配粗属性组箱量，先由 SCIP 构造完整箱区分配，再执行中小计划结构化反馈轮；命令行 \code{--iterations>0} 时继续启用模拟退火搜索。
+  \item 小计划先按中计划箱区分布做严格继承落贝；严格继承不可行时，直接按贝位硬约束执行 repair 构造，并用小计划实际区域分布对最终中计划输出做一致性对齐。
+\end{itemize}
 
-当前默认规划时刻为 2026-05-08 09:30:00，默认规划航次为 453334 和 453400，默认规划窗口长度为 24 小时。
+当前数据读取、中计划箱量计算、小计划资料箱读取、大计划继承配额、目标航次推导和规划窗口口径与列生成目录保持一致。默认数据预设为 \code{--dataset 0519}：数据目录为仓库根目录下的堆存计划测试数据20260519，大计划文件为 \code{large/outputs_large/latest_run/allocation.csv}。预设 \code{--dataset 0508} 使用 \code{test_data/pro_test_data_0508} 和 \code{flat_full_yard_plan_scip/full_plan_outputs/run_scip_visual_20260521_001/outputs_large/latest_run/allocation.csv}。命令行中的 \code{--data-dir} 和 \code{--big-plan} 可以覆盖预设。
 
-\section{代码文件职责}
+默认 0519 原始数据口径的规划时刻为 \code{2026-05-19 09:30:00}。命令行显式给定 \code{--planning-time} 时使用该覆盖值；若显式传入包含 \code{input_data.json} 的数据目录且未指定 \code{--planning-time}，则读取 JSON 中的 \code{planning_time}。默认规划窗口长度为 24 小时。若命令行没有给定 \code{--voyages}，程序从当前大计划中筛选规划日期的 \code{OF} 行，并将这些行对应的航次作为本次目标航次。
 
-\begin{longtable}{L{0.26\linewidth}L{0.66\linewidth}}
+\section{代码文件}
+
+\begin{longtable}{L{0.32\linewidth}L{0.60\linewidth}}
 \toprule
 文件 & 职责\\
 \midrule
-\texttt{run\_yard\_planner.py} & 命令行入口，读取大计划，构造问题，运行中计划模拟退火和小计划启发式落贝，输出 CSV 和诊断 JSON。\\
-\texttt{models.py} & 定义箱组、贝位、航次时刻、作业窗口、问题数据和模拟退火参数。\\
-\texttt{demand\_calculator.py} & 根据预测 Excel、资料箱和当前规划时刻计算中计划需求。\\
-\texttt{data\_loader.py} & 读取箱区、泊位距离、TOPS、贝位容量、已有箱属性，并构造 \texttt{ProblemData}。\\
-\texttt{area\_plan\_solver.py} & 中计划箱区分配求解逻辑，当前模型只分配到箱区。\\
-\texttt{sa\_solver.py} & 中计划箱区分配模拟退火、资料箱小计划启发式输出、小计划不可行实时反馈和历史可行方案回退。\\
+\code{run_yard_planner.py} & 命令行入口。读取参数，构造问题，运行中计划 SCIP/反馈/可选退火流程和小计划启发式，并写出结果。\\
+\code{block_bay_planning/runner.py} & 参数定义、默认数据目录和大计划路径、目标航次推导、输出目录、CSV/JSON 写出。\\
+\code{block_bay_planning/input_json.py} & 兼容封装数据目录的读取工具；默认 0519 原始数据目录不使用该入口。\\
+\code{block_bay_planning/demand_calculator.py} & 中计划需求计算：预测比例、资料箱兜底、已在场箱扣减、大计划箱量上限缩放。\\
+\code{block_bay_planning/data_loader.py} & 大计划、箱区功能、堆场快照、TOPS、泊位距离、船期、资料箱和 \code{ProblemData} 构造。\\
+\code{block_bay_planning/models.py} & 数据类和 \code{SAConfig} 参数。\\
+\code{block_bay_planning/area_plan_solver.py} & 中计划箱区分配、初始解、退火扰动、硬约束和能量函数。\\
+\code{block_bay_planning/sa_solver.py} & 求解主流程、小计划构造、proxy 评分、反馈、诊断和输出行生成。\\
 \bottomrule
 \end{longtable}
 
-\section{输入与预处理}
+\section{输入口径}
 
-\subsection{输入文件}
+\subsection{数据目录}
 
-\begin{longtable}{L{0.40\linewidth}L{0.52\linewidth}}
-\toprule
-文件或参数 & 用途\\
-\midrule
-\texttt{--big-plan} & 大计划输出 CSV，默认读取仓库根目录下的 \code{outputs\_large/latest\_run/allocation.csv}。该文件使用 \code{voy\_id,flow,area\_no,size,planned\_qty}；中小计划保留 \code{flow}，没有显式流向时默认 \code{OF}。\\
-\code{vessel_berth_info_new.csv} & 读取出口航次开港时间、靠泊时间、离泊时间、泊位。\\
-\code{predict_data_\{voyage\}.xlsx} & 读取中计划预测箱量，按卸货港和尺寸统计。\\
-\code{container_info_\{voyage\}.parquet} & 中计划资料箱兜底；小计划资料箱细分属性组需求。\\
-\code{bay_slots_detail.parquet} & 当前中小计划用于计算物理空位容量、贝位容量、行容量、已有箱属性，并直接从 \code{YBY\_ENABLECSIZECD} 解析 20/40/45 尺寸适放能力；当 \code{YBY\_ENABLECSIZECD} 为空时，按 20/40/45 均可放处理。\\
-\code{bay_slots_detail_20.parquet}、\code{bay_slots_detail_40.parquet} & 当前中小计划代码不直接读取；这两个预拆分适放位表由大计划侧使用。中小计划容量直接来自 \code{bay_slots_detail.parquet} 的 \code{YBY\_ENABLECSIZECD} 和空位/已有箱状态。\\
-\code{tops_plan_info.parquet} & 非本次规划船舶的 TOPS 贝位区间从容量中整贝关闭；本次规划船舶的 TOPS 记录忽略。\\
-\code{n_usefg_areas.txt} & 关闭箱区。\\
-箱区功能.xlsx 和 适放箱区\_泊位距离矩阵.xlsx & 箱区功能、适放箱区和箱区到泊位距离；箱量只能分配到包含对应 \code{flow} 功能的箱区，距离矩阵兼容旧的 of\_ 前缀文件名。\\
-\texttt{--misplaced-bay-exclusion-ratio} & 错放箱贝位剔除阈值，默认 \(2/3\)。中小计划只检查 箱区功能.xlsx 中列出的箱区；先整贝关闭非规划船 TOPS 贝位区间，再判断错放贝位。判断错放时只统计当前规划航次已在堆场中的箱子；若这些箱子中不符合箱区功能的箱量超过该贝位原本总槽位数的该比例，则该贝位不参与中计划容量和小计划落贝。\\
-\bottomrule
-\end{longtable}
+默认 0519 数据目录为原始数据目录堆存计划测试数据20260519。程序从该目录读取 \code{bay_slots_detail.parquet}、\code{tops_plan_info.parquet}、\code{container_info_\{voyage\}.parquet}、\code{predict_data_\{voyage\}.xlsx}、箱区功能表和船期 CSV。若通过 \code{--data-dir} 指向封装 JSON 数据目录，读取器仍兼容 \code{input_data.json}。
 
-\subsection{尺寸口径}
+\subsection{大计划}
 
-中计划和小计划求解尺寸集合为
+大计划默认来自 \code{--dataset} 预设，也可以用 \code{--big-plan} 指定。支持的主要字段形式为：
+\begin{itemize}
+  \item \code{voy_id, flow, area_no, size, planned_qty}
+  \item \code{voyage_id, area_no, qty_20, qty_40[, plan_date]}
+  \item \code{voyage_id, area_no, planned_boxes[, size_mode, plan_date]}
+\end{itemize}
+
+当前中小计划默认只继承目标日期、目标航次、\code{OF} 流向的大计划行。关闭箱区为硬禁止。大计划行所在箱区会加入对应流向功能集合，使继承行可以作为候选箱区。45ft 箱在继承大计划箱区配额时归入 40ft 大计划尺寸口径；小计划落贝仍按真实 45ft 规则处理。
+
+\subsection{堆场容量}
+
+\code{bay_slots_detail} 提供每个贝位的可用槽位、\code{YBY_ENABLECSIZECD} 尺寸适放能力、已有箱尺寸、已有箱高、已有箱卸港和已有箱号。若 \code{YBY_ENABLECSIZECD} 为空，代码按 20/40/45 均可放处理。
+
+每个贝位同时维护：
 \[
-\mathcal{S}=\{20,40,45\}.
+Cap_b^{phy},
+\quad
+Cap_{bs},
 \]
-大计划 \code{allocation.csv} 只提供 20/40 尺寸模式；45ft 箱在继承大计划箱区分布时按 40ft 模式处理，但在小计划落贝和容量检查中仍按 45ft 尺寸约束处理。
-箱位可放尺寸由 \texttt{YBY\_ENABLECSIZECD} 解析得到；若该字段为空，则 \(E(a,b,r)=\{20,40,45\}\)。设空箱位 \((a,b,r)\) 的可放尺寸集合为 \(E(a,b,r)\)，则尺寸容量为
-\[
-C_{abs}=\left|\{r\mid s\in E(a,b,r),\ (a,b,r)\text{ 可用}\}\right|.
-\]
-同一箱位即使允许多个尺寸，也只能被一个箱占用，因此还计算物理容量
-\[
-C^{phy}_{ab}=\left|\{r\mid (a,b,r)\text{ 可用}\}\right|.
-\]
+其中 \(Cap_b^{phy}\) 是贝位物理空槽上限，\(Cap_{bs}\) 是该贝位对尺寸 \(s\) 的可放上限。40ft 和 45ft 的落贝还需要有效的大贝配对 \code{large_bay_partner_key}，占用时同时占用两个小贝的物理容量。
 
-\paragraph{与大计划容量口径的一致性}
-大计划和中小计划使用同一容量解释规则：只在 箱区功能.xlsx 中列出的箱区内规划；\code{YBY\_ENABLECSIZECD} 为空时，按 20/40/45 均可放处理；先整贝关闭非规划船 TOPS 贝位区间，再判断错放贝位；规划时刻仍占用、属于当前规划航次且不符合箱区功能的错放箱若超过某贝位原本总槽位数的阈值，则该贝位不参与容量分配。中小计划在读取大计划 \code{allocation.csv} 后，继续按同一箱区功能和尺寸容量口径检查箱区层面与贝位层面的可行性。
+\subsection{TOPS 与错放贝位}
 
-\subsection{TOPS 预留}
-
-若 TOPS 记录满足 \code{SPL\_ISVALID=Y}、\code{SPR\_ISVALID=Y}、\code{SPL\_STDATE <= planning\_time <= SPL\_EDDATE}，并且 \code{SPL\_CONDITIONCODE} 不属于本次规划航次，则该 TOPS 对本次规划生效；若属于本次规划航次，则忽略。贝位解析使用 \code{SPR\_STBAY} 和 \code{SPR\_EDBAY}：前两位为箱区，后两位为贝位。若起止箱区一致，则关闭该箱区内从起始贝到结束贝的整个贝位区间。例如 \code{SPR\_STBAY=5602}、\code{SPR\_EDBAY=5670} 表示关闭箱区 56 的 02 到 70 贝；这些贝位完全不参与中计划容量和小计划落贝。
-
-\subsection{已有箱与作业窗口}
-
-若已有箱所属航次在规划时刻后离泊，则该箱仍占用容量；若已经离泊，则容量释放。已有箱所属航次的靠泊--离泊区间用于推断该箱区装船作业窗口：
-\[
-\mathcal{O}_a=\{(v',t^{berth}_{v'},t^{depart}_{v'})\mid \text{箱区 }a\text{ 中有航次 }v'\text{ 的已有箱}\}.
-\]
-本次规划航次自身不作为冲突船。
-
-中小计划只读取 箱区功能.xlsx 中列出的箱区，其它箱区不参与容量统计、错放检查和分配。容量预处理顺序为：先整贝关闭非本次规划航次的 TOPS 贝位区间，再判断错放贝位。错放判断只关注当前规划航次已经在堆场中的箱子；其它航次箱子的错放不触发贝位剔除。若当前规划航次已有箱流向 \(f\) 不属于该箱区功能集合，则记为错放箱。对每个贝位 \((a,b)\)，若错放箱量超过该贝位原本总槽位数的比例 \(\theta\)，则该贝位整体从容量数据中剔除：
-\[
-M_{ab}>\theta C^{slot}_{ab}.
-\]
-默认 \(\theta=2/3\)，可通过 \texttt{--misplaced-bay-exclusion-ratio} 修改。由于剔除发生在容量统计之前，中计划箱区容量和小计划候选贝位都会同步受影响。
+非目标航次的有效 TOPS 区间会在容量统计前整贝关闭；目标航次自身的 TOPS 记录不关闭。错放贝位剔除阈值由 \code{--misplaced-bay-exclusion-ratio} 控制，默认 \(2/3\)。若某贝位中当前仍占用的箱子与箱区功能不匹配，且错放箱量超过该贝位原始总槽位数的阈值，则该贝位不参与中计划容量和小计划落贝。
 
 \section{中计划需求}
 
-\subsection{属性组}
+\subsection{粗属性组}
 
-中计划属性组包含航次、流向、卸货港、尺寸：
+中计划粗属性组为：
 \[
-g=(v,f,p,s).
+g=(v,f,p,s),
 \]
-其中 \(f\) 为箱区功能/作业流向，例如 \code{OF/OZ/IF/IZ/T}。预测箱量没有显式流向时默认 \code{OF}。中计划输出不包含箱高、重量等级、箱主、箱型、贝位或空间区块。
+其中 \(v\) 为航次，\(f\) 为流向，\(p\) 为卸港，\(s\in\{20,40,45\}\) 为真实尺寸。中计划输出粒度为：
+\[
+(v,f,p,s,a),
+\]
+其中 \(a\) 为箱区。
 
-\subsection{规划比例}
+\subsection{规划阶段与比例}
 
-设航次开港时间为 \(r_v\)，当前时刻为 \(t_0\)。当前代码使用：
+设航次开港时间为 \(r_v\)，总进箱结束时间为 \(e_v\)，当前规划时刻为 \(t_0\)，规划窗口长度为 \(H\)。当前代码用 \code{planning_stage_window} 计算本轮窗口和累计比例：
 \[
 \rho_v=
 \begin{cases}
-0.70, & t_0<r_v,\ t_0+24h\ge r_v,\\
-0, & t_0<r_v,\ t_0+24h<r_v,\\
-0.70, & 0\le t_0-r_v<24h,\\
-0.20, & 24h\le t_0-r_v<48h,\\
-0.10, & t_0-r_v\ge48h.
+0, & t_0<r_v,\ t_0+H<r_v,\\
+0.70, & t_0<r_v,\ t_0+H\ge r_v,\\
+0.70, & r_v\le t_0<r_v+H,\\
+0.90, & r_v+H\le t_0<r_v+2H,\\
+1.00, & t_0\ge r_v+2H.
 \end{cases}
 \]
-\textbf{注意：}当前第三个 24 小时及以后是 0.10；若业务要求为“剩余全部”，需要进一步改代码。
+若存在总进箱结束时间，窗口结束点会截断在进箱结束时间以内。
 
-\subsection{预测箱量缩放与资料箱兜底}
+\subsection{预测、资料箱、在场箱和大计划上限}
 
-预测 Excel 给出 \(\hat d_{vfps}\)。若预测箱量没有显式流向字段，则默认 \code{OF}。对每个 \(v,f,s\)，先计算
+对每个航次、流向、尺寸，代码先读取预测箱量 \(P_{fsp}\)，再按比例 \(\rho_v\) 用最大余数法生成港口目标 \(R_{fsp}\)。资料箱箱量 \(D_{fsp}\) 来自资料箱表。二者比较发生在扣减已在场箱之前：
 \[
-D^{ratio}_{vfs}=\operatorname{round}\left(\rho_v\sum_p\hat d_{vfps}\right),
+\sum_p D_{fsp}
+\quad\text{与}\quad
+\sum_p R_{fsp}.
 \]
-再用最大余数法分配到港口，得到 \(d^{ratio}_{vfps}\)。
-
-资料箱统计为 \(d^{doc}_{vfps}\)，同样按资料箱流向字段分组；没有显式流向时默认 \code{OF}。若
+若资料箱总量更大，则该航次、流向、尺寸使用资料箱港口分布；否则使用比例预测港口分布。随后扣减当前仍在堆场中的同航次、同流向、同尺寸、同卸港箱量 \(Y_{fsp}\)：
 \[
-\sum_p d^{doc}_{vfps}>\sum_p d^{ratio}_{vfps},
-\]
-则该航次该流向该尺寸使用资料箱港口分布；否则使用预测比例目标。最终中计划需求为 \(d^M_{vfps}\)。
-
-\section{大计划模式到中计划硬上界}
-
-大计划默认读取大计划模块输出的 \code{allocation.csv}，字段为
-\code{voy\_id,flow,area\_no,size,planned\_qty}。中小计划按 \code{flow} 分别继承大计划箱区模式；若输入没有 \code{flow} 列，则默认 \code{OF}。大计划中已经分配给某流向、且箱区功能包含该流向的记录会进入该流向的箱区模式；若大计划记录的 \code{flow} 与 箱区功能.xlsx 不匹配，则该记录不作为中小计划可继承配额。关闭箱区仍然作为硬禁止。兼容旧输入格式：宽表 \texttt{voyage\_id,area\_no,qty\_20,qty\_40[,qty\_45]} 和中小计划长表 \texttt{voyage\_id,area\_no,planned\_boxes[,size\_mode]}；若带日期，只使用规划日期当天记录。
-
-设大计划箱区--箱型上界为 \(\overline Q^M_{vfas}\)，中计划某航次某流向某尺寸总需求为
-\[
-D^M_{vfs}=\sum_p d^M_{vfps}.
-\]
-代码按大计划箱区--箱型组合建立中计划硬上界。若大计划显式给出 \((v,f,a,s)\) 配额，则该配额直接作为 \(\overline Q^M_{vfas}\)，中计划在该组合上的箱量不得超过该配额，且没有出现在大计划中的箱区--箱型组合不得使用：
-\[
-0\le X^M_{vfas}\le \overline Q^M_{vfas}.
-\]
-若旧格式大计划只有 \code{ALL} 尺寸，则先按大计划箱区总量用最大余数法为该尺寸需求生成严格上界；生成后同样作为硬上界使用。箱区总上界：
-\[
-\overline Q^M_{vfa}=\sum_s \overline Q^M_{vfas}.
+M_{fsp}=\max(0,S_{fsp}-Y_{fsp}).
 \]
 
-注意：大计划箱区模式在中计划中是硬上界，不再是软目标。中计划退火只能在大计划给定的航次--流向--箱区--箱型组合内移动箱量，并且任一组合不得超过继承上界。若中计划需求总量超过大计划对应组合的总上界，程序直接报错。
+最后按大计划 \code{new\_qty} 构造航次、流向、大计划尺寸口径上限。默认目标流向为 \code{OF}；真实 45ft 需求使用 40ft 大计划尺寸池。若需求超过大计划上限，则用最大余数法按现有需求比例缩放到上限内。生成的正箱量成为 \code{ProblemData.groups}。
 
-\section{中计划数学模型}
+\section{小计划资料箱}
 
-\subsection{集合}
-
-\begin{longtable}{L{0.16\linewidth}L{0.76\linewidth}}
-\toprule
-符号 & 含义\\
-\midrule
-\(\mathcal{V}\) & 本次规划航次集合。\\
-\(\mathcal{A}\) & 可用出口箱区集合。\\
-\(\mathcal{S}\) & 尺寸集合 \(\{20,40,45\}\)。\\
-\(\mathcal{G}^M\) & 中计划粗属性组集合，元素 \(g=(v,f,p,s)\)，每个组保留需求箱量 \(d_g\)，不展开成单箱变量。\\
-\bottomrule
-\end{longtable}
-
-\subsection{决策变量}
-
-中计划状态为 \texttt{assignment[group\_id][area\_no] = planned\_boxes}。数学变量为
+小计划资料箱默认来自原始数据目录中的 \code{container_info_\{voyage\}.parquet}。读取后先用堆场快照中的箱号和箱 ID 剔除当前已经在堆场中的资料箱，再按细属性聚合：
 \[
-x_{ga}\in\mathbb{Z}_{\ge0},
+h=(v,f,p,s,\eta,w,\sigma,r),
 \]
-表示粗属性组 \(g=(v,f,p,s)\) 在箱区 \(a\) 分配的箱量。
+其中 \(\eta\) 为箱高，\(w\) 为重量等级，\(\sigma\) 为显式特殊积载代码，\(r\) 为预配/预留标记。当前数据没有显式特殊积载标记时，代码不根据冷藏、危险、超限等业务字段推断特殊积载。
 
-\subsection{硬约束}
+小计划只规划当前未进场资料箱，不生成列生成内部的预测兜底小计划组。中计划需求中未被资料箱覆盖的部分仍保留在中计划层面。
 
-\paragraph{唯一分配}
+\section{中计划模型}
+
+\subsection{变量与硬约束}
+
+中计划变量为：
 \[
-\sum_{a\in\mathcal{A}}x_{ga}=d_g,\quad \forall g\in\mathcal{G}^M.
+x_{ga}\in \mathbb{Z}_{\ge 0},
+\]
+表示粗属性组 \(g\) 在箱区 \(a\) 的箱量。代码还隐式记录未放箱量：
+\[
+u_g=d_g-\sum_a x_{ga}\ge 0.
 \]
 
-\paragraph{候选箱区}
-\[
-x_{ga}=0,\quad a\notin \mathcal{A}^{cand}_{g}.
-\]
-其中 \(\mathcal{A}^{cand}_{g}\) 只包含大计划给该航次、流向和箱型指定了正上界，且箱区功能包含 \(f(g)\)、箱区具备对应尺寸容量的箱区。非大计划箱区--箱型组合为硬禁止。
+候选箱区必须满足：
+\begin{itemize}
+  \item 箱区在大计划中属于对应航次--流向的已分配箱区，或箱区功能支持流向 \(f\)。
+  \item 箱区物理容量和真实尺寸容量均为正。
+\end{itemize}
 
-\paragraph{箱区物理容量}
+所有中计划分配满足：
 \[
-\sum_g x_{ga}\le C^{phy}_a,\quad \forall a,
-\]
-其中 \(C^{phy}_a=\sum_b C^{phy}_{ab}\)。
-
-\paragraph{箱区尺寸容量}
-\[
-\sum_{g:s(g)=s}x_{ga}\le C_{as},\quad \forall a,s,
-\]
-其中 \(C_{as}=\sum_b C_{abs}\)。
-
-\paragraph{大计划继承上界}
-令 \(b(s)\) 表示大计划箱型口径，其中 45ft 按 40ft 继承。中计划必须满足：
-\[
-\sum_{g:v(g)=v,\ f(g)=f,\ b(s(g))=s'}x_{ga}\le \overline Q^M_{vfas'},\quad \forall v,f,a,s'.
-\]
-
-\subsection{目标函数}
-
-中计划能量为
-\[
-E_M=E^{balance}+E^{big}+E^{nonbig}+E^{dist}+E^{loading}+E^{feedback}.
-\]
-
-\paragraph{粗属性组箱区均衡}
-对 \(g=(v,f,p,s)\)，期望箱区分布为
-\[
-\bar n_{ga}=d^M_g\frac{\overline Q^M_{vfas}}{\sum_{a'}\overline Q^M_{vfa's}},
-\]
-实际分布为
-\[
-n_{ga}=\sum_{u:g(u)=g}x_{ua}.
-\]
-能量：
-\[
-E^{balance}=w_{bal}\sum_g\sum_a\frac{|n_{ga}-\bar n_{ga}|}{\max(1,d^M_g)}.
-\]
-默认 \(w_{bal}=18.0\)。
-
-\paragraph{大计划箱区模式偏离}
-在满足大计划硬上界的前提下，目标函数仍保留对大计划箱区模式的偏好。实际航次--流向--箱区--尺寸箱量为
-\[
-X_{vfas}=\sum_{g:v(g)=v,\ f(g)=f,\ s(g)=s}x_{ga}.
-\]
-偏离惩罚为
-\[
-E^{big}=w_{big}\sum_{v,f,a,s}\frac{|X_{vfas}-\overline Q^M_{vfas}|}{\max(1,\overline Q^M_{vfas})}.
-\]
-默认 \(w_{big}=1.5\)。
-
-\paragraph{非大计划箱区使用}
-当前版本不允许使用大计划未给出上界的航次--流向--箱区--箱型组合，因此该项在严格继承模式下不会产生正值，仅作为历史兼容参数保留。
-
-\paragraph{箱区到泊位距离}
-设 \(D_{a,\beta(v)}\) 为箱区到泊位距离：
-\[
-E^{dist}=w_{dist}\sum_{(v,a)\text{ used}}\frac{D_{a,\beta(v)}}{100}.
-\]
-默认 \(w_{dist}=0.02\)。
-
-\paragraph{装船作业窗口}
-本船规划窗口为 \(W_v=[r_v,r_v+H]\)，下一 24 小时窗口为 \(W_v^+=[r_v+H,r_v+H+24h]\)。若箱区 \(a\) 中其他船作业窗口与 \(W_v\) 重叠，则 \(I^{during}_{va}=1\)；若与 \(W_v^+\) 重叠，则 \(I^{after}_{va}=1\)。能量为
-\[
-E^{loading}
-=w_{during}\sum_{(v,a)\text{ used}}I^{during}_{va}
--w_{after}\sum_{(v,a)\text{ used}}I^{after}_{va}.
-\]
-默认 \(w_{during}=16.0\)，\(w_{after}=5.0\)。因此窗口内有装船作业会尽量避开，下一 24 小时有装船作业会优先。
-
-\paragraph{小计划不可行反馈}
-退火过程中每隔 \texttt{small\_plan\_check\_every} 次迭代，会对当前最优中计划解运行一次小计划可行性探测。若探测或最终小计划生成发现 \((v,f,p,s)\) 在箱区 \(a\) 无法落贝，则记录反馈次数 \(F_{vfpsa}\)，并同时记录航次--流向--尺寸--箱区宽口径反馈 \(F_{vf*s a}\)，后续迭代和必要的重跑中计划能量增加：
-\[
-E^{feedback}=w_{fb}\sum_{u,a}\max(F_{v(u),f(u),p(u),s(u),a},F_{v(u),f(u),*,s(u),a})x_{ua}.
-\]
-默认 \(w_{fb}=250.0\)。
-
-\section{小计划数学模型}
-
-\subsection{资料箱细分组}
-
-小计划需求来自资料箱，按
-\[
-h=(v,f,p,s,\eta,\omega,q)
-\]
-统计，其中 \(\eta\) 为箱高，\(\omega\) 为重量等级，\(q\) 为预甩箱标记。代码还预留
-\texttt{special\_stow} 和 \texttt{special\_stow\_code} 字段用于标记特殊积载箱。特殊积载箱只通过未来数据中的固定显式标识接入；当前数据集没有该标识，因此代码不再根据冷藏箱、危险品箱、超限箱或特殊箱型推断特殊积载类别，当前默认 \texttt{special\_stow\_code} 为空。
-
-重量等级为：
-\[
-\texttt{0\_10},\ \texttt{10\_15},\ \texttt{15\_20},\ \texttt{20\_25},\ \texttt{25\_30},\ \texttt{GT30}.
-\]
-
-\subsection{继承中计划箱区方案}
-
-中计划输出仍按 \((v,f,p,s,a)\) 记录箱量，但小计划的严格继承上界汇总到 \((v,f,s,a)\)。也就是说，资料箱卸货港 \(p\) 作为细分属性保留到小计划输出和同属性聚集偏好中，但不作为继承上界；这样可以处理预测箱卸货港分布与资料箱卸货港分布不一致的情况。设中计划汇总箱区--箱型上界为
-\[
-U^M_{vfsa}=\sum_p n^M_{vfpsa}.
-\]
-小计划所有资料箱细分组在任一 \((v,f,s,a)\) 上的总分配不得超过 \(U^M_{vfsa}\)，因此也不会超过中计划和大计划的箱区--箱型上界。目标是两层兼顾：细分组内部尽量集中堆存；同一航次、流向和尺寸在箱区层面严格继承中计划给出的总配额。对细分组 \(h=(v,f,p,s,\eta,\omega,q)\)，代码按困难组优先处理同一 \((v,f,p,s)\) 下的细分组：45ft 优先，其次 20ft，再 40ft；同尺寸内优先处理可选箱区少、可落 \(s,\eta\) 容量少、需求量大的细分组。随后优先选择一个主箱区集中堆存：
-\[
-a_h^\star=\arg\min_a \left(\mathbf{1}\{\bar U_{vfsa}<d^S_h\},\ -\bar U_{vfsa},\ -U^M_{vfsa}\right),
-\]
-其中 \(\bar U_{vfsa}\) 是当前尚未被其它细分组占用的 \((v,f,s,a)\) 剩余配额。第一项优先选择能完整容纳该细分组的箱区；第二项在可容纳箱区中优先选择剩余配额最大的箱区，以减少细分组拆分。若主箱区剩余配额足够，则
-\[
-R_{h a_h^\star}=d^S_h,\quad R_{ha}=0\ (a\ne a_h^\star).
-\]
-若主箱区配额不足，则先填满主箱区，再按剩余配额和原始权重依次拆到其它箱区，直到满足
-\[
-\sum_a R_{ha}=d^S_h.
-\]
-因此，同一细分属性组默认集中在单个箱区，只有中计划配额池、箱区尺寸容量或箱区 \(s,\eta\) 可落容量不足时才跨箱区拆分。小计划代理评分会对细分组跨箱区增加惩罚。
-
-当前代码的严格继承顺序为：
-\[
-(v,f,s)\text{ 的中计划汇总箱区权重}
-\rightarrow
-(v,f,s)\text{ 的大计划箱区配额}.
-\]
-通常使用第一层；第二层仅在没有中计划汇总权重时兜底。港口 \(p\) 不参与继承上界，因此资料箱港口和预测港口不一致时，小计划仍可在同航次、同流向、同尺寸的中计划总池内分配。
-
-\subsection{落贝变量与硬约束}
-
-最终小计划输出变量为
-\[
-z_{hab}\in\mathbb{Z}_{\ge0},
-\]
-表示细分组 \(h\) 在箱区 \(a\) 的贝位 \(b\) 上分配的箱量。
-
-约束包括：
-\[
-\sum_b z_{hab}=R_{ha},\quad \forall h,a,
+\sum_g x_{ga}\le Cap_a^{phy},
 \]
 \[
-\sum_h z_{hab}\le C^{phy}_{ab},\quad \forall a,b,
+\sum_{g:s(g)=s}x_{ga}\le Cap_{as},
 \]
-\[
-\sum_{h:s(h)=s}z_{hab}\le C_{abs},\quad \forall a,b,s.
-\]
-
-同一贝位不允许混尺寸：
-\[
-z_{hab}>0,\ z_{h'ab}>0\Rightarrow s(h)=s(h').
-\]
-若贝位已有箱尺寸集合非空，也要求已有尺寸与计划尺寸一致。
-
-同一贝位不允许混箱高：
-\[
-z_{hab}>0,\ z_{h'ab}>0\Rightarrow \eta(h)=\eta(h').
-\]
-若贝位已有箱高集合非空，也要求已有箱高与计划箱高一致。
-
-边贝规则为硬约束：
-\[
-b\in Edge(a)\Rightarrow z_{hab}=0,\quad s(h)=20,
-\]
-\[
-b\notin Edge(a)\Rightarrow z_{hab}=0,\quad s(h)=45.
-\]
-若箱区 \(a\) 本次分配了 45 尺，则边贝只允许 45 尺。
-
-\subsection{小计划偏好}
-
-小计划在箱区内排序候选贝位时体现以下偏好：
-
-\begin{enumerate}
-  \item 动态识别连续 6 小贝空间：连续 6 个贝位中至少 2 个支持 40/45，至少 2 个支持 20，并且存在两个连续 20 适放贝位。区块之间不允许重叠；某个贝位一旦归入一个 6 小贝区块，就不会再属于其它 6 小贝区块。
-  \item 同细分属性尽量进入同一连续 6 小贝空间和同一贝位。亲和键为 \((v,f,p,\eta,\omega,q)\)，尺寸不在亲和键中；但同贝位仍由硬约束禁止混尺寸。若某连续 6 小贝区块已经被某个亲和键投入使用，则不同亲和键的细分属性组会受到更高排序惩罚，尽量不进入同一个 6 小贝区块。
-  \item 预甩箱预留单独存放偏好接口。
-  \item 特殊积载箱单独存放偏好。若 \texttt{special\_stow\_code} 非空，特殊积载箱会优先空贝或同特殊积载类别贝；普通箱也会尽量避开已被特殊积载箱使用的贝位，不同 \texttt{special\_stow\_code} 的特殊积载箱之间也会受到混贝惩罚。
-  \item 优先已有同卸货港箱的贝位。
-  \item 尽量避免带兜底原因的贝位，例如已有空箱、冷箱等。
-  \item 其它相同情况下优先当前负载低、贝位顺序靠前的贝位。
-\end{enumerate}
-
-\section{中计划模拟退火与小计划生成}
-
-当前退火状态只包含中计划箱区分配：
-\[
-x=(x_{ga})_{g\in\mathcal{G}^M,a\in\mathcal{A}},\quad x_{ga}\in\mathbb{Z}_{\ge0},
-\]
-其中 \(x_{ga}\) 表示中计划粗属性组 \(g\) 在箱区 \(a\) 分配的箱量。小计划输出在中计划箱区方案确定后，根据资料箱细分组在对应箱区内启发式落贝。
+大计划箱区--尺寸配额 \(Q_{vfa\bar{s}}\) 是目标函数中的软参考模式，不作为中计划移动的硬上界。每个中计划粗属性组必须完整分配到候选箱区，箱区物理容量和真实尺寸容量作为硬约束检查。若初始构造无法给出完整可行分配，程序停止本轮求解并在初始解诊断中写出缺口。
 
 \subsection{初始解}
 
-初始解按航次--流向--箱区--箱型硬上界构造。对每个粗属性组 \(g=(v,f,p,s)\)，按该航次--流向--尺寸的大计划箱区上界权重把需求箱量 \(d_g\) 比例分配到箱区；若比例分配受容量限制，则只在仍有继承上界、具备对应功能和尺寸容量的箱区内补足。构造过程中同时检查箱区物理容量、按 \texttt{YBY\_ENABLECSIZECD} 统计出的尺寸容量，以及大计划继承上界；不会补到大计划没有给出该箱型上界的箱区。
+中计划初始分配优先使用 PySCIPOpt/SCIP 构造一个完整可行的箱区分配。SCIP 模型包含组需求满足、箱区物理容量和箱区真实尺寸容量约束；大计划箱区--尺寸配额通过正负偏差变量进入目标函数，并与泊位距离、作业窗口和集中拆分成本共同决定初始解偏好。
 
-\subsection{能量函数}
+若 PySCIPOpt/SCIP 不可用或 SCIP 模型没有可用解，代码执行多轮确定性贪心兜底。默认尝试 30 轮，策略在原始顺序、难组优先、大需求优先、紧容量优先、小组优先、随机顺序，以及 weighted/capacity/concentrated 分配方式之间切换。只有完整满足所有粗属性组需求并通过硬约束检查的分配才能作为初始解；若所有轮次仍存在缺口，则中计划初始化失败并停止本轮求解。
 
-退火状态仍然只包含中计划箱区分配，但能量中加入轻量小计划代理评分：
+\subsection{中小计划结构化反馈}
+
+SCIP 初始分配完成后，程序默认执行 \code{--medium-small-feedback-iterations=10} 轮中小计划结构化反馈。每一轮先用当前中计划构造小计划：严格继承可行时记录严格可行结果；严格继承不可行时执行 direct repair。repair 得到的小计划区域分布会汇总成航次--流向--箱区--大计划尺寸口径的 learned cap，并以 \code{medium_small_feedback_cap_penalty} 进入下一轮中计划 SCIP/SA 能量函数。
+
+反馈轮按小计划未放箱、strict/repair 可行状态、与中计划一致性缺口、repair 额外补箱量和中计划能量共同排序，选择最好的中计划作为后续退火或最终小计划构造的起点。命令行 \code{--medium-small-feedback-iterations=0} 时跳过该阶段。
+
+\subsection{模拟退火}
+
+退火状态是所有 \(x_{ga}\) 的集合。每轮扰动随机选择一个已有箱量的粗属性组和源箱区，把一批箱量移动到另一个候选箱区；若外部修正产生临时缺口，也会先尝试把缺口放入仍有容量的候选箱区。候选状态必须继续满足箱区容量、尺寸容量和候选箱区约束；大计划配额偏差、fallback tier、小计划反馈和小计划可行性通过能量函数调节。
+
+接受准则为：
 \[
-E(x)=E_M(x)+E_P(x).
+\Pr(\text{accept})=
+\begin{cases}
+1, & \Delta E\le 0,\\
+\exp(-\Delta E/T), & \Delta E>0.
+\end{cases}
 \]
-其中 \(E_M\) 包括属性组在箱区间的均衡程度、箱区到泊位距离、规划窗口内装船作业避让、下一 24 小时装船作业优先，以及小计划不可行反馈惩罚。\(E_P\) 不实际分配贝位，只按中计划 \((v,f,s,a)\) 汇总箱区上界把资料箱细分组快速投影到箱区，估计小计划风险，包括：资料箱箱量超过箱区尺寸容量、资料箱箱量超过箱区按尺寸和箱高 \((s,\eta)\) 估算的可落容量、45ft 箱量超过箱区两头贝 45ft 容量、同航次同箱区内细分亲和键数量超过可用连续 6 小贝区块数、同航次同箱区内特殊积载类别过多。若代理投影发现某个候选解无法满足 \((v,f,s,a)\) 继承上界，则返回大惩罚而不是中断退火。
+温度按指数方式从 \(T_0=80.0\) 下降到 \(T_f=0.2\)。命令行默认 \code{--iterations=0}，即只执行 SCIP 初始解、结构化反馈和最终小计划构造；传入正迭代次数时启用模拟退火。
 
-若小计划探测或最终生成发现某个 \((v,f,p,s,a)\) 组合在箱区 \(a\) 内无法落贝，则记录反馈次数 \(F_{vfpsa}\) 和宽口径反馈 \(F_{vf*s a}\)。后续退火迭代立即增加
-\[
-E_{fb}=\lambda_{fb}\sum_{g,a}\max(F_{v(g),f(g),p(g),s(g),a},F_{v(g),f(g),*,s(g),a})x_{ga},
-\]
-默认 \(\lambda_{fb}=250.0\)。这样小计划可行性和质量会参与中计划退火评分，但不需要在退火状态中维护每个贝位的分配变量。
+终端进度日志默认每 \code{--log-every=1000} 轮输出一次，打印总能量、当前最优能量、温度和接受次数。
 
-\subsection{邻域动作}
+当 \code{--small-plan-check-every>0} 且退火迭代数为正时，退火过程中每隔指定轮数对当前 best 分配执行小计划闭环检查。检查日志包含 \code{strict_feasible} 和 \code{repair_feasible}。
+\code{strict\_feasible=True} 表示中计划区域分布可被小计划严格继承；\code{strict\_feasible=False, repair\_feasible=True} 表示严格继承不可行，但直接贝位 repair 可构造可行小计划。repair 成功时，小计划实际使用的箱区分布会转换为新的中计划 assignment，并写回当前退火状态和 best 状态继续搜索。日志中的 \code{method=in_place_capacity_checked} 表示在中计划容量硬约束内完成同粗属性组区域迁移；\code{method=counter_projection} 表示按 repair 后的中小一致计数投影回中计划状态，并在日志中同时给出 \code{medium_hard_feasible}。
 
-每次扰动随机选择一个粗属性组 \(g\)、一个当前已有箱量的源箱区 \(a\)，再从候选箱区集合中随机选择一个不同于当前箱区的目标箱区 \(a'\)，执行批量箱量移动：
-\[
-x'_{ga}=x_{ga}-q,\quad x'_{ga'}=x_{ga'}+q.
-\]
-其中 \(q\) 为随机移动箱量，当前代码上限为该组需求量的 20\% 和当前源箱区箱量中的较小值，且至少允许小批量移动。候选解必须继续满足中计划硬约束，尤其是候选箱区资格、箱区物理容量、尺寸容量和大计划继承上界，否则丢弃。
+\subsection{中计划目标}
 
-\subsection{接受准则}
+中计划能量函数包含以下项：
+\begin{itemize}
+  \item 小量粗属性组集中堆存。若 \(d_g\le\)\code{medium_concentrated_group_threshold}，默认阈值 26，则惩罚使用额外箱区和非最大箱区碎片，默认权重分别为 1500 和 80。
+  \item 大量粗属性组在已使用箱区之间均衡，并惩罚低于 \code{medium_large_group_min_area_boxes=10} 的小碎片箱区，默认碎片权重 1500。
+  \item 总的大计划箱区--尺寸模式偏离，默认权重 30。
+  \item 大计划继承 fallback tier 惩罚，默认基础权重 500；同航次同尺寸有剩余配额的箱区优先，非同航次但属于大计划覆盖箱区次之，其他功能可用候选箱区最后。
+  \item 中小计划 learned cap 反馈惩罚，默认权重 20000，用于让中计划避开 repair 证明难以落贝的箱区--尺寸容量组合。
+  \item 航次箱区到泊位距离，默认权重 3，按距离/100 进入能量。
+  \item 规划窗口内其他装船作业避让，默认惩罚 1000；窗口后 24 小时内有后续装船作业时给予偏好奖励，默认 1000。
+  \item 小计划严格继承失败反馈惩罚。严格继承不可行但 direct repair 可行时，记录到 \code{small_plan_strict_area_feedback}，默认权重 \code{small_plan_strict_feedback_penalty=45}。
+  \item 小计划 repair 失败反馈惩罚。严格继承和 direct repair 均不可行时，记录到 \code{small_plan_area_feedback}，默认惩罚为 \code{small_plan_feedback_penalty=250} 乘以 \code{small_plan_repair_failure_feedback_multiplier=4}。
+  \item 小计划 proxy 评分，用于估计资料箱落贝容量、尺寸--箱高容量、45ft 边贝容量和连续 6 小贝冲突风险；命令行默认 \code{--small-plan-proxy-every=0}，结构化反馈开启时通常不启用该轻量 proxy。
+\end{itemize}
 
-若候选能量 \(E'\le E\)，则接受；否则以概率
-\[
-P=\exp\left(-\frac{E'-E}{T_k}\right)
-\]
-接受。温度为指数降温：
-\[
-T_k=T_0\left(\frac{T_f}{T_0}\right)^{k/N},
-\]
-默认 \(T_0=80.0\)，\(T_f=0.2\)，\(N=30000\)。
+结构化 feedback、可选 SA 内 strict feedback、repair feedback、learned cap 和最终 repair 对齐共同作用于中计划箱区选择：结构化 feedback 在退火前反复求解 SCIP 中计划，learned cap 使中计划远离小计划落贝困难的区域组合，SA 内反馈在启用退火和周期检查时即时调整搜索状态，最终 repair 对齐保证输出中计划覆盖小计划实际区域用量。
 
-\subsection{小计划启发式、实时反馈与重跑}
+\section{小计划构造}
 
-退火过程中会按 \texttt{small\_plan\_check\_every} 间隔，把当前最优中计划方案临时投影到小计划启发式中检查可行性；检查失败时立即记录反馈，后续迭代的中计划能量会惩罚对应航次--流向--港口--尺寸--箱区组合，同时也惩罚航次--流向--尺寸--箱区宽口径组合。
+\subsection{严格继承}
 
-若某次实时探测成功，代码会缓存该历史小计划可行的中计划方案及其迭代轮次。退火结束后优先尝试最终最优能量方案；如果最终方案小计划不可行，但存在历史可行缓存，则直接回退到该历史可行方案输出，并在 \texttt{diagnostics.json} 中记录 \texttt{used\_small\_feasible\_fallback}、\texttt{small\_feasible\_fallback\_iteration} 和最终方案失败原因。这样可以避免因为最后一轮最优能量方案不可落贝而重新跑完整模拟退火。
+中计划 assignment 先汇总为 \((v,f,p,s,a)\) 输出计数，并在小计划严格继承阶段进一步聚合为 \((v,f,s,a)\) 箱区尺寸配额。资料箱细分组按 \((v,f,p,s)\) 分批处理，但继承上界在 \((v,f,s,a)\) 层面消耗。这样可以处理预测卸港分布与资料箱卸港分布不一致的情况。
 
-退火结束后再正式汇总中计划，并按资料箱细分组生成小计划。小计划生成阶段按照中计划给出的粗分属性组箱区权重，把资料箱细分组分摊到箱区，然后在箱区内按硬约束和偏好排序选择贝位。硬约束包括尺寸容量、物理容量、20ft 不上箱区两头贝、45ft 必须在两头贝、存在 45ft 的箱区两头贝只给 45ft、不同尺寸不混贝、不同箱高不混贝。软偏好包括连续 6 小贝区块、同 6 小贝区块内细分属性组隔离、同属性聚集、显式特殊积载和预甩箱单独存放。
+对每个细分组，候选箱区必须有剩余中计划继承配额、真实尺寸容量和尺寸--箱高可落容量。排序优先级为 45ft、20ft、40ft；同尺寸下优先处理可选箱区少、可落容量紧、需求量大的组。严格继承成功时，输出诊断中的 \code{small_plan_construction_mode} 为 \code{strict_medium_area_inheritance}。
 
-如果某个 \((v,f,p,s,a)\) 无法落贝，则记录反馈；退火过程中的后续迭代会立即对该组合加惩罚。若一轮退火结束后最终小计划仍不可行，再进入完整重跑。最多重试 \texttt{max\_small\_plan\_retries} 次，默认 5。
-\section{参数}
+\subsection{Direct repair}
 
-\begin{longtable}{L{0.44\linewidth}L{0.08\linewidth}L{0.36\linewidth}}
-\toprule
-参数 & 默认值 & 含义\\
-\midrule
-\texttt{seed} & 7 & 随机种子。\\
-\texttt{iterations} & 30000 & 中计划退火迭代次数。\\
-\texttt{initial\_temperature} & 80.0 & 初始温度。\\
-\texttt{final\_temperature} & 0.2 & 终止温度。\\
-\texttt{progress\_every} & 3000 & 能量曲线记录间隔。\\
-\texttt{log\_every} & 1000 & 控制台运行日志打印间隔；取 0 时关闭迭代进度日志。\\
-\texttt{max\_small\_plan\_retries} & 5 & 小计划不可行后的中计划退火重跑次数。\\
-\texttt{small\_plan\_check\_every} & 3000 & 退火过程中对当前最优中计划解运行小计划可行性探测的间隔；取 0 时关闭实时探测。\\
-\texttt{group\_area\_split\_penalty} & 0.0 & 中计划属性组跨箱区惩罚。\\
-\texttt{group\_area\_balance\_penalty} & 18.0 & 中计划属性组箱区均衡惩罚。\\
-\texttt{big\_plan\_area\_deviation\_penalty} & 1.5 & 在满足大计划硬上界前提下，中计划实际航次--箱区--尺寸箱量偏离大计划模式的惩罚。\\
-\texttt{non\_big\_plan\_area\_penalty} & 50.0 & 历史兼容参数；严格继承模式下非大计划箱区--箱型组合已作为硬禁止。\\
-\texttt{berth\_distance\_penalty} & 0.02 & 箱区到泊位距离惩罚。\\
-\texttt{special\_stow\_isolation\_penalty} & 18.0 & 特殊积载箱与其它属性混贝的软隔离惩罚。\\
-\texttt{active\_loading\_area\_penalty} & 16.0 & 规划窗口内其他船装船作业箱区惩罚。\\
-\texttt{post\_window\_loading\_area\_reward} & 5.0 & 下一 24 小时有装船作业箱区奖励。\\
-\texttt{small\_plan\_feedback\_penalty} & 250.0 & 小计划不可行反馈惩罚。\\
-\texttt{small\_plan\_proxy\_capacity\_penalty} & 120.0 & 小计划代理评分中资料箱投影箱量超过箱区容量或 45ft 两头贝容量的惩罚。\\
-\code{small_plan_proxy_height_capacity_penalty} & 240.0 & 小计划代理评分中资料箱尺寸--箱高投影箱量超过贝位可落容量的惩罚。\\
-\code{small_plan_proxy_every} & 1 & 中计划退火过程中每隔多少轮计算一次小计划代理评分；默认每轮计算以保持小计划可行性引导，调大后速度更快但可行性引导会变弱。\\
-\code{small_plan_proxy_six_block_conflict_penalty} & 10.0 & 小计划代理评分中细分亲和键数量超过连续 6 小贝区块数的惩罚。\\
-\code{small_plan_group_area_split_penalty} & 35.0 & 小计划代理评分中同一细分属性组跨多个箱区的惩罚。\\
-\bottomrule
-\end{longtable}
+严格继承无法满足全部资料箱时，小计划执行直接贝位 repair。repair 将中计划箱区配额作为排序偏好，而非硬上界，在所有业务可用箱区和贝位中寻找可行落位。候选贝位排序优先级为：
+\begin{enumerate}
+  \item 同 \((v,f,p,s,a)\) 的中计划区域仍有剩余 exact quota。
+  \item 同 \((v,f,s,a)\) 的中计划区域仍有剩余 broad quota。
+  \item 箱区属于对应航次--流向的大计划使用区域。
+  \item 其它功能可用箱区。
+  \item 当前贝位可一次容纳该细分组剩余箱量。
+  \item 连续 6 小贝区块亲和、贝位属性亲和、既有箱卸港一致、fallback 贝位靠后和贝位顺序。
+\end{enumerate}
 
-\section{输入字段清单}
+repair 成功时，输出诊断中的 \code{small_plan_construction_mode} 为 \code{direct_bay_repair}。最终输出阶段用 repair 后的小计划实际 \((v,f,p,s,a)\) 使用量修正中计划计数：优先从同 \((v,f,p,s)\) 的其它箱区平移中计划箱量，平移不足时按小计划实际使用量补齐中计划输出。该计数修正确保 \code{medium_plan.csv} 覆盖 \code{small_plan.csv} 的区域用量，并在 \code{small_plan_medium_repair_added_boxes} 中记录无法通过同组平移补齐而额外补入的箱量。
 
-当前代码实际读取的输入文件和字段如下。字段名按代码中的原始字段名列出；若某些兼容格式存在多个可选字段，则用斜线分隔。
+严格继承和 direct repair 均无法构造小计划时，本轮中计划会记录 repair 失败反馈并触发重试或已有可行中计划回退。最终成功输出的结果满足 \code{medium_unplaced_boxes=0} 和 \code{small_unplaced_boxes=0}；若输入容量本身不足，未放箱诊断字段保留对应缺口。
 
-\begin{longtable}{L{0.28\linewidth}L{0.32\linewidth}L{0.32\linewidth}}
-\toprule
-文件 & 字段 & 用途\\
-\midrule
-\texttt{allocation.csv} & \code{voy_id} 或 \code{voyage_id} & 大计划航次号；只保留本次目标航次。\\
-\texttt{allocation.csv} & \code{flow}/\code{cntr_type}/\code{status} & 箱区功能/流向；缺失时默认 \code{OF}。\\
-\texttt{allocation.csv} & \code{area_no} & 大计划箱区。\\
-\texttt{allocation.csv} & \code{size}/\code{size_mode} 或 \code{qty_20,qty_40,qty_45} & 大计划箱型口径；45ft 按 40ft 继承。旧宽表可用 \code{qty_20, qty_40[, qty_45]}、\code{planned_20, planned_40[, planned_45]} 或 \code{20,40[,45]}。\\
-\texttt{allocation.csv} & \code{planned_qty}/\code{planned_boxes} & 大计划箱量；只读取正数。\\
-\texttt{allocation.csv} & \code{plan_date}/\code{date}/\code{work_date}/\code{planning_date}/\code{day} & 可选日期；若存在，只使用规划日期当天记录。\\
-\code{vessel_berth_info_new.csv} 或 \code{vessel_berth_info.csv} & \code{VOY_ID} & 航次号。\\
-\code{vessel_berth_info_new.csv} 或 \code{vessel_berth_info.csv} & \code{VOY_IEFG} & 进出口标记；只读取 \code{E} 出口航次。\\
-\code{vessel_berth_info_new.csv} 或 \code{vessel_berth_info.csv} & \code{SCD_RCVSTDT}, \code{SCD_RCVEDDT} & 开港/收箱开始和结束时间；用于规划比例和航次窗口。\\
-\code{vessel_berth_info_new.csv} 或 \code{vessel_berth_info.csv} & \code{VBT_ABTHDT}/\code{VBT_PBTHDT} & 实际/计划靠泊时间；用于作业窗口。\\
-\code{vessel_berth_info_new.csv} 或 \code{vessel_berth_info.csv} & \code{VBT_ADPTDT}/\code{VBT_PDPTDT} & 实际/计划离泊时间；用于判断已有箱是否释放容量。\\
-\code{vessel_berth_info_new.csv} 或 \code{vessel_berth_info.csv} & \code{VBT_BTH_ABTHNO}/\code{VBT_BTH_PBTHNO} & 实际/计划泊位号；用于泊位距离惩罚。\\
-\code{predict_data_\{voyage\}.xlsx}，工作表 尺寸港口统计 & \code{IYC_CSZ_CSIZECD} & 预测箱尺寸。\\
-\code{predict_data_\{voyage\}.xlsx}，工作表 尺寸港口统计 & \code{IYC_POT_UNLDPORT} & 预测卸货港。\\
-\code{predict_data_\{voyage\}.xlsx}，工作表 尺寸港口统计 & \code{IYC_STS_CSTATUSCD}/\code{flow}/\code{cntr_type} & 可选流向；缺失时默认 \code{OF}。\\
-\code{predict_data_\{voyage\}.xlsx}，工作表 尺寸港口统计 & \code{count} & 预测箱量。\\
-\code{container_info_\{voyage\}.parquet} & \code{IYC_STS_CSTATUSCD} & 资料箱流向/状态；中计划资料箱兜底和小计划细分组使用。\\
-\code{container_info_\{voyage\}.parquet} & \code{IYC_CSZ_CSIZECD} & 资料箱尺寸；45ft 小计划按 45ft 约束，继承大计划按 40ft 口径。\\
-\code{container_info_\{voyage\}.parquet} & \code{IYC_POT_UNLDPORT} & 资料箱卸货港；小计划细分属性保留，但不作为继承上界。\\
-\code{container_info_\{voyage\}.parquet} & \code{IYC_CHEIGHTCD} & 箱高；小计划禁止不同箱高混贝。\\
-\code{container_info_\{voyage\}.parquet} & \code{IYC_CWEIGHT} & 箱重；转换为重量等级。\\
-\code{bay_slots_detail.parquet} & \code{YAA_AREANO}, \code{YBY_BAYNO}, \code{YST_ROWNO} & 箱区、贝位、排/行；用于容量、贝位顺序、TOPS 关闭和错放剔除。\\
-\code{bay_slots_detail.parquet} & \code{YBY_ENABLECSIZECD} & 箱位可放尺寸；为空时视为 20/40/45 均可放。\\
-\code{bay_slots_detail.parquet} & \code{HAS_CONTAINER} & 是否已有箱；空位计入容量，已有箱用于占用/释放判断和已有箱属性。\\
-\code{bay_slots_detail.parquet} & \code{IYC_EVOY_ID} & 已有箱所属出口航次；用于释放容量、作业窗口和只检查当前规划航次错放。\\
-\code{bay_slots_detail.parquet} & \code{IYC_CSZ_CSIZECD}, \code{IYC_CHEIGHTCD}, \code{IYC_POT_UNLDPORT}, \code{IYC_STS_CSTATUSCD}, \code{IYC_CTYPECD}, \code{IYC_SETTMPT} & 已有箱尺寸、箱高、卸货港、状态、箱型和冷箱温度；用于小计划候选贝位过滤和避让偏好。\\
-\code{tops_plan_info.parquet} & \code{SPL_ISVALID}, \code{SPR_ISVALID} & TOPS 主表/明细有效标记，均为 \code{Y} 时才可能生效。\\
-\code{tops_plan_info.parquet} & \code{SPL_STDATE}, \code{SPL_EDDATE} & TOPS 生效时间范围。\\
-\code{tops_plan_info.parquet} & \code{SPL_CONDITIONCODE} & TOPS 关联航次；若属于本次规划航次则忽略，否则关闭对应贝位区间。\\
-\code{tops_plan_info.parquet} & \code{SPR_STBAY}, \code{SPR_EDBAY} & TOPS 起止贝位代码，前缀为箱区、后两位为贝位。\\
-箱区功能.xlsx & \code{area_no}, \code{cntr_type} & 箱区功能；计划只能使用功能包含对应 \code{flow} 的箱区。\\
-适放箱区\_泊位距离矩阵.xlsx 或 of 前缀距离文件，工作表 距离矩阵 & \code{area_no}, \code{B1}, \code{B2}, \ldots & 箱区到各泊位距离；列名匹配 \code{B\d+}。\\
-适放箱区\_泊位距离矩阵.xlsx，工作表 箱区坐标 & \code{area_no} & 当没有 箱区功能.xlsx 时的兼容兜底，所有列出箱区视为 \code{OF}。\\
-\code{n_usefg_areas.txt} & 文本中的箱区编号 & 关闭箱区，作为硬禁止。\\
-\bottomrule
-\end{longtable}
+\subsection{贝位硬约束}
+
+小计划贝位构造满足：
+\begin{itemize}
+  \item 贝位真实尺寸容量和物理容量不超限。
+  \item 40ft/45ft 需要有效大贝配对，且同时占用配对贝物理容量。
+  \item 同一贝位或大贝 footprint 内不混尺寸。
+  \item 同一贝位或大贝 footprint 内不混箱高。
+  \item 20ft 不放箱区两头贝。
+  \item 45ft 必须放箱区两头贝。
+  \item 若某箱区存在 45ft 资料箱分配，两头贝只供 45ft 使用。
+\end{itemize}
+
+\subsection{贝位偏好}
+
+小计划启发式按排序选择贝位。主要偏好为：
+\begin{itemize}
+  \item 同一细属性亲和键优先进入同一连续 6 小贝区块和同一贝位。
+  \item 同一粗属性键 \((v,f,p,s)\) 的细分组优先共享区块。
+  \item 既有箱卸港与资料箱卸港一致的贝位优先。
+  \item fallback 贝位靠后。
+  \item 显式特殊积载和预配/预留标记保留隔离偏好。
+\end{itemize}
+
+连续 6 小贝区块由箱区内按顺序的 6 个小贝构成。当前识别规则要求区块内至少包含两个不重叠的大贝配对，并且剩余小贝中至少两个可放 20ft。
 
 \section{输出}
 
-\subsection{\texttt{medium\_demand\_by\_port.csv}}
+\begin{longtable}{L{0.34\linewidth}L{0.58\linewidth}}
+\toprule
+文件 & 内容\\
+\midrule
+\code{medium_demand_by_port.csv} & 中计划需求明细，包含预测箱量、比例目标、资料箱箱量、已在场扣减箱量、最终计划箱量和规划阶段。\\
+\code{medium_plan.csv} & 中计划箱区结果，粒度为 \((v,f,p,s,a)\)。\\
+\code{small_plan.csv} & 小计划贝位结果，粒度为资料箱细分组、箱区、贝位。\\
+\code{small_plan_six_bay_blocks.csv} & 小计划按连续 6 小贝区块汇总。\\
+\code{big_plan_used.csv} & 本次继承的大计划行。\\
+\code{energy_convergence.csv} & 退火能量记录。\\
+\code{diagnostics.json} & 目标航次、问题规模、初始解诊断、未放箱、TOPS/错放统计、能量、参数和输出诊断。\\
+\bottomrule
+\end{longtable}
 
-字段为：
-\begin{flushleft}\small\ttfamily
-voyage\_id, flow, port, size\_mode, predicted\_boxes, ratio\_target\_boxes,\\
-doc\_boxes, planned\_boxes, planning\_stage, planning\_ratio
-\end{flushleft}
+\code{diagnostics.json} 中与当前求解状态直接相关的字段包括：
+\begin{itemize}
+  \item \code{medium_initial_assignment}：SCIP 和多轮贪心初始分配诊断。
+  \item \code{medium_initial_assignment_method}：\code{scip} 或 \code{greedy}。
+  \item \code{small_plan_construction_mode}：最终小计划构造方式，取值为 \code{strict_medium_area_inheritance} 或 \code{direct_bay_repair}。
+  \item \code{small_plan_medium_repair_added_boxes}：direct repair 后中计划计数对齐时无法由同组其它箱区平移补齐的箱量。
+  \item \code{medium_small_feedback_rounds}：结构化中小计划反馈每轮的 strict/repair 状态、得分和中计划目标项。
+  \item \code{medium_small_feedback_learned_cap_count}：反馈阶段学习到的航次--流向--箱区--尺寸 cap 数量。
+  \item \code{final_medium_output_energy_components}：最终输出中计划按当前能量函数拆解后的目标项。
+  \item \code{small_plan_strict_area_feedback}：严格继承失败但 direct repair 可行的区域组合反馈。
+  \item \code{small_plan_area_feedback}：严格继承和 direct repair 均失败的区域组合反馈。
+  \item \code{medium_unplaced_boxes}、\code{medium_unplaced_by_group}：中计划未放箱。
+  \item \code{small_unplaced_boxes}、\code{small_unplaced_by_group}：小计划未放箱。
+  \item \code{concentration_penalties}：与列生成同口径的集中/碎片参数。
+  \item \code{target_voyages}、\code{planning_time}、\code{horizon_hours}：本次问题范围。
+\end{itemize}
 
-\subsection{\texttt{medium\_plan.csv}}
+\section{主要参数}
 
-中计划只输出航次--流向--卸货港--尺寸--箱区：
-\begin{flushleft}\small\ttfamily
-plan\_level, voyage\_id, flow, port, size, window\_start, window\_end,\\
-area\_loading\_during\_window, area\_loading\_after\_window\_24h, area\_no, planned\_boxes
-\end{flushleft}
+\begin{longtable}{L{0.36\linewidth}L{0.16\linewidth}L{0.40\linewidth}}
+\toprule
+参数 & 默认值 & 含义\\
+\midrule
+\code{--dataset} & \code{0519} & 默认数据目录和大计划路径预设，可选 \code{0519} 或 \code{0508}。\\
+\code{--data-dir} & 空 & 显式指定数据目录。\\
+\code{--big-plan} & 空 & 显式指定大计划 CSV。\\
+\code{--voyages} & 空 & 显式指定目标航次；空值时从大计划 \code{OF} 行推导。\\
+\code{--planning-time} & \code{2026-05-19 09:30:00} & 规划时刻覆盖值；未传入时原始数据使用默认 0519 口径，JSON 数据目录使用 \code{planning_time}。\\
+\code{--horizon-hours} & 24 & 规划窗口长度。\\
+\code{--misplaced-bay-exclusion-ratio} & 0.6666667 & 错放贝位剔除阈值。\\
+\code{--iterations} & 0 & 模拟退火迭代次数；0 表示只执行 SCIP 初始解、结构化反馈和最终小计划构造。\\
+\code{--seed} & 7 & 随机种子。\\
+\code{--energy-record-every} & 3000 & 能量记录间隔。\\
+\code{--log-every} & 1000 & 终端进度打印间隔。\\
+\code{--max-small-plan-retries} & 0 & 最终小计划失败后的完整重跑次数。\\
+\code{--small-plan-check-every} & 0 & 退火过程中执行小计划严格继承、direct repair 和反馈反喂的间隔；0 表示关闭退火内检查。\\
+\code{--medium-initial-assignment-attempts} & 30 & SCIP 初始解不可用后，贪心兜底尝试次数。\\
+\code{--medium-small-feedback-iterations} & 10 & 退火前执行结构化中小计划反馈轮数。\\
+\code{--medium-small-feedback-cap-penalty} & 20000 & 超过小计划反馈 learned cap 的每箱惩罚。\\
+\code{--small-plan-proxy-height-capacity-penalty} & 240 & 小计划 proxy 中尺寸--箱高容量超限惩罚。\\
+\code{--small-plan-proxy-every} & 0 & 小计划 proxy 评分间隔；0 表示关闭。\\
+\code{--small-plan-strict-feedback-penalty} & 45 & 严格继承失败但 direct repair 可行时的每箱反馈惩罚。\\
+\code{--small-plan-repair-failure-feedback-multiplier} & 4 & 严格继承和 direct repair 均失败时，对 \code{small_plan_feedback_penalty} 的放大倍数。\\
+\code{--medium-concentrated-group-threshold} & 26 & 小量粗属性组集中阈值。\\
+\code{--fine-group-area-penalty} & 80 & 资料箱细分组跨箱区 proxy 惩罚。\\
+\code{--medium-small-group-area-split-penalty} & 1500 & 小量粗属性组使用额外箱区惩罚。\\
+\code{--medium-small-group-fragment-penalty} & 80 & 小量粗属性组非最大箱区碎片惩罚。\\
+\code{--medium-large-group-min-area-boxes} & 10 & 大量粗属性组选中箱区后的期望最小箱量。\\
+\code{--medium-large-group-small-area-penalty} & 1500 & 大量粗属性组小碎片箱区惩罚。\\
+\code{--big-plan-area-deviation-penalty} & 30 & 总的大计划航次--箱区--尺寸模式偏离惩罚。\\
+\code{--big-plan-fallback-tier-penalty} & 500 & 偏离精确大计划继承层级的每箱基础惩罚。\\
+\code{--berth-distance-penalty} & 3 & 泊位距离权重，按距离/100 进入目标项。\\
+\code{--active-loading-area-penalty} & 1000 & 使用规划窗口内有装船作业箱区的惩罚。\\
+\code{--post-window-loading-area-reward} & 1000 & 使用窗口后 24 小时内有装船作业箱区的奖励。\\
+\bottomrule
+\end{longtable}
 
-\subsection{\texttt{small\_plan.csv}}
+\section{运行示例}
 
-小计划输出资料箱细分组到贝位：
-\begin{flushleft}\small\ttfamily
-plan\_level, voyage\_id, group\_id, flow, port, size, height, weight\_class,\\
-special\_stow, special\_stow\_code, area\_no, bay\_no,\\
-six\_bay\_block\_id, six\_bay\_block\_bays, six\_bay\_block\_total\_boxes, planned\_boxes
-\end{flushleft}
-
-其中 \texttt{six\_bay\_block\_id} 表示该贝位所在的连续 6 小贝区块；\texttt{six\_bay\_block\_bays} 用竖线列出区块内 6 个贝位；\texttt{six\_bay\_block\_total\_boxes} 为该区块当前小计划总箱量。若该贝位不属于识别出的连续 6 小贝区块，则这些字段为空或 0。按 \texttt{six\_bay\_block\_id} 过滤 \texttt{small\_plan.csv} 即可查看该区块内部每个贝位、每个细分组的分配行。
-
-\subsection{\texttt{small\_plan\_six\_bay\_blocks.csv}}
-
-该文件一行表示一个已经投入使用的连续 6 小贝区块：
-\begin{flushleft}\small\ttfamily
-plan\_level, six\_bay\_block\_id, area\_no, six\_bay\_block\_bays,\\
-six\_bay\_block\_total\_boxes, allocation\_summary
-\end{flushleft}
-
-\texttt{allocation\_summary} 使用 \texttt{group\_id|qty} 的分号列表概括区块内分配情况，表示每个细分属性组在该连续 6 小贝区块内分配到的容量。
-
-\subsection{\texttt{energy\_convergence.csv}}
-
-该文件记录模拟退火能量曲线：
-\begin{flushleft}\small\ttfamily
-phase, iteration, current\_energy, best\_energy, temperature, accepted\_count
-\end{flushleft}
-
-\subsection{\texttt{big\_plan\_used.csv}}
-
-该文件写出本次实际参与继承的大计划记录：
-\begin{flushleft}\small\ttfamily
-voyage\_id, flow, area\_no, planned\_boxes, size\_mode, plan\_date
-\end{flushleft}
-
-\subsection{诊断}
-
-\texttt{diagnostics.json} 输出迭代次数、能量、箱区数、贝位数、TOPS 关闭贝位数、TOPS 覆盖槽位数、泊位、规划窗口、小计划反馈、小计划历史可行方案回退标记等。当前诊断中 \texttt{medium\_plan\_space\_policy} 明确说明中计划只到箱区，贝位和连续 6 小贝只属于小计划。
-
-\section{运行方式}
-
-\begin{lstlisting}[language=bash]
-python run_yard_planner.py \
-  --big-plan ../outputs_large/latest_run/allocation.csv \
-  --planning-time "2026-05-08 09:30:00" \
-  --voyages 453334 453400 \
-  --horizon-hours 24 \
-  --iterations 30000 \
-  --seed 7 \
-  --energy-record-every 3000 \
-  --max-small-plan-retries 5
+\begin{lstlisting}
+.\.venv\Scripts\python.exe medium_small\run_yard_planner.py
 \end{lstlisting}
 
+\begin{lstlisting}
+.\.venv\Scripts\python.exe medium_small\run_yard_planner.py `
+  --dataset 0519 `
+  --iterations 30000 `
+  --small-plan-check-every 1000
+\end{lstlisting}
 
 \end{document}

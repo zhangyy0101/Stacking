@@ -4,17 +4,21 @@ import argparse
 import csv
 import math
 import re
+import zipfile
 from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
+from xml.etree import ElementTree
 
 import pandas as pd
+
+from .input_json import has_input_json, input_dataframe, input_value, vessel_doc_frame, vessel_predict_cntrs
 
 
 DEFAULT_PLANNING_TIME = datetime(2026, 5, 19, 9, 30)
 DEFAULT_TARGET_VOYAGES: tuple[str, ...] = ()
-DEFAULT_TARGET_BIG_PLAN_FLOWS = frozenset({"OF", "OZ"})
+DEFAULT_TARGET_BIG_PLAN_FLOWS = frozenset({"OF"})
 
 
 def _read_csv_compat(path: str | Path, **kwargs) -> pd.DataFrame:
@@ -24,6 +28,106 @@ def _read_csv_compat(path: str | Path, **kwargs) -> pd.DataFrame:
         except UnicodeDecodeError:
             continue
     return pd.read_csv(path, **kwargs)
+
+
+def read_excel_compat(path: str | Path, sheet_name: str | int = 0) -> pd.DataFrame:
+    try:
+        return pd.read_excel(path, sheet_name=sheet_name)
+    except ImportError:
+        return _read_xlsx_worksheet(Path(path), sheet_name)
+
+
+def _read_xlsx_worksheet(path: Path, sheet_name: str | int = 0) -> pd.DataFrame:
+    ns = {
+        "a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+        "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+        "rel": "http://schemas.openxmlformats.org/package/2006/relationships",
+    }
+    with zipfile.ZipFile(path) as zf:
+        shared = _xlsx_shared_strings(zf, ns)
+        sheet_path = _xlsx_sheet_path(zf, ns, sheet_name)
+        sheet = ElementTree.fromstring(zf.read(sheet_path))
+    rows: list[list[object]] = []
+    for row in sheet.findall(".//a:sheetData/a:row", ns):
+        values: dict[int, object] = {}
+        for cell in row.findall("a:c", ns):
+            col = _xlsx_column_index(cell.attrib.get("r", ""))
+            if col is None:
+                col = len(values)
+            values[col] = _xlsx_cell_value(cell, shared, ns)
+        if values:
+            rows.append([values.get(idx) for idx in range(max(values) + 1)])
+    while rows and all(value in (None, "") for value in rows[0]):
+        rows.pop(0)
+    if not rows:
+        return pd.DataFrame()
+    headers = _xlsx_headers(rows[0])
+    records = []
+    for row in rows[1:]:
+        if all(value in (None, "") for value in row):
+            continue
+        records.append({headers[idx]: row[idx] if idx < len(row) else None for idx in range(len(headers))})
+    return pd.DataFrame(records)
+
+
+def _xlsx_shared_strings(zf: zipfile.ZipFile, ns: dict[str, str]) -> list[str]:
+    if "xl/sharedStrings.xml" not in zf.namelist():
+        return []
+    root = ElementTree.fromstring(zf.read("xl/sharedStrings.xml"))
+    return ["".join(t.text or "" for t in si.findall(".//a:t", ns)) for si in root.findall("a:si", ns)]
+
+
+def _xlsx_sheet_path(zf: zipfile.ZipFile, ns: dict[str, str], sheet_name: str | int) -> str:
+    workbook = ElementTree.fromstring(zf.read("xl/workbook.xml"))
+    rels = ElementTree.fromstring(zf.read("xl/_rels/workbook.xml.rels"))
+    targets = {rel.attrib["Id"]: rel.attrib["Target"] for rel in rels.findall("rel:Relationship", ns)}
+    sheets = workbook.findall(".//a:sheets/a:sheet", ns)
+    index = int(sheet_name) if isinstance(sheet_name, int) else None
+    for idx, sheet in enumerate(sheets):
+        if (index is not None and idx == index) or sheet.attrib.get("name") == sheet_name:
+            rel_id = sheet.attrib.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id")
+            target = targets.get(rel_id or "", f"worksheets/sheet{idx + 1}.xml")
+            return target.lstrip("/") if target.startswith("xl/") else "xl/" + target.lstrip("/")
+    raise ValueError(f"Worksheet {sheet_name!r} not found in {zf.filename}")
+
+
+def _xlsx_column_index(ref: str) -> int | None:
+    letters = "".join(ch for ch in ref if ch.isalpha()).upper()
+    if not letters:
+        return None
+    value = 0
+    for ch in letters:
+        value = value * 26 + ord(ch) - ord("A") + 1
+    return value - 1
+
+
+def _xlsx_cell_value(cell: ElementTree.Element, shared: list[str], ns: dict[str, str]) -> object:
+    cell_type = cell.attrib.get("t", "")
+    if cell_type == "inlineStr":
+        inline = cell.find("a:is", ns)
+        return "" if inline is None else "".join(t.text or "" for t in inline.findall(".//a:t", ns))
+    raw = cell.find("a:v", ns)
+    if raw is None:
+        return ""
+    text = raw.text or ""
+    if cell_type == "s":
+        try:
+            return shared[int(text)]
+        except (IndexError, ValueError):
+            return ""
+    return text
+
+
+def _xlsx_headers(row: list[object]) -> list[str]:
+    headers: list[str] = []
+    seen: Counter[str] = Counter()
+    for idx, value in enumerate(row):
+        header = str(value or f"column_{idx + 1}").strip() or f"column_{idx + 1}"
+        seen[header] += 1
+        if seen[header] > 1:
+            header = f"{header}_{seen[header]}"
+        headers.append(header)
+    return headers
 
 
 @dataclass(frozen=True)
@@ -207,10 +311,13 @@ def write_demand_rows(path: str | Path, rows: list[DemandRow]) -> None:
 
 
 def _read_receive_windows(data_path: Path) -> dict[str, tuple[datetime, datetime | None]]:
-    path = data_path / "vessel_berth_info_new.csv"
-    if not path.exists():
-        path = data_path / "vessel_berth_info.csv"
-    frame = _read_csv_compat(path)
+    if has_input_json(data_path):
+        frame = input_dataframe(data_path, "vessel_berth_info")
+    else:
+        path = data_path / "vessel_berth_info_new.csv"
+        if not path.exists():
+            path = data_path / "vessel_berth_info.csv"
+        frame = _read_csv_compat(path)
     windows: dict[str, tuple[datetime, datetime | None]] = {}
     for row in frame.to_dict("records"):
         if _norm(row.get("VOY_IEFG")) != "E":
@@ -237,10 +344,12 @@ def _planning_stage(receive_start: datetime, planning_time: datetime) -> tuple[s
 
 
 def _read_predicted_by_port_size(data_path: Path, voyage_id: str) -> Counter[tuple[str, str, str]]:
+    if has_input_json(data_path):
+        return _predict_counter_from_cntrs(vessel_predict_cntrs(data_path, voyage_id))
     path = _find_prediction_file(data_path, voyage_id)
     if path is None:
         return Counter()
-    frame = pd.read_excel(path, sheet_name="尺寸港口统计")
+    frame = read_excel_compat(path, sheet_name="尺寸港口统计")
     counter: Counter[tuple[str, str, str]] = Counter()
     for row in frame.to_dict("records"):
         size_mode = _size_mode(row.get("IYC_CSZ_CSIZECD"))
@@ -261,6 +370,21 @@ def _find_prediction_file(data_path: Path, voyage_id: str) -> Path | None:
     return matches[0] if matches else None
 
 
+def _predict_counter_from_cntrs(predict_cntrs: dict) -> Counter[tuple[str, str, str]]:
+    counter: Counter[tuple[str, str, str]] = Counter()
+    for raw_size, info in predict_cntrs.items():
+        if not isinstance(info, dict):
+            continue
+        size_mode = _size_mode(raw_size)
+        detail = info.get("detail_info", {})
+        if isinstance(detail, dict) and detail:
+            for port, count in detail.items():
+                counter[("OF", size_mode, _norm(port, "UNK"))] += int(round(float(count or 0)))
+        else:
+            counter[("OF", size_mode, "UNK")] += int(round(float(info.get("total_volume", 0) or 0)))
+    return counter
+
+
 def _ratio_targets(predicted: Counter[tuple[str, str, str]], ratio: float) -> Counter[tuple[str, str, str]]:
     targets: Counter[tuple[str, str, str]] = Counter()
     by_flow_size: defaultdict[tuple[str, str], list[tuple[tuple[str, str, str], int]]] = defaultdict(list)
@@ -277,11 +401,14 @@ def _ratio_targets(predicted: Counter[tuple[str, str, str]], ratio: float) -> Co
 
 
 def _read_doc_by_port_size(data_path: Path, voyage_id: str) -> Counter[tuple[str, str, str]]:
-    path = data_path / f"container_info_{voyage_id}.parquet"
     counter: Counter[tuple[str, str, str]] = Counter()
-    if not path.exists():
-        return counter
-    frame = pd.read_parquet(path)
+    if has_input_json(data_path):
+        frame = vessel_doc_frame(data_path, voyage_id)
+    else:
+        path = data_path / f"container_info_{voyage_id}.parquet"
+        if not path.exists():
+            return counter
+        frame = pd.read_parquet(path)
     if frame.empty:
         return counter
     work = pd.DataFrame(
@@ -301,8 +428,7 @@ def _read_yard_by_voyage_port_size(
     voyage_ids: set[str],
     planning_time: datetime,
 ) -> dict[str, Counter[tuple[str, str, str]]]:
-    path = data_path / "bay_slots_detail.parquet"
-    if not path.exists() or not voyage_ids:
+    if not voyage_ids:
         return {}
     columns = [
         "HAS_CONTAINER",
@@ -314,10 +440,16 @@ def _read_yard_by_voyage_port_size(
         "IYC_CSZ_CSIZECD",
         "IYC_POT_UNLDPORT",
     ]
-    try:
-        frame = pd.read_parquet(path, columns=columns)
-    except Exception:
-        frame = pd.read_parquet(path)
+    if has_input_json(data_path):
+        frame = input_dataframe(data_path, "bay_slots_detail", columns=columns)
+    else:
+        path = data_path / "bay_slots_detail.parquet"
+        if not path.exists():
+            return {}
+        try:
+            frame = pd.read_parquet(path, columns=columns)
+        except Exception:
+            frame = pd.read_parquet(path)
     if frame.empty or "HAS_CONTAINER" not in frame.columns:
         return {}
 
@@ -461,7 +593,7 @@ def _date_key(value: object) -> str:
 
 
 def _default_data_dir() -> Path:
-    return Path(__file__).resolve().parents[2] / "堆存计划测试数据20260519"
+    return Path(__file__).resolve().parents[2] / "\u5806\u5b58\u8ba1\u5212\u6d4b\u8bd5\u6570\u636e20260519"
 
 
 def _default_big_plan_path() -> Path:
@@ -522,14 +654,15 @@ def _medium_demand_caps_from_big_plan_csv(
         fieldnames = set(reader.fieldnames or [])
         flow_field = _csv_field(fieldnames, ["flow", "cntr_type", "status"])
         date_field = _csv_field(fieldnames, ["plan_date", "date", "work_date", "planning_date", "day"])
-        if {"voy_id", "area_no", "planned_qty"}.issubset(fieldnames):
+        if {"voy_id", "area_no"}.issubset(fieldnames) and ("new_qty" in fieldnames or "planned_qty" in fieldnames):
             size_field = _csv_field(fieldnames, ["size", "size_mode"])
+            qty_field = _csv_field(fieldnames, ["new_qty", "planned_qty"])
             for row in reader:
                 add(
                     _voyage(row.get("voy_id")),
                     _flow(row.get(flow_field)) if flow_field else "OF",
                     _big_plan_size_mode(row.get(size_field)) if size_field else "ALL",
-                    int(round(float(row.get("planned_qty", 0) or 0))),
+                    int(round(float(row.get(qty_field, 0) or 0))),
                     _date_key(row.get(date_field)) if date_field else "",
                 )
         elif {"voyage_id", "area_no"}.issubset(fieldnames) and (
@@ -554,7 +687,7 @@ def _medium_demand_caps_from_big_plan_csv(
                         )
         else:
             voyage_field = _csv_field(fieldnames, ["voyage_id", "voy_id"])
-            qty_field = _csv_field(fieldnames, ["planned_boxes", "planned_qty"])
+            qty_field = _csv_field(fieldnames, ["new_qty", "planned_boxes", "planned_qty"])
             size_field = _csv_field(fieldnames, ["size_mode", "size"])
             if not (voyage_field and qty_field):
                 return {}
@@ -603,16 +736,29 @@ def main() -> None:
     parser.add_argument("--data-dir", type=Path, default=_default_data_dir())
     parser.add_argument("--big-plan", type=Path, default=_default_big_plan_path())
     parser.add_argument("--voyages", nargs="+", default=None)
-    parser.add_argument("--planning-time", default=DEFAULT_PLANNING_TIME.strftime("%Y-%m-%d %H:%M:%S"))
+    parser.add_argument(
+        "--planning-time",
+        default=None,
+        help="Planning time override. Raw 0519 defaults to 2026-05-19 09:30:00; JSON data directories use input_data.json.",
+    )
     parser.add_argument("--horizon-hours", type=float, default=24.0)
     parser.add_argument("--output", type=Path, default=Path("medium_demand_by_port.csv"))
     args = parser.parse_args()
-    planning_time = _parse_datetime(args.planning_time)
-    if planning_time is None:
-        raise SystemExit(f"Invalid --planning-time: {args.planning_time}")
+    if args.planning_time:
+        planning_time = _parse_datetime(args.planning_time)
+        if planning_time is None:
+            raise SystemExit(f"Invalid --planning-time: {args.planning_time}")
+    elif has_input_json(args.data_dir):
+        raw_planning_time = input_value(args.data_dir, "planning_time")
+        planning_time = _parse_datetime(raw_planning_time)
+        if raw_planning_time is not None and planning_time is None:
+            raise SystemExit(f"Invalid planning_time in input_data.json: {raw_planning_time}")
+        planning_time = planning_time or DEFAULT_PLANNING_TIME
+    else:
+        planning_time = DEFAULT_PLANNING_TIME
     voyages = args.voyages or _infer_target_voyages_from_big_plan_csv(args.big_plan, planning_time)
     if not voyages:
-        raise SystemExit("No target voyages provided or inferred from OF/OZ big-plan rows")
+        raise SystemExit("No target voyages provided or inferred from OF big-plan rows")
     big_plan_caps = _medium_demand_caps_from_big_plan_csv(args.big_plan, voyages, planning_time)
     rows = calculate_medium_demands(
         args.data_dir,

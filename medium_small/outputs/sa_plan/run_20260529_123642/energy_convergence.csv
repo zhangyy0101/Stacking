@@ -1,0 +1,3 @@
+﻿phase,iteration,current_energy,best_energy,temperature,accepted_count
+medium,0,73738232.680725,73738232.680725,80.0,0
+medium,1,73738232.680725,73738232.680725,0.2,0

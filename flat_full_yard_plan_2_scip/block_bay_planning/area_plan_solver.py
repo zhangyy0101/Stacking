@@ -412,6 +412,7 @@ class AreaPlanSolverMixin:
         return self._compute_candidate_areas_for_group(group)
 
     def _compute_candidate_areas_for_group(self, group: BoxGroup) -> set[str]:
+        voyage_allowed = getattr(self.problem, "allowed_areas_by_voyage", {}).get(group.voyage_id)
         big_plan_candidates = {
             area_no
             for (voyage_id, flow, area_no, size_mode), quota in self.problem.area_size_quota.items()
@@ -419,6 +420,7 @@ class AreaPlanSolverMixin:
             and flow == group.status
             and size_mode == group.big_plan_size_mode
             and quota > 0
+            and (voyage_allowed is None or area_no in voyage_allowed)
             and self.area_size_cap[(area_no, group.size_mode)] > 0
             and self.area_total_cap[area_no] > 0
             and group.status in self.problem.area_functions.get(area_no, set())
@@ -426,7 +428,8 @@ class AreaPlanSolverMixin:
         fallback_candidates = {
             area_no
             for area_no in self.bays_by_area
-            if self.area_size_cap[(area_no, group.size_mode)] > 0
+            if (voyage_allowed is None or area_no in voyage_allowed)
+            and self.area_size_cap[(area_no, group.size_mode)] > 0
             and self.area_total_cap[area_no] > 0
             and group.status in self.problem.area_functions.get(area_no, set())
         }

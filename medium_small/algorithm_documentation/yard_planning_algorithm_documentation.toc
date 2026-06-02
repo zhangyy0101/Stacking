@@ -1,0 +1,26 @@
+\contentsline {section}{\numberline {1}总体说明}{3}{section.1}%
+\contentsline {section}{\numberline {2}代码文件}{3}{section.2}%
+\contentsline {section}{\numberline {3}输入口径}{4}{section.3}%
+\contentsline {subsection}{\numberline {3.1}数据目录}{4}{subsection.3.1}%
+\contentsline {subsection}{\numberline {3.2}大计划}{4}{subsection.3.2}%
+\contentsline {subsection}{\numberline {3.3}堆场容量}{4}{subsection.3.3}%
+\contentsline {subsection}{\numberline {3.4}TOPS 与错放贝位}{4}{subsection.3.4}%
+\contentsline {section}{\numberline {4}中计划需求}{5}{section.4}%
+\contentsline {subsection}{\numberline {4.1}粗属性组}{5}{subsection.4.1}%
+\contentsline {subsection}{\numberline {4.2}规划阶段与比例}{5}{subsection.4.2}%
+\contentsline {subsection}{\numberline {4.3}预测、资料箱、在场箱和大计划上限}{5}{subsection.4.3}%
+\contentsline {section}{\numberline {5}小计划资料箱}{5}{section.5}%
+\contentsline {section}{\numberline {6}中计划模型}{6}{section.6}%
+\contentsline {subsection}{\numberline {6.1}变量与硬约束}{6}{subsection.6.1}%
+\contentsline {subsection}{\numberline {6.2}初始解}{6}{subsection.6.2}%
+\contentsline {subsection}{\numberline {6.3}中小计划结构化反馈}{7}{subsection.6.3}%
+\contentsline {subsection}{\numberline {6.4}模拟退火}{7}{subsection.6.4}%
+\contentsline {subsection}{\numberline {6.5}中计划目标}{7}{subsection.6.5}%
+\contentsline {section}{\numberline {7}小计划构造}{8}{section.7}%
+\contentsline {subsection}{\numberline {7.1}严格继承}{8}{subsection.7.1}%
+\contentsline {subsection}{\numberline {7.2}Direct repair}{8}{subsection.7.2}%
+\contentsline {subsection}{\numberline {7.3}贝位硬约束}{9}{subsection.7.3}%
+\contentsline {subsection}{\numberline {7.4}贝位偏好}{9}{subsection.7.4}%
+\contentsline {section}{\numberline {8}输出}{10}{section.8}%
+\contentsline {section}{\numberline {9}主要参数}{11}{section.9}%
+\contentsline {section}{\numberline {10}运行示例}{12}{section.10}%
