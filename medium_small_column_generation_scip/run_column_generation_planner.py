@@ -97,13 +97,13 @@ def add_column_generation_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--repair-lns-time-limit",
         type=float,
-        default=4.0,
+        default=3.0,
         help="SCIP time limit in seconds for each staged-repair LNS round.",
     )
     parser.add_argument(
         "--repair-lns-max-groups",
         type=int,
-        default=12,
+        default=16,
         help="Maximum fine groups released in each staged-repair LNS neighborhood.",
     )
     parser.add_argument(
@@ -181,6 +181,8 @@ def add_column_generation_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--medium-large-group-small-area-penalty", type=float, default=900.0)
     parser.add_argument("--medium-large-group-area-open-penalty", type=float, default=0.0)
     parser.add_argument("--medium-large-group-target-area-boxes", type=int, default=60)
+    parser.add_argument("--unplaced-penalty", type=float, default=100_000.0)
+    parser.add_argument("--required-area-reward", type=float, default=1_000.0)
     parser.add_argument("--big-plan-area-deviation-penalty", type=float, default=8.0)
     parser.add_argument("--big-plan-fallback-tier-penalty", type=float, default=120.0)
     parser.add_argument("--quiet", action="store_true")
@@ -235,6 +237,8 @@ def make_config(args: argparse.Namespace) -> ColumnGenerationConfig:
         medium_large_group_small_area_penalty=args.medium_large_group_small_area_penalty,
         medium_large_group_area_open_penalty=args.medium_large_group_area_open_penalty,
         medium_large_group_target_area_boxes=args.medium_large_group_target_area_boxes,
+        unplaced_penalty=args.unplaced_penalty,
+        required_area_reward=args.required_area_reward,
         big_plan_area_deviation_penalty=args.big_plan_area_deviation_penalty,
         big_plan_fallback_tier_penalty=args.big_plan_fallback_tier_penalty,
         verbose=not args.quiet,
@@ -308,6 +312,8 @@ def make_console_diagnostics_summary(diagnostics: dict) -> dict:
         "diving_improvement_improvements": diagnostics.get("diving_improvement_improvements"),
         "diving_improvement_incumbent_source": diagnostics.get("diving_improvement_incumbent_source"),
         "diving_improvement_stop_reason": diagnostics.get("diving_improvement_stop_reason"),
+        "stage0_unplaced_cap": diagnostics.get("stage0_unplaced_cap"),
+        "stage0_unplaced_cap_source": diagnostics.get("stage0_unplaced_cap_source"),
         "repair_lns_rounds_run": diagnostics.get("repair_lns_rounds_run"),
         "repair_lns_improvements": diagnostics.get("repair_lns_improvements"),
         "repair_lns_stop_reason": diagnostics.get("repair_lns_stop_reason"),

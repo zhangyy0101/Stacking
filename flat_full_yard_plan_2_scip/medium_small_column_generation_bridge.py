@@ -62,8 +62,8 @@ def add_column_generation_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--diving-improvement-max-groups", type=int, default=14)
     parser.add_argument("--diving-improvement-max-no-improve-rounds", type=int, default=2)
     parser.add_argument("--repair-lns-rounds", type=int, default=2)
-    parser.add_argument("--repair-lns-time-limit", type=float, default=4.0)
-    parser.add_argument("--repair-lns-max-groups", type=int, default=12)
+    parser.add_argument("--repair-lns-time-limit", type=float, default=3.0)
+    parser.add_argument("--repair-lns-max-groups", type=int, default=16)
     parser.add_argument("--repair-lns-max-no-improve-rounds", type=int, default=2)
     parser.add_argument("--coarse-compaction-lns-rounds", type=int, default=0)
     parser.add_argument("--coarse-compaction-lns-time-limit", type=float, default=4.0)
@@ -90,6 +90,8 @@ def add_column_generation_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--medium-large-group-small-area-penalty", type=float, default=900.0)
     parser.add_argument("--medium-large-group-area-open-penalty", type=float, default=0.0)
     parser.add_argument("--medium-large-group-target-area-boxes", type=int, default=60)
+    parser.add_argument("--unplaced-penalty", type=float, default=100_000.0)
+    parser.add_argument("--required-area-reward", type=float, default=1_000.0)
     parser.add_argument("--big-plan-area-deviation-penalty", type=float, default=8.0)
     parser.add_argument("--big-plan-fallback-tier-penalty", type=float, default=120.0)
     parser.add_argument("--quiet", action="store_true")
@@ -140,6 +142,8 @@ def make_config(args: argparse.Namespace) -> ColumnGenerationConfig:
         medium_large_group_small_area_penalty=args.medium_large_group_small_area_penalty,
         medium_large_group_area_open_penalty=args.medium_large_group_area_open_penalty,
         medium_large_group_target_area_boxes=args.medium_large_group_target_area_boxes,
+        unplaced_penalty=args.unplaced_penalty,
+        required_area_reward=args.required_area_reward,
         big_plan_area_deviation_penalty=args.big_plan_area_deviation_penalty,
         big_plan_fallback_tier_penalty=args.big_plan_fallback_tier_penalty,
         verbose=not args.quiet,
@@ -409,6 +413,8 @@ def print_diagnostics_summary(diagnostics: dict[str, Any]) -> None:
         "planned_medium_boxes": diagnostics.get("planned_medium_boxes"),
         "planned_small_boxes": diagnostics.get("planned_small_boxes"),
         "unplaced_boxes": diagnostics.get("unplaced_boxes"),
+        "stage0_unplaced_cap": diagnostics.get("stage0_unplaced_cap"),
+        "stage0_unplaced_cap_source": diagnostics.get("stage0_unplaced_cap_source"),
         "inheritance_ratio": inheritance.get("inheritance_ratio"),
         "tiny_area_rows": fragmentation.get("tiny_area_rows"),
         "large_coarse_tiny_area_rows": fragmentation.get("large_coarse_tiny_area_rows"),

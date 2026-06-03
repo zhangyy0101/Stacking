@@ -66,8 +66,8 @@ class ColumnGenerationConfig:
     diving_improvement_max_groups: int = 14
     diving_improvement_max_no_improve_rounds: int = 2
     repair_lns_rounds: int = 2
-    repair_lns_time_limit: float = 4.0
-    repair_lns_max_groups: int = 12
+    repair_lns_time_limit: float = 3.0
+    repair_lns_max_groups: int = 16
     repair_lns_max_no_improve_rounds: int = 2
     coarse_compaction_lns_rounds: int = 0
     coarse_compaction_lns_time_limit: float = 4.0
@@ -82,7 +82,8 @@ class ColumnGenerationConfig:
     demand_mode: str = "original"
     medium_plan_quota: dict[tuple[str, str, str, str, str], int] | None = None
     medium_plan_bay_quota: dict[tuple[str, str, str, str, str, str], int] | None = None
-    unplaced_penalty: float = 1_000_000.0
+    unplaced_penalty: float = 100_000.0
+    required_area_reward: float = 1_000.0
     group_area_balance_penalty: float = 18.0
     medium_concentrated_group_threshold: int = 26
     medium_small_group_area_split_penalty: float = 1200.0
@@ -490,6 +491,8 @@ class ColumnGenerationPlanner:
                 "medium_large_group_target_area_boxes": self.config.medium_large_group_target_area_boxes,
             },
             "inheritance_penalties": {
+                "unplaced": self.config.unplaced_penalty,
+                "required_area_reward": self.config.required_area_reward,
                 "big_plan_area_deviation": self.config.big_plan_area_deviation_penalty,
                 "big_plan_fallback_tier": self.config.big_plan_fallback_tier_penalty,
             },
@@ -960,7 +963,15 @@ class ColumnGenerationPlanner:
             bool(min_stage0_stats.get("stage0_min_unplaced_has_solution"))
             and str(min_stage0_stats.get("stage0_min_unplaced_status", "")).lower() == "optimal"
         )
-        stage0_unplaced_cap = sum(min_stage0_unplaced.values()) if stage0_min_proven else None
+        if stage0_min_proven:
+            stage0_unplaced_cap = sum(min_stage0_unplaced.values())
+            stage0_unplaced_cap_source = "stage0_min_unplaced_optimal"
+        elif sum(best_start_unplaced.values()) <= 0:
+            stage0_unplaced_cap = 0
+            stage0_unplaced_cap_source = "zero_unplaced_incumbent"
+        else:
+            stage0_unplaced_cap = None
+            stage0_unplaced_cap_source = ""
         if stage0_min_proven and self._solution_rank(
             min_stage0_selected,
             min_stage0_unplaced,
@@ -1003,6 +1014,7 @@ class ColumnGenerationPlanner:
                 "master_mip_start_repaired_unplaced_boxes": sum(best_start_unplaced.values()),
                 "stage0_min_unplaced_cap_enforced": stage0_unplaced_cap is not None,
                 "stage0_unplaced_cap": stage0_unplaced_cap,
+                "stage0_unplaced_cap_source": stage0_unplaced_cap_source,
                 "restricted_master_lp_bound": final_lp_bound,
             }
         )
@@ -3065,6 +3077,8 @@ class ColumnGenerationPlanner:
                     "status": status,
                     "has_solution": has_solution,
                     "mip_start_added": mip_start_added,
+                    "hard_no_unplaced": bool(sub_stats.get("hard_no_unplaced", False)),
+                    "unplaced_nonworsening_cap": sub_stats.get("unplaced_nonworsening_cap"),
                     "released_group_count": len(release_group_ids),
                     "candidate_column_count": sub_stats.get("candidate_column_count", 0),
                     "fixed_selected_column_count": sub_stats.get("fixed_selected_column_count", 0),
@@ -3177,6 +3191,8 @@ class ColumnGenerationPlanner:
                     "status": str(sub_stats.get("status", "")),
                     "has_solution": has_solution,
                     "mip_start_added": bool(sub_stats.get("mip_start_added", False)),
+                    "hard_no_unplaced": bool(sub_stats.get("hard_no_unplaced", False)),
+                    "unplaced_nonworsening_cap": sub_stats.get("unplaced_nonworsening_cap"),
                     "released_group_count": len(release_group_ids),
                     "candidate_column_count": sub_stats.get("candidate_column_count", 0),
                     "fixed_selected_column_count": sub_stats.get("fixed_selected_column_count", 0),
@@ -3213,6 +3229,12 @@ class ColumnGenerationPlanner:
             }
         )
         _fixed_repaired, fixed_state, fixed_placed = self._selection_state(fixed_selected)
+        hard_no_unplaced = sum(incumbent_unplaced.values()) <= 0
+        released_remaining = {
+            group_id: max(0, int(self.groups_by_id[group_id].demand) - int(fixed_placed.get(group_id, 0)))
+            for group_id in release_group_ids
+            if group_id in self.groups_by_id
+        }
         candidate_indices: list[int] = []
         for idx, col in enumerate(self._columns):
             if col.group_id not in release_group_ids:
@@ -3232,13 +3254,17 @@ class ColumnGenerationPlanner:
             "mip_start_added": False,
             "candidate_column_count": len(candidate_indices),
             "fixed_selected_column_count": sum(1 for qty in fixed_selected.values() if qty > 0),
+            "hard_no_unplaced": hard_no_unplaced,
         }
         if not candidate_indices:
+            if hard_no_unplaced and any(qty > 0 for qty in released_remaining.values()):
+                stats["status"] = "no_candidate_columns_hard_no_unplaced"
+                return Counter(incumbent_selected), Counter(incumbent_unplaced), stats
             unplaced = Counter(
                 {
-                    group_id: max(0, int(self.groups_by_id[group_id].demand) - int(fixed_placed.get(group_id, 0)))
-                    for group_id in release_group_ids
-                    if group_id in self.groups_by_id
+                    group_id: qty
+                    for group_id, qty in released_remaining.items()
+                    if qty > 0
                 }
             )
             for group_id, qty in incumbent_unplaced.items():
@@ -3271,14 +3297,28 @@ class ColumnGenerationPlanner:
             group = self.groups_by_id.get(group_id)
             if group is None:
                 continue
-            remaining = max(0, int(group.demand) - int(fixed_placed.get(group_id, 0)))
+            remaining = int(released_remaining.get(group_id, 0))
             unplaced_vars[group_id] = model.addVar(
                 lb=0.0,
-                ub=float(remaining),
+                ub=0.0 if hard_no_unplaced else float(remaining),
                 vtype="I",
                 obj=float(self.config.unplaced_penalty),
                 name=f"lns_unplaced_{group_id}",
             )
+
+        fixed_unplaced_total = sum(
+            int(qty)
+            for group_id, qty in incumbent_unplaced.items()
+            if group_id not in release_group_ids and qty > 0
+        )
+        incumbent_unplaced_total = sum(int(qty) for qty in incumbent_unplaced.values() if qty > 0)
+        released_unplaced_cap = max(0, incumbent_unplaced_total - fixed_unplaced_total)
+        if unplaced_vars:
+            model.addCons(
+                quicksum(unplaced_vars.values()) <= released_unplaced_cap,
+                name="lns_unplaced_nonworsening_cap",
+            )
+        stats["unplaced_nonworsening_cap"] = released_unplaced_cap
 
         group_cols: defaultdict[str, list[tuple[int, PlacementColumn]]] = defaultdict(list)
         bay_capacity_cols: defaultdict[str, list[tuple[int, PlacementColumn]]] = defaultdict(list)
@@ -4475,7 +4515,7 @@ class ColumnGenerationPlanner:
     def _voyage_area_cost(self, voyage_id: str, area_no: str) -> float:
         cost = 0.0
         if area_no in getattr(self.problem, "user_voyage_area_requirements", {}).get(voyage_id, set()):
-            cost -= max(1000.0, float(self.config.unplaced_penalty) * 0.25)
+            cost -= float(self.config.required_area_reward)
         berth = self.problem.berth_by_voyage.get(voyage_id, "")
         if berth:
             distance = self.problem.berth_distances.get((area_no, berth))
