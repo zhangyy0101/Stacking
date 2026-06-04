@@ -41,6 +41,7 @@
 - 粗属性组低于阈值时强偏好集中到同一箱区，高于阈值时在已使用箱区间尽量均衡并惩罚小碎片箱区；
 - 保留总的大计划箱区模式偏离、泊位距离、作业冲突、后续作业偏好；
 - 保留小计划的细分组集中、连续 6 小贝区块偏好、已有港口偏好等目标。
+- 阶段 0 确定未放置箱上限；最终整数主问题和 repair LNS 在该上限内优化集中性和继承性。零未放置解存在时，后续阶段保持零未放置。
 
 ## 运行
 
@@ -79,7 +80,13 @@
 - `--coarse-area-block-penalty`：同一粗属性组在同一箱区内使用多个连续 6 小贝区块的惩罚，默认 `24`。
 - `--coarse-area-bay-penalty`：同一粗属性组在同一箱区内使用更多贝位的惩罚，默认 `2.5`。
 - `--medium-concentrated-group-threshold`：粗属性组箱量小于等于该阈值时走集中堆存目标，大于该阈值时走箱区均衡目标，默认 `26`。
-- `--medium-small-group-area-split-penalty`：小量粗属性组使用额外箱区的惩罚，默认 `500`。
-- `--medium-small-group-fragment-penalty`：小量粗属性组没有放在最大箱区的碎片箱量惩罚，默认 `20`。
+- `--medium-small-group-area-split-penalty`：小量粗属性组使用额外箱区的惩罚，默认 `1200`。
+- `--medium-small-group-fragment-penalty`：小量粗属性组没有放在最大箱区的碎片箱量惩罚，默认 `60`。
 - `--medium-large-group-min-area-boxes`：大量粗属性组选中某个箱区后，低于该箱量会被视为小碎片并惩罚，默认 `10`。
-- `--medium-large-group-small-area-penalty`：大量粗属性组小碎片箱区的惩罚，默认 `300`。
+- `--medium-large-group-small-area-penalty`：大量粗属性组小碎片箱区的惩罚，默认 `900`。
+- `--medium-large-group-area-open-penalty`：大量粗属性组启用额外箱区的固定惩罚，默认 `0`。
+- `--medium-large-group-target-area-boxes`：大量粗属性组箱区均衡目标中的参考箱量，默认 `60`。
+- `--unplaced-penalty`：未放置箱变量的目标权重，默认 `100000`。容量、配额和阶段未放置上限作为硬约束控制可行性。
+- `--required-area-reward`：候选列落在大计划要求箱区时的基础成本奖励，默认 `1000`。
+
+repair LNS 默认执行 `2` 轮，每轮 `3` 秒，最多释放 `16` 个细属性组，连续 `2` 轮无改善后停止。额外粗属性组 compaction LNS 默认关闭。

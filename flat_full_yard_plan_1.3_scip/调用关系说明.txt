@@ -1,0 +1,104 @@
+flat_full_yard_plan_1.3_scip 调用关系说明
+
+一、当前入口
+
+1. 完整大中小计划
+
+python run_flat_full_yard_plan.py --adapter-json input_data.json --run-name full_check
+
+流程：
+- 读取 InputAdapterGd JSON。
+- 构建并求解大计划。
+- 写出大计划 allocation.csv 等结果。
+- 直接使用内存中的大计划 allocation rows 构建 SCIP 列生成中小计划输入。
+- 调用本目录内置的 SCIP 列生成算法输出中计划和小计划。
+
+注意：完整大中小一起求解时，中小计划不依赖刚写出的 allocation.csv；CSV 只是大计划输出文件。
+
+2. 只运行大计划
+
+python run_large_plan.py --adapter-json input_data.json --run-name large_only
+
+输出：
+- large_plan_outputs/<run_name>/outputs_large/latest_run/allocation.csv
+- large_plan_outputs/<run_name>/outputs_large/latest_run/allocation_new.csv
+- large_plan_outputs/<run_name>/outputs_large/latest_run/diagnostics.json
+- large_plan_outputs/<run_name>/pipeline_summary.json
+
+3. 已有外部大计划时，只运行中小计划
+
+python run_medium_small_column_generation.py --adapter-json input_data.json --big-plan path/to/allocation.csv --run-name medium_small_only
+
+这个接口以 CSV 作为外部边界，读取外部大计划 allocation.csv 后构建 SCIP 列生成中小计划输入。
+
+4. 已有外部中计划时，只运行小计划
+
+python run_small_plan_from_medium.py --adapter-json input_data.json --medium-plan path/to/medium_plan.csv --run-name small_only
+
+可选指定外部大计划：
+
+python run_small_plan_from_medium.py --adapter-json input_data.json --medium-plan path/to/medium_plan.csv --big-plan path/to/allocation.csv --run-name small_only
+
+如果不提供 --big-plan，会从 medium_plan.csv 汇总推导小计划所需的大计划配额。
+
+二、数据输入
+
+input_data.json 是唯一 JSON 输入包，包含：
+- bay_slots_detail
+- tops_plan
+- area_function_info
+- vessel_berth_info
+- vessel_containers
+- berth_area_dist_matrix
+- history_plan_info
+- planning_time
+
+主流程不会把 input_data.json 还原成 parquet/xlsx/csv 等临时输入文件。
+
+三、大计划模块
+
+run_flat_full_yard_plan.py 和 run_large_plan.py 都通过 input_adapter_standard.build_large_inputs() 构建 LargePlanningData，
+再调用 planning_large_solver.solve_daily_rolling_yard_plan() 求解。
+
+大计划可视化使用 planning_large_visualize.generate_yard_visualization()。
+如果环境缺少 Pillow/PIL，完整流程和只跑大计划入口会跳过可视化，不影响求解和输出。
+
+四、中小计划模块
+
+flat_full_yard_plan_1.3_scip 目录不再保留本地 SA 中小计划求解器。
+
+当前中小计划统一调用本目录内部代码：
+- column_generation_planner.ColumnGenerationPlanner
+- block_bay_planning.data_loader.build_problem
+- small_plan_from_medium
+
+桥接代码在 medium_small_column_generation_bridge.py 中。
+
+完整大中小计划：
+- 使用大计划内存 allocation rows 转成 SCIP BigPlanRow。
+- 不读取 allocation.csv 来构建中小计划。
+
+单独中小计划：
+- 使用 --big-plan 指定外部 CSV。
+
+单独小计划：
+- 使用 --medium-plan 指定外部 medium_plan.csv。
+- --big-plan 可选。
+
+五、主要输出
+
+完整大中小计划输出：
+- full_plan_outputs/<run_name>/outputs_large/latest_run/allocation.csv
+- full_plan_outputs/<run_name>/outputs_large/latest_run/allocation_new.csv
+- full_plan_outputs/<run_name>/outputs_large/latest_run/diagnostics.json
+- full_plan_outputs/<run_name>/medium_small_plan/medium_plan.csv
+- full_plan_outputs/<run_name>/medium_small_plan/small_plan.csv
+- full_plan_outputs/<run_name>/medium_small_plan/small_plan_six_bay_blocks.csv
+- full_plan_outputs/<run_name>/medium_small_plan/medium_demand_by_port.csv
+- full_plan_outputs/<run_name>/medium_small_plan/big_plan_used.csv
+- full_plan_outputs/<run_name>/medium_small_plan/generated_columns.csv
+- full_plan_outputs/<run_name>/medium_small_plan/diagnostics.json
+- full_plan_outputs/<run_name>/pipeline_summary.json
+
+pipeline_summary.json 中：
+- large_allocation_used_by_medium_small = in_memory_large_solution

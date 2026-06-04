@@ -1,0 +1,259 @@
+{
+  "data_dir": "",
+  "area_count": 158,
+  "flows": [
+    "IF",
+    "IZ",
+    "OF",
+    "OZ",
+    "T"
+  ],
+  "flow_aliases": {
+    "IE": "IF",
+    "RF": "IF",
+    "RE": "IF"
+  },
+  "bad_bay_count": 10,
+  "bad_bay_sample": [
+    [
+      "1K",
+      "47"
+    ],
+    [
+      "1K",
+      "49"
+    ],
+    [
+      "1K",
+      "51"
+    ],
+    [
+      "1K",
+      "53"
+    ],
+    [
+      "49",
+      "01"
+    ],
+    [
+      "49",
+      "03"
+    ],
+    [
+      "76",
+      "29"
+    ],
+    [
+      "76",
+      "31"
+    ],
+    [
+      "9D",
+      "09"
+    ],
+    [
+      "9D",
+      "11"
+    ]
+  ],
+  "current_snapshot_rows": 40556,
+  "active_tops_rows": 451,
+  "capacity20_total": 65940.0,
+  "capacity20_direct_total": 62153.0,
+  "capacity40_total": 65642.0,
+  "old_vessels": [],
+  "of_work_lanes": {
+    "453250": 7.107000000000001,
+    "453308": 5.931,
+    "453324": 4.776,
+    "453352": 1.032,
+    "453356": 4.437,
+    "453388": 3.939,
+    "453396": 6.261000000000001,
+    "453412": 10.113,
+    "453416": 9.39,
+    "454549": 5.571,
+    "454585": 2.394,
+    "454710": 0.534,
+    "453273": 0.0,
+    "453307": 0.0,
+    "454548": 0.0
+  },
+  "of_area_limits": {
+    "453250": 14.214000000000002,
+    "453308": 11.862,
+    "453324": 9.552,
+    "453352": 2.064,
+    "453356": 8.874,
+    "453388": 7.878,
+    "453396": 12.522000000000002,
+    "453412": 20.226,
+    "453416": 18.78,
+    "454549": 11.142,
+    "454585": 4.788,
+    "454710": 1.068,
+    "453273": 0.0,
+    "453307": 0.0,
+    "454548": 0.0
+  },
+  "demand": {
+    "453250": {
+      "type": "export",
+      "doc_rows": 78,
+      "snapshot_rows": 3862,
+      "dedup_rows": 2255,
+      "prediction20": 287.0,
+      "prediction40": 2082.0,
+      "extra_prediction20_to_OF": 0.0,
+      "extra_prediction40_to_OF": 345.0
+    },
+    "453308": {
+      "type": "export",
+      "doc_rows": 120,
+      "snapshot_rows": 4083,
+      "dedup_rows": 2429,
+      "prediction20": 557.0,
+      "prediction40": 1420.0,
+      "extra_prediction20_to_OF": 0.0,
+      "extra_prediction40_to_OF": 0.0
+    },
+    "453324": {
+      "type": "export",
+      "doc_rows": 14,
+      "snapshot_rows": 4572,
+      "dedup_rows": 2499,
+      "prediction20": 192.0,
+      "prediction40": 1400.0,
+      "extra_prediction20_to_OF": 0.0,
+      "extra_prediction40_to_OF": 0.0
+    },
+    "453352": {
+      "type": "export",
+      "doc_rows": 11,
+      "snapshot_rows": 269,
+      "dedup_rows": 149,
+      "prediction20": 57.0,
+      "prediction40": 287.0,
+      "extra_prediction20_to_OF": 50.0,
+      "extra_prediction40_to_OF": 145.0
+    },
+    "453356": {
+      "type": "export",
+      "doc_rows": 11,
+      "snapshot_rows": 2136,
+      "dedup_rows": 1118,
+      "prediction20": 280.0,
+      "prediction40": 1199.0,
+      "extra_prediction20_to_OF": 195.0,
+      "extra_prediction40_to_OF": 166.0
+    },
+    "453388": {
+      "type": "export",
+      "doc_rows": 670,
+      "snapshot_rows": 1007,
+      "dedup_rows": 1253,
+      "prediction20": 424.0,
+      "prediction40": 889.0,
+      "extra_prediction20_to_OF": 33.0,
+      "extra_prediction40_to_OF": 27.0
+    },
+    "453396": {
+      "type": "export",
+      "doc_rows": 65,
+      "snapshot_rows": 8572,
+      "dedup_rows": 4771,
+      "prediction20": 539.0,
+      "prediction40": 1548.0,
+      "extra_prediction20_to_OF": 0.0,
+      "extra_prediction40_to_OF": 0.0
+    },
+    "453412": {
+      "type": "export",
+      "doc_rows": 188,
+      "snapshot_rows": 6361,
+      "dedup_rows": 3867,
+      "prediction20": 649.0,
+      "prediction40": 2722.0,
+      "extra_prediction20_to_OF": 0.0,
+      "extra_prediction40_to_OF": 0.0
+    },
+    "453416": {
+      "type": "export",
+      "doc_rows": 501,
+      "snapshot_rows": 4324,
+      "dedup_rows": 2912,
+      "prediction20": 743.0,
+      "prediction40": 2387.0,
+      "extra_prediction20_to_OF": 157.0,
+      "extra_prediction40_to_OF": 61.0
+    },
+    "454549": {
+      "type": "export",
+      "doc_rows": 12,
+      "snapshot_rows": 3063,
+      "dedup_rows": 1734,
+      "prediction20": 289.0,
+      "prediction40": 1568.0,
+      "extra_prediction20_to_OF": 0.0,
+      "extra_prediction40_to_OF": 223.0
+    },
+    "454585": {
+      "type": "export",
+      "doc_rows": 157,
+      "snapshot_rows": 2165,
+      "dedup_rows": 1355,
+      "prediction20": 269.0,
+      "prediction40": 529.0,
+      "extra_prediction20_to_OF": 29.0,
+      "extra_prediction40_to_OF": 0.0
+    },
+    "454710": {
+      "type": "export",
+      "doc_rows": 141,
+      "snapshot_rows": 142,
+      "dedup_rows": 248,
+      "prediction20": 59.0,
+      "prediction40": 119.0,
+      "extra_prediction20_to_OF": 0.0,
+      "extra_prediction40_to_OF": 0.0
+    },
+    "453273": {
+      "type": "import",
+      "doc_rows": 3561,
+      "snapshot_rows": 0,
+      "dedup_rows": 3561
+    },
+    "453307": {
+      "type": "import",
+      "doc_rows": 3373,
+      "snapshot_rows": 0,
+      "dedup_rows": 3373
+    },
+    "454548": {
+      "type": "import",
+      "doc_rows": 2773,
+      "snapshot_rows": 0,
+      "dedup_rows": 2773
+    }
+  },
+  "status": "timelimit",
+  "status_name": "TIMELIMIT",
+  "objective_value": 404216.6762777362,
+  "best_bound": 403713.77154427255,
+  "mip_gap": 0.0012456962553939184,
+  "runtime": 120.0,
+  "objective_components": {
+    "miss": 0.0,
+    "operation": 0.0,
+    "of_area": 390.03000000000003,
+    "distance": 12334.982542591046,
+    "distance_raw": 109246711.24285695,
+    "share": 759.0,
+    "adjustment": 0.0,
+    "balance": 3386.0
+  },
+  "allocation_rows": 2317,
+  "allocation_new_rows": 155,
+  "flow_function_mismatch_total": 1028,
+  "flow_function_mismatch_new": 0
+}

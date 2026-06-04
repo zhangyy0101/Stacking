@@ -92,8 +92,8 @@ class ColumnGenerationConfig:
     medium_large_group_small_area_penalty: float = 900.0
     medium_large_group_area_open_penalty: float = 0.0
     medium_large_group_target_area_boxes: int = 60
-    big_plan_area_deviation_penalty: float = 8.0
-    big_plan_fallback_tier_penalty: float = 120.0
+    big_plan_area_deviation_penalty: float = 6.0
+    big_plan_fallback_tier_penalty: float = 70.0
     small_plan_group_area_split_penalty: float = 80.0
     small_plan_group_block_split_penalty: float = 35.0
     small_plan_group_bay_split_penalty: float = 8.0

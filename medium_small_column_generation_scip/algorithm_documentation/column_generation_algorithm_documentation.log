@@ -1,12 +1,9 @@
-This is XeTeX, Version 3.141592653-2.6-0.999998 (TeX Live 2026) (preloaded format=xelatex 2026.4.15)  27 MAY 2026 12:48
+This is XeTeX, Version 3.141592653-2.6-0.999998 (TeX Live 2026) (preloaded format=xelatex 2026.4.15)  3 JUN 2026 15:53
 entering extended mode
  restricted \write18 enabled.
  %&-line parsing enabled.
-**./medium_small_column_generation_scip/algorithm_documentation/column_generati
-on_algorithm_documentation.tex
-
-(./medium_small_column_generation_scip/algorithm_documentation/column_generatio
-n_algorithm_documentation.tex
+**column_generation_algorithm_documentation.tex
+(./column_generation_algorithm_documentation.tex
 LaTeX2e <2025-11-01>
 L3 programming layer <2026-01-19>
 (c:/texlive/2026/texmf-dist/tex/latex/ctex/ctexart.cls
@@ -920,9 +917,7 @@ Space].
 Package xeCJK Warning: Redefining CJKfamily `\CJKttdefault' (FangSong).
 
 Package hyperref Info: Option `colorlinks' set `true' on input line 21.
-
-(./medium_small_column_generation_scip/algorithm_documentation/column_generatio
-n_algorithm_documentation.aux)
+(./column_generation_algorithm_documentation.aux)
 \openout1 = `column_generation_algorithm_documentation.aux'.
 
 LaTeX Font Info:    Checking defaults for OML/cmm/m/it on input line 39.
@@ -1038,11 +1033,8 @@ LaTeX Font Info:    Overwriting math alphabet `\mathtt' in version `bold'
 * (1in=72.27pt=25.4mm, 1cm=28.453pt)
 
 Package hyperref Info: Link coloring ON on input line 39.
-
-(./medium_small_column_generation_scip/algorithm_documentation/column_generatio
-n_algorithm_documentation.out)
-(./medium_small_column_generation_scip/algorithm_documentation/column_generatio
-n_algorithm_documentation.out)
+(./column_generation_algorithm_documentation.out)
+(./column_generation_algorithm_documentation.out)
 \@outlinefile=\write3
 \openout3 = `column_generation_algorithm_documentation.out'.
 
@@ -1090,8 +1082,7 @@ File: mt-msb.cfg 2005/06/01 v1.0 microtype config. file: AMS symbols (b) (RS)
 File: mt-cmr.cfg 2013/05/19 v2.2 microtype config. file: Computer Modern Roman 
 (RS)
 )
-(./medium_small_column_generation_scip/algorithm_documentation/column_generatio
-n_algorithm_documentation.toc [1
+(./column_generation_algorithm_documentation.toc [1
 
 ])
 \tf@toc=\write4
@@ -1103,44 +1094,9 @@ LaTeX Font Warning: Font shape `TU/MicrosoftYaHei(0)/m/sl' undefined
 (Font)              using `TU/MicrosoftYaHei(0)/m/n' instead on input line 42.
 
 [2]
-Underfull \hbox (badness 4479) in paragraph at lines 49--50
+Underfull \hbox (badness 5008) in paragraph at lines 49--50
 []\TU/MicrosoftYaHei(0)/m/n/10.95 程 序 默 认 使 用 $[][][][][][][][][][][][][][][]$。
-|  该 预 设 的 数 据 目 录 为 $[][][][] [] [][][][] [] [][][] [] [][][][] [] [][][][] []
- [][][][]$，|
- []
-
-
-Underfull \hbox (badness 10000) in paragraph at lines 49--50
-\TU/MicrosoftYaHei(0)/m/n/10.95 大 计 划 文 件 为 $[][][][][] [] [][][][][][][] [] []
-[][][][] [] [][][][][][] [] [][][] [] [][][][][][][][][][] [] [][][]$。| $[][][]
-[][][][][][][][][][][][]$ 对 应
- []
-
-
-Underfull \hbox (badness 10000) in paragraph at lines 49--50
-[][][][] [] [][][][] [] [][][] [] [][][][] [] [][][][] [] [][][][]$\TU/Microsof
-tYaHei(0)/m/n/10.95 ，|  大 计 划 文 件 为 $[][][][] [] [][][][] [] [][][][] [] [][][]
-[] [] [][][][] [] [][][][] [] [][][][] []
- []
-
-
-Underfull \hbox (badness 10000) in paragraph at lines 49--50
-[][][][][][][] [] [][][] [] [][][][] [] [][][][][][] [] [][][][][][][][] [] [][
-][] [] [][][][][][][] [] [][][][][] [] [][][][][][] [] [][][] [] [][][][][][][]
-[][][] [] [][][]$\TU/MicrosoftYaHei(0)/m/n/10.95 。|
- []
-
-
-Underfull \hbox (badness 10000) in paragraph at lines 49--50
-\TU/MicrosoftYaHei(0)/m/n/10.95 命 令 行 中 的 $[][][][][][][][][][][][][]$ 和 $[][][
-][][][][][][][][][][]$ 可 以 覆 盖 上 述 预 设。|  默 认 规 划 时 刻 从 数 据 目 录
- []
-
-
-Underfull \hbox (badness 4556) in paragraph at lines 49--50
-\TU/MicrosoftYaHei(0)/m/n/10.95 的 $[][][][][] [] [][][][] [] [][][][]$ 中 读 取；| 
- 当 前 \TU/lmr/m/n/10.95 0519 \TU/MicrosoftYaHei(0)/m/n/10.95 数 据 为 $[][][][][][]
-[][][][][][][][] [] [][] [] [][]$。|  命 令 行 显 式 给 定
+|  该 预 设 的 数 据 目 录 为 仓 库 根 目 录 下 的 堆 存 计 划 测 试 数 据
  []
 
 
@@ -1149,27 +1105,46 @@ Underfull \hbox (badness 10000) in alignment at lines 66--77
  []
 
 
-ignored: Infinite glue shrinkage found in box being split [3] [4] [5] [6] [7] [8] [9]
-Underfull \hbox (badness 2772) in paragraph at lines 322--323
+ignored: Infinite glue shrinkage found in box being split [3] [4] [5] [6]
+Underfull \hbox (badness 10000) in alignment at lines 226--230
+[] [] []
+ []
+
+
+Underfull \hbox (badness 10000) in alignment at lines 230--236
+[] [] []
+ []
+
+[7] [8] [9]
+Underfull \hbox (badness 3029) in paragraph at lines 299--300
+[]\TU/MicrosoftYaHei(0)/m/n/10.95 候 选 列 落 在 大 计 划 要 求 的 航 次\TU/lmr/m/n/10.95 –\
+TU/MicrosoftYaHei(0)/m/n/10.95 流 向\TU/lmr/m/n/10.95 –\TU/MicrosoftYaHei(0)/m/n/
+10.95 箱 区\TU/lmr/m/n/10.95 –\TU/MicrosoftYaHei(0)/m/n/10.95 尺 寸 口 径 时，|  列 基 础 
+成 本 扣 减 $[][][][][][][][] [] [][][][] []
+ []
+
+[10]
+Underfull \hbox (badness 2772) in paragraph at lines 358--359
 []\TU/MicrosoftYaHei(0)/m/n/10.95 当 外 部 已 经 给 定 中 计 划 时，|  入 口 为 $[][][][][][] 
 [] [][][][][] [] [][][][][][] [] [][][][][][][][][][] [] [][][][] [] [][][] [] 
 [][][][][] []
  []
 
-[10]
-Underfull \hbox (badness 10000) in alignment at lines 364--373
+[11] [12]
+Underfull \hbox (badness 10000) in alignment at lines 400--409
 []
  []
 
 
-Underfull \hbox (badness 10000) in alignment at lines 377--406
+Underfull \hbox (badness 10000) in alignment at lines 413--458
 []
  []
 
 
-ignored: Infinite glue shrinkage found in box being split [11] [12]
-(./medium_small_column_generation_scip/algorithm_documentation/column_generatio
-n_algorithm_documentation.aux)
+ignored: Infinite glue shrinkage found in box being split [13]
+ignored: Infinite glue shrinkage fo
+und in box being split [14] [15] (./column_generation_algorithm_documentation.a
+ux)
  ***********
 LaTeX2e <2025-11-01>
 L3 programming layer <2022/08/05>
@@ -1180,16 +1155,15 @@ LaTeX Font Warning: Some font shapes were not available, defaults substituted.
 
 Package rerunfilecheck Info: File `column_generation_algorithm_documentation.ou
 t' has not changed.
-(rerunfilecheck)             Checksum: C302C30186685FF4FDE62BE292DEB81E;2983.
+(rerunfilecheck)             Checksum: B1019041809429145C873966A9D8E148;3309.
  ) 
 Here is how much of TeX's memory you used:
- 19857 strings out of 468168
- 418448 string characters out of 5436524
- 912223 words of memory out of 5000000
- 48275 multiletter control sequences out of 15000+600000
+ 19867 strings out of 468168
+ 418209 string characters out of 5436524
+ 923642 words of memory out of 5000000
+ 48286 multiletter control sequences out of 15000+600000
  636316 words of font info for 117 fonts, out of 8000000 for 9000
  1348 hyphenation exceptions out of 8191
- 93i,9n,111p,1100b,993s stack positions out of 10000i,1000n,20000p,200000b,200000s
+ 93i,9n,111p,1038b,993s stack positions out of 10000i,1000n,20000p,200000b,200000s
 
-Output written on ./medium_small_column_generation_scip/algorithm_documentation
-/column_generation_algorithm_documentation.pdf (12 pages).
+Output written on column_generation_algorithm_documentation.pdf (15 pages).

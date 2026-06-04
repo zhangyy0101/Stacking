@@ -1,0 +1,68 @@
+{
+  "planning_time": "2026-05-19 09:40:00",
+  "input_mode": "adapter_object",
+  "data_dir": null,
+  "adapter_json": "E:\\container_terminal\\stacking\\flat_full_yard_plan_2_scip\\input_data.json",
+  "adapter_flat_data_metadata": null,
+  "large_objective_mode": "weighted_sum",
+  "large_output_dir": "E:\\container_terminal\\stacking\\flat_full_yard_plan_2_scip\\full_plan_outputs\\run_20260527_114137\\outputs_large\\latest_run",
+  "large_visualization_dir": "E:\\container_terminal\\stacking\\flat_full_yard_plan_2_scip\\full_plan_outputs\\run_20260527_114137\\outputs_large\\yard_visualization",
+  "large_visualization": {
+    "base_image": "E:\\container_terminal\\stacking\\flat_full_yard_plan_2_scip\\箱区俯视示意图（原始）.png",
+    "allocation_path": "E:\\container_terminal\\stacking\\flat_full_yard_plan_2_scip\\full_plan_outputs\\run_20260527_114137\\outputs_large\\latest_run\\allocation.csv",
+    "output_dir": "E:\\container_terminal\\stacking\\flat_full_yard_plan_2_scip\\full_plan_outputs\\run_20260527_114137\\outputs_large\\yard_visualization",
+    "base_image_copy": "E:\\container_terminal\\stacking\\flat_full_yard_plan_2_scip\\full_plan_outputs\\run_20260527_114137\\outputs_large\\yard_visualization\\yard_base_original.png",
+    "annotated_image": "E:\\container_terminal\\stacking\\flat_full_yard_plan_2_scip\\full_plan_outputs\\run_20260527_114137\\outputs_large\\yard_visualization\\yard_allocation_annotated.png",
+    "visualization_check": "E:\\container_terminal\\stacking\\flat_full_yard_plan_2_scip\\full_plan_outputs\\run_20260527_114137\\outputs_large\\yard_visualization\\visualization_allocation_check.csv",
+    "unmapped_areas_path": "E:\\container_terminal\\stacking\\flat_full_yard_plan_2_scip\\full_plan_outputs\\run_20260527_114137\\outputs_large\\yard_visualization\\unmapped_areas.csv",
+    "allocation_area_count": 141,
+    "area_function_label_count": 158,
+    "unmapped_areas": [
+      "3G",
+      "3H",
+      "3J",
+      "3K"
+    ]
+  },
+  "medium_small_output_dir": "E:\\container_terminal\\stacking\\flat_full_yard_plan_2_scip\\full_plan_outputs\\run_20260527_114137\\medium_small_plan",
+  "large_allocation_output": "E:\\container_terminal\\stacking\\flat_full_yard_plan_2_scip\\full_plan_outputs\\run_20260527_114137\\outputs_large\\latest_run\\allocation.csv",
+  "large_allocation_used_by_medium_small": "in_memory",
+  "export_vessels": [
+    "453250",
+    "453308",
+    "453324",
+    "453352",
+    "453356",
+    "453388",
+    "453396",
+    "453412",
+    "453416",
+    "454549",
+    "454585",
+    "454710"
+  ],
+  "import_vessels": [
+    "453273",
+    "453307",
+    "454548"
+  ],
+  "medium_voyages": [
+    "453250",
+    "453308",
+    "453324",
+    "453352",
+    "453356",
+    "453388",
+    "453396",
+    "453412",
+    "453416",
+    "454549",
+    "454585",
+    "454710"
+  ],
+  "large_status": "TIMELIMIT",
+  "large_objective_value": 404216.6762777362,
+  "medium_energy": 6572.758,
+  "medium_row_count": 638,
+  "small_row_count": 258
+}

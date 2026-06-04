@@ -219,13 +219,33 @@ c=(h,b,q).
 
 每个候选贝位会生成若干箱量选项，典型包括 1、最大可放量、需求对最大可放量的余数以及一半最大可放量。这样列池同时包含集中放置的大列和必要的拆分列。
 
-\section{受限主问题与定价}
+\section{业务求解流程}
 
-受限主问题选择当前列池中的列。线性松弛阶段使用连续变量，最终整数阶段使用二进制变量：
+程序的业务目标可以概括为三件事：细属性组尽量集中到少量贝位，粗属性组尽量集中到少量箱区，同时尽量继承大计划已经给出的航次--流向--箱区--尺寸分布。求解过程按“先继承、再补齐、最后局部改善”的顺序推进。
+
+\begin{longtable}{L{0.12\textwidth}L{0.22\textwidth}L{0.56\textwidth}}
+\toprule
+阶段 & 业务含义 & 主要动作\\
+\midrule
+\endhead
+stage0 & 继承优先的主分配 & 生成候选“需求组--贝位--箱量”列，先在大计划精确箱区和配额范围内做列生成和整数选择。该阶段给出正式优化的主体方案，并统计进入 repair 前仍未放置的箱量。\\
+stage1 & 同计划范围内补箱 & 对 stage0 未放置的需求组做保守补箱。stage1a 只使用同航次、同流向、同大计划尺寸且有精确配额的箱区；stage1b 放宽到同航次、同流向的大计划覆盖箱区，用于处理精确配额卡住但同计划范围仍有可用贝位的情况。\\
+stage2 & 大计划箱区内补箱 & 继续处理剩余未放置箱，候选范围放宽到所有被大计划覆盖的箱区。该阶段仍尽量把箱留在大计划体系内，避免直接落到纯功能兜底箱区。\\
+stage3 & 功能兼容兜底补箱 & 对仍未放置的箱，使用流向功能兼容、尺寸/箱高/边贝规则满足、容量可用的箱区和贝位补齐。该阶段优先保证可执行的小计划输出，同时保留继承偏差和集中性指标供评估。\\
+\bottomrule
+\end{longtable}
+
+每个阶段都遵守贝位物理容量、贝位尺寸容量、20ft/45ft 边贝规则、同贝位不混尺寸、不混箱高、当前堆场已有箱属性相容性等堆场硬规则。外部给定中计划时，中计划粗属性组--箱区配额也是硬边界。大计划 \code{new\_qty} 精确配额在 stage0 和 stage1a 中作为严格上界；stage1b、stage2 和 stage3 逐级放宽大计划精确配额，用于避免“有可用物理贝位但因大计划精确箱区不足而留下未放置箱”。这些放宽产生的继承差异由 fallback tier、大计划箱区模式偏差和 diagnostics 指标表达。
+
+stage0 之后若仍有未放置箱，staged repair 按 stage1--stage3 的顺序补箱。补箱完成后，repair LNS 会释放一批细属性组，在不增加未放置箱的前提下重新组合局部方案，用于改善粗属性组箱区集中、同箱区内贝位集中和大计划继承性。
+
+\section{模型约束与列生成}
+
+主问题选择当前列池中的列。线性松弛阶段使用连续变量，最终整数阶段使用二进制变量：
 \[
 x_c \in \{0,1\}.
 \]
-另设未放箱松弛变量 \(u_h\ge 0\)，并给予极大惩罚。
+另设未放箱变量 \(u_h\ge 0\)，用于表达当前列池、容量、箱区配额和相容性规则下无法覆盖的剩余箱量。未放箱变量只作为可行性兜底和诊断量；当阶段 0 证明可达到的最小未放箱量后，后续整数主问题和修复子问题固定或限制在该水平，不通过放大未放箱惩罚来换取可行性。默认未放箱权重为 \code{unplaced_penalty=100000.0}。
 
 主要硬约束为：
 \[
@@ -240,13 +260,19 @@ x_c \in \{0,1\}.
 \[
 \sum_{c:(v,f,a,\bar{s})} q_cx_c \le Q_{vfa\bar{s}},\quad \forall v,f,a,\bar{s}.
 \]
-最终整数主问题还加入同贝位不混尺寸、不混箱高，以及箱区边贝 45ft 保留约束。
+最终整数主问题还加入同贝位不混尺寸、不混箱高、箱区边贝 45ft 保留约束，以及阶段 0 未放箱上限。若阶段 0 的最小未放箱模型达到最优，则上限为该最小值；若初始可行解已经零未放箱，则上限为 0；否则保留未放箱变量作为诊断兜底。
 
 线性松弛主问题同时包含需求覆盖、贝位容量、贝位尺寸容量、大计划箱区--尺寸上界、大计划偏差、细/粗属性集中项、泊位距离和作业窗口项。定价阶段读取这些约束和线性化目标项的对偶价格，对尚未进入列池的候选列计算检验数，优先加入负检验数列。
 
 当根节点线性松弛没有负检验数列时，程序仍会执行整数可行性导向的列池扩展：第 0 轮可加入若干检验数最小的 stalled 列，随后按继承缺口、粗属性 shape 风险、航次--箱区使用成本、原始列成本和箱量筛选 primal expansion 列。该阶段不声明全局列生成最优性，只用于让最终整数受限主问题拥有更充分的可选列。
 
 达到最大迭代次数、没有可加入列，或启用 \code{--full-column-pool} 时，程序进入最终整数主问题。\code{--full-column-pool} 会直接枚举当前规则下可枚举的列池并跳过定价循环。最终整数主问题使用当前列池求解二进制选择模型；LP guided repair 与贪心解会按完整目标比较后作为 MIP start。若 SCIP 不可用、被 \code{--no-scip} 禁用，或主问题没有可用解，程序使用确定性贪心回退生成可检查的数据链路输出。
+
+\subsection{局部重排 LNS}
+
+repair LNS 以当前解为 incumbent，每轮释放一批细属性组并求解小规模 SCIP 子问题。子问题保留未释放列的容量和配额占用，释放组只能在剩余容量和剩余配额内重新选择列。若 incumbent 已经零未放箱，LNS 子问题的未放箱变量上界为 0；若 incumbent 仍有未放箱，LNS 子问题加入总未放箱不恶化约束。因此 LNS 可以调整箱区和贝位来改善集中性，但不能通过增加未放置箱来换取更好的目标值。
+
+默认 repair LNS 执行 \code{2} 轮，每轮时间限制 \code{3.0} 秒，每轮最多释放 \code{16} 个细属性组，连续 \code{2} 轮无 incumbent 改善时停止。粗属性组 compaction LNS 默认关闭；repair LNS 子问题已经包含粗属性组箱区集中、同箱区内粗属性组集中和大计划继承目标。
 
 \section{目标函数}
 
@@ -269,6 +295,8 @@ x_c \in \{0,1\}.
 若粗属性组需求量 \(D_g\) 不超过 \code{medium_concentrated_group_threshold}，模型偏好将其集中在尽量少的箱区中，并奖励最大箱区承载更多箱量。
 
 若 \(D_g\) 超过该阈值，模型不要求单个粗属性组按大计划比例摊到所有箱区，而是在实际使用的箱区之间做均衡；同时通过 \code{medium_large_group_min_area_boxes} 和 \code{medium_large_group_small_area_penalty} 惩罚小碎片箱区。默认最小箱量为 10。
+
+候选列落在大计划要求的航次--流向--箱区--尺寸口径时，列基础成本扣减 \code{required_area_reward}。该奖励与未放箱权重相互独立，默认值为 \code{1000.0}，用于表达继承偏好，不承担放箱可行性的兜底作用。
 
 \subsection{总的大计划箱区模式偏离}
 
@@ -320,7 +348,7 @@ area\_loading\_during\_window, area\_loading\_after\_window\_24h, area\_no, plan
 
 \subsection{其他输出}
 
-\code{small_plan_six_bay_blocks.csv} 按连续 6 小贝区块汇总小计划箱量。\code{generated_columns.csv} 写出本轮生成过的全部列。\code{big_plan_used.csv} 写出本轮继承的大计划行。\code{diagnostics.json} 写出目标航次、需求箱量、列数、定价模式、负检验数列数量、primal expansion 轮数、最终列池规模、MIP start 来源、SCIP 状态、LP bound、primal/dual bound、MIP gap 可靠性、未放箱量、集中堆存指标、中小计划一致性指标、输出目录、创建时间和运行时长。其中 \code{small_medium_consistency_violations} 表示小计划汇总量超过中计划量的粗属性组--箱区数量，\code{small_medium_consistency_shortage_boxes} 表示对应超额箱量。
+\code{small_plan_six_bay_blocks.csv} 按连续 6 小贝区块汇总小计划箱量。\code{generated_columns.csv} 写出本轮生成过的全部列。\code{big_plan_used.csv} 写出本轮继承的大计划行。\code{diagnostics.json} 写出目标航次、需求箱量、列数、定价模式、负检验数列数量、primal expansion 轮数、最终列池规模、MIP start 来源、SCIP 状态、LP bound、primal/dual bound、MIP gap 可靠性、阶段 0 未放箱上限、未放箱量、repair LNS 轮数和停止原因、集中堆存指标、中小计划一致性指标、输出目录、创建时间和运行时长。其中 \code{stage0_unplaced_cap} 表示最终整数和修复阶段采用的未放箱上限，\code{stage0_unplaced_cap_source} 表示上限来源；\code{small_medium_consistency_violations} 表示小计划汇总量超过中计划量的粗属性组--箱区数量，\code{small_medium_consistency_shortage_boxes} 表示对应超额箱量。
 
 运行结束后，终端也会打印运行时长，例如 \code{elapsed_time: 12s (12.283s)}。
 
@@ -404,18 +432,27 @@ S^{out}_{vfpsa}\le E_{vfpsa}.
 \code{--max-candidate-bays-per-group}（默认：\code{500}）：每个需求组最多保留多少个候选贝位。\\[0.25em]
 \code{--mip-time-limit}（默认：\code{120}）：最终整数主问题 SCIP 时间限制，单位秒。\\[0.25em]
 \code{--mip-gap}（默认：\code{0.01}）：最终整数主问题 MIPGap。\\[0.25em]
+\code{--repair-lns-rounds}（默认：\code{2}）：staged repair 后的小规模 LNS 轮数。\\[0.25em]
+\code{--repair-lns-time-limit}（默认：\code{3.0}）：每轮 repair LNS 的 SCIP 时间限制，单位秒。\\[0.25em]
+\code{--repair-lns-max-groups}（默认：\code{16}）：每轮 repair LNS 最多释放的细属性组数量。\\[0.25em]
+\code{--repair-lns-max-no-improve-rounds}（默认：\code{2}）：连续多少轮没有 incumbent 改善后停止 repair LNS；取 0 表示不启用早停。\\[0.25em]
+\code{--coarse-compaction-lns-rounds}（默认：\code{0}）：额外粗属性组 compaction LNS 轮数，默认关闭。\\[0.25em]
 \code{--fine-group-area-penalty}（默认：\code{80}）：同一细属性组使用多个箱区的惩罚。\\[0.25em]
 \code{--fine-group-block-penalty}（默认：\code{35}）：同一细属性组使用多个连续 6 小贝区块的惩罚。\\[0.25em]
 \code{--fine-group-bay-penalty}（默认：\code{8}）：同一细属性组使用更多贝位的固定惩罚。\\[0.25em]
 \code{--coarse-area-block-penalty}（默认：\code{24}）：同一粗属性组在同一箱区内使用多个连续 6 小贝区块的惩罚。\\[0.25em]
 \code{--coarse-area-bay-penalty}（默认：\code{2.5}）：同一粗属性组在同一箱区内使用更多贝位的惩罚。\\[0.25em]
 \code{--medium-concentrated-group-threshold}（默认：\code{26}）：粗属性组箱量小于等于该阈值时走集中堆存目标，大于该阈值时走箱区均衡目标。\\[0.25em]
-\code{--medium-small-group-area-split-penalty}（默认：\code{900}）：小量粗属性组使用额外箱区的惩罚。\\[0.25em]
-\code{--medium-small-group-fragment-penalty}（默认：\code{50}）：小量粗属性组没有放在最大箱区的碎片箱量惩罚。\\[0.25em]
+\code{--medium-small-group-area-split-penalty}（默认：\code{1200}）：小量粗属性组使用额外箱区的惩罚。\\[0.25em]
+\code{--medium-small-group-fragment-penalty}（默认：\code{60}）：小量粗属性组没有放在最大箱区的碎片箱量惩罚。\\[0.25em]
 \code{--medium-large-group-min-area-boxes}（默认：\code{10}）：大量粗属性组选中某箱区后，不希望低于该箱量。\\[0.25em]
 \code{--medium-large-group-small-area-penalty}（默认：\code{900}）：大量粗属性组出现低于最小箱量箱区时的惩罚。\\[0.25em]
-\code{--big-plan-area-deviation-penalty}（默认：\code{8}）：总的大计划航次--箱区--尺寸模式偏离惩罚。\\[0.25em]
-\code{--big-plan-fallback-tier-penalty}（默认：\code{120}）：偏离精确大计划继承层级的每箱基础惩罚。\\[0.25em]
+\code{--medium-large-group-area-open-penalty}（默认：\code{0}）：大量粗属性组启用额外箱区的固定惩罚。\\[0.25em]
+\code{--medium-large-group-target-area-boxes}（默认：\code{60}）：大量粗属性组箱区均衡目标中的参考箱量。\\[0.25em]
+\code{--unplaced-penalty}（默认：\code{100000.0}）：未放箱变量的目标权重。阶段 0 和 LNS 的未放箱上限约束优先保证未放箱不恶化。\\[0.25em]
+\code{--required-area-reward}（默认：\code{1000.0}）：列落在大计划要求箱区时的基础成本奖励。\\[0.25em]
+\code{--big-plan-area-deviation-penalty}（默认：\code{6}）：总的大计划航次--箱区--尺寸模式偏离惩罚。\\[0.25em]
+\code{--big-plan-fallback-tier-penalty}（默认：\code{70}）：偏离精确大计划继承层级的每箱基础惩罚。\\[0.25em]
 \code{--no-scip}：跳过 SCIP 主问题，使用贪心回退检查数据链路。贪心回退用于调试，不代表正式优化质量。\\
 \bottomrule
 \end{longtable}

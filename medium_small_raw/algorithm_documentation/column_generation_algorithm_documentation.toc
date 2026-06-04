@@ -1,0 +1,25 @@
+\contentsline {section}{\numberline {1}业务定位}{3}{section.1}%
+\contentsline {section}{\numberline {2}运行入口与输出}{3}{section.2}%
+\contentsline {subsection}{\numberline {2.1}联合生成中计划和小计划}{3}{subsection.2.1}%
+\contentsline {subsection}{\numberline {2.2}给定外部中计划后生成小计划}{4}{subsection.2.2}%
+\contentsline {section}{\numberline {3}输入口径}{4}{section.3}%
+\contentsline {subsection}{\numberline {3.1}大计划}{4}{subsection.3.1}%
+\contentsline {subsection}{\numberline {3.2}堆场快照}{4}{subsection.3.2}%
+\contentsline {subsection}{\numberline {3.3}箱区功能、船期和泊位距离}{5}{subsection.3.3}%
+\contentsline {section}{\numberline {4}需求组}{5}{section.4}%
+\contentsline {subsection}{\numberline {4.1}粗属性组}{5}{subsection.4.1}%
+\contentsline {subsection}{\numberline {4.2}细属性组}{5}{subsection.4.2}%
+\contentsline {subsection}{\numberline {4.3}预测兜底组}{5}{subsection.4.3}%
+\contentsline {section}{\numberline {5}排级列}{5}{section.5}%
+\contentsline {section}{\numberline {6}四阶段业务流程}{6}{section.6}%
+\contentsline {section}{\numberline {7}主问题和硬约束}{7}{section.7}%
+\contentsline {section}{\numberline {8}列生成、diving 和 repair}{7}{section.8}%
+\contentsline {section}{\numberline {9}目标函数}{8}{section.9}%
+\contentsline {subsection}{\numberline {9.1}细属性组集中}{8}{subsection.9.1}%
+\contentsline {subsection}{\numberline {9.2}粗属性组集中}{8}{subsection.9.2}%
+\contentsline {subsection}{\numberline {9.3}大计划继承}{9}{subsection.9.3}%
+\contentsline {subsection}{\numberline {9.4}泊位距离和作业窗口}{9}{subsection.9.4}%
+\contentsline {section}{\numberline {10}排级可行性的含义}{9}{section.10}%
+\contentsline {section}{\numberline {11}中计划和小计划的一致性}{9}{section.11}%
+\contentsline {section}{\numberline {12}诊断字段}{10}{section.12}%
+\contentsline {section}{\numberline {13}主要参数}{10}{section.13}%

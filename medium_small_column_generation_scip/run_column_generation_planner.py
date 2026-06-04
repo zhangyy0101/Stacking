@@ -183,8 +183,8 @@ def add_column_generation_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--medium-large-group-target-area-boxes", type=int, default=60)
     parser.add_argument("--unplaced-penalty", type=float, default=100_000.0)
     parser.add_argument("--required-area-reward", type=float, default=1_000.0)
-    parser.add_argument("--big-plan-area-deviation-penalty", type=float, default=8.0)
-    parser.add_argument("--big-plan-fallback-tier-penalty", type=float, default=120.0)
+    parser.add_argument("--big-plan-area-deviation-penalty", type=float, default=6.0)
+    parser.add_argument("--big-plan-fallback-tier-penalty", type=float, default=70.0)
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument(
         "--no-scip",

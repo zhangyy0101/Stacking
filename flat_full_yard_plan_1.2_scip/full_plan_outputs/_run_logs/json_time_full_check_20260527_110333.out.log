@@ -1,0 +1,75 @@
+Adapter JSON: E:\container_terminal\stacking\flat_full_yard_plan_2_scip\input_data.json
+Input mode: InputAdapterGd object (no adapter_flat_data files are generated)
+Run output directory: E:\container_terminal\stacking\flat_full_yard_plan_2_scip\full_plan_outputs\json_time_full_check_20260527_110333
+
+[1/2] Building large-plan inputs
+planning_time: 2026-05-19 09:40:00
+export_vessels: ['453250', '453308', '453324', '453352', '453356', '453388', '453396', '453412', '453416', '454549', '454585', '454710']
+import_vessels: ['453273', '453307', '454548']
+berth_by_vessel: {'453250': 'B3', '453308': 'B4', '453324': 'B6', '453352': 'B2', '453356': 'B2', '453388': 'B3', '453396': 'B6', '453412': 'B4', '453416': 'B2', '454549': 'B1', '454585': 'B6', '454710': 'B6', '453273': 'B2', '453307': 'B4', '454548': 'B1'}
+area_count: 158
+flows: ['IF', 'IZ', 'OF', 'OZ', 'T']
+demand20_total: 8357.0
+demand40_total: 27371.0
+capacity20_equiv_total: 65940.0
+capacity20_direct_total: 62153.0
+capacity40_total: 65642.0
+bad_bay_count: 10
+active_tops_rows: 451
+old_vessels: []
+of_work_lanes: {'453250': 7.107000000000001, '453308': 5.931, '453324': 4.776, '453352': 1.032, '453356': 4.437, '453388': 3.939, '453396': 6.261000000000001, '453412': 10.113, '453416': 9.39, '454549': 5.571, '454585': 2.394, '454710': 0.534, '453273': 0.0, '453307': 0.0, '454548': 0.0}
+of_area_limits: {'453250': 14.214000000000002, '453308': 11.862, '453324': 9.552, '453352': 2.064, '453356': 8.874, '453388': 7.878, '453396': 12.522000000000002, '453412': 20.226, '453416': 18.78, '454549': 11.142, '454585': 4.788, '454710': 1.068, '453273': 0.0, '453307': 0.0, '454548': 0.0}
+
+[1/2] Solving large plan with weighted objectives
+status: TIMELIMIT
+objective_value: 404216.6762777362
+mip_gap: 0.0012456962553939184
+runtime: 120.0
+objective_components: {'miss': 0.0, 'operation': 0.0, 'of_area': 390.03000000000003, 'distance': 12334.982542591046, 'distance_raw': 109246711.24285695, 'share': 759.0, 'adjustment': 0.0, 'balance': 3386.0}
+unmet20_total: 0
+unmet40_total: 0
+operation_overage_total: 0
+of_area_overage_total: 390.03000000000003
+area_share_overage_total: 759
+large_visualization: E:\container_terminal\stacking\flat_full_yard_plan_2_scip\full_plan_outputs\json_time_full_check_20260527_110333\outputs_large\yard_visualization
+
+[2/2] Building medium/small inputs
+[2/2] Solving medium and small plans
+[2026-05-27 11:07:17] medium SA start: iterations=30000, groups=151, boxes=5970
+[2026-05-27 11:07:17] medium iter=0/30000 current=6572.7580 best=6572.7580 temp=80.0000 accepted=0
+[2026-05-27 11:07:54] medium iter=1000/30000 current=17486.1181 best=6572.7580 temp=65.5171 accepted=485
+[2026-05-27 11:08:36] medium iter=2000/30000 current=20354.6397 best=6572.7580 temp=53.6561 accepted=1026
+[2026-05-27 11:09:20] medium iter=3000/30000 current=24927.8303 best=6572.7580 temp=43.9424 accepted=1534
+[2026-05-27 11:10:06] medium iter=4000/30000 current=24291.2644 best=6572.7580 temp=35.9872 accepted=2037
+[2026-05-27 11:10:47] medium iter=5000/30000 current=24194.0028 best=6572.7580 temp=29.4723 accepted=2514
+[2026-05-27 11:11:30] medium iter=6000/30000 current=23873.0667 best=6572.7580 temp=24.1367 accepted=2967
+[2026-05-27 11:12:06] medium iter=7000/30000 current=22451.5029 best=6572.7580 temp=19.7671 accepted=3372
+[2026-05-27 11:12:48] medium iter=8000/30000 current=21415.8618 best=6572.7580 temp=16.1885 accepted=3726
+[2026-05-27 11:13:27] medium iter=9000/30000 current=19545.6689 best=6572.7580 temp=13.2578 accepted=4045
+[2026-05-27 11:14:14] medium iter=10000/30000 current=18684.8458 best=6572.7580 temp=10.8577 accepted=4336
+[2026-05-27 11:14:58] medium iter=11000/30000 current=17233.7082 best=6572.7580 temp=8.8920 accepted=4618
+[2026-05-27 11:15:41] medium iter=12000/30000 current=16508.7479 best=6572.7580 temp=7.2823 accepted=4862
+[2026-05-27 11:16:26] medium iter=13000/30000 current=15928.3740 best=6572.7580 temp=5.9639 accepted=5076
+[2026-05-27 11:17:08] medium iter=14000/30000 current=15424.3846 best=6572.7580 temp=4.8842 accepted=5281
+[2026-05-27 11:17:49] medium iter=15000/30000 current=14823.0851 best=6572.7580 temp=4.0000 accepted=5486
+[2026-05-27 11:18:30] medium iter=16000/30000 current=14012.9651 best=6572.7580 temp=3.2759 accepted=5676
+[2026-05-27 11:19:19] medium iter=17000/30000 current=13548.1914 best=6572.7580 temp=2.6828 accepted=5857
+[2026-05-27 11:20:03] medium iter=18000/30000 current=12929.6757 best=6572.7580 temp=2.1971 accepted=6010
+[2026-05-27 11:20:50] medium iter=19000/30000 current=12561.0442 best=6572.7580 temp=1.7994 accepted=6181
+[2026-05-27 11:21:31] medium iter=20000/30000 current=12063.6871 best=6572.7580 temp=1.4736 accepted=6311
+[2026-05-27 11:22:09] medium iter=21000/30000 current=11703.7521 best=6572.7580 temp=1.2068 accepted=6456
+[2026-05-27 11:22:43] medium iter=22000/30000 current=11327.4166 best=6572.7580 temp=0.9884 accepted=6590
+[2026-05-27 11:23:20] medium iter=23000/30000 current=11007.5044 best=6572.7580 temp=0.8094 accepted=6716
+[2026-05-27 11:24:00] medium iter=24000/30000 current=10755.2243 best=6572.7580 temp=0.6629 accepted=6828
+[2026-05-27 11:24:39] medium iter=25000/30000 current=10549.4126 best=6572.7580 temp=0.5429 accepted=6928
+[2026-05-27 11:25:17] medium iter=26000/30000 current=10186.3257 best=6572.7580 temp=0.4446 accepted=7017
+[2026-05-27 11:25:54] medium iter=27000/30000 current=9927.3309 best=6572.7580 temp=0.3641 accepted=7099
+[2026-05-27 11:26:30] medium iter=28000/30000 current=9769.8114 best=6572.7580 temp=0.2982 accepted=7176
+[2026-05-27 11:27:07] medium iter=29000/30000 current=9663.7688 best=6572.7580 temp=0.2442 accepted=7241
+[2026-05-27 11:27:42] medium iter=30000/30000 current=9424.5238 best=6572.7580 temp=0.2000 accepted=7302
+[2026-05-27 11:27:42] finish iter=30000/30000 current=9424.5238 best=6572.7580 temp=0.2000 accepted=7302
+
+Pipeline complete.
+large_plan: E:\container_terminal\stacking\flat_full_yard_plan_2_scip\full_plan_outputs\json_time_full_check_20260527_110333\outputs_large\latest_run
+medium_small_plan: E:\container_terminal\stacking\flat_full_yard_plan_2_scip\full_plan_outputs\json_time_full_check_20260527_110333\medium_small_plan
+summary: E:\container_terminal\stacking\flat_full_yard_plan_2_scip\full_plan_outputs\json_time_full_check_20260527_110333\pipeline_summary.json
