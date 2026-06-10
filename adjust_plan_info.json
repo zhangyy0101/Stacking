@@ -1,0 +1,79 @@
+{
+        "large_plan":
+            {
+                "voyid": {        # 航次id
+                    "add": ["2A"], # 添加的箱区为必须使用箱区
+                    "remove": [] # 删除的箱区为不能用的箱区
+                },
+            },
+        "medium_plan":
+            {
+                "voyid": [      #航次id
+                    {	"attribute" : {
+                            "IYC_CSZ_CSIZECD" : "20",
+                            "IYC_CSZ_CHEIGHTD" : "HQ",
+                        },
+                        "add": {"2A":["01", "03"]}, # 添加的箱区为必须使用箱区贝位
+                        "remove": {"2A":["01", "03"]} # 删除的箱区为不能用的箱区贝位
+                    },
+                    {	"attribute" : {
+                            "IYC_CSZ_CSIZECD" : "20",
+                            "IYC_CSZ_CHEIGHTD" : "PQ",
+                        },
+                        "add": {"2B":["01", "03"]}, # 添加的箱区为必须使用箱区贝位
+                        "remove": {"2A":["01", "03"]} # 删除的箱区为不能用的箱区贝位
+                    },
+                        ],
+                "voyid2" : [      航次id
+                    {	"attribute" : {
+                            "IYC_CSZ_CSIZECD" : "20",
+                            "IYC_CSZ_CHEIGHTD" : "HQ",
+                        },
+                        "add": {"2A":["01", "03"]}, # 添加的箱区为必须使用箱区贝位
+                        "remove": {"2A":["01", "03"]} # 删除的箱区为不能用的箱区贝位
+                    },
+                    {	"attribute" : {
+                            "IYC_CSZ_CSIZECD" : "20",
+                            "IYC_CSZ_CHEIGHTD" : "PQ",
+                        },
+                        "add": {"2B":["01", "03"]}, # 添加的箱区为必须使用箱区贝位
+                        "remove": {"2A":["01", "03"]} # 删除的箱区为不能用的箱区贝位
+                    },
+                        ]
+            },
+        "small_plan":
+            {
+                "voyid": [      航次id
+                    {	"attribute" : {
+                            "IYC_CSZ_CSIZECD" : "20",
+                            "IYC_CSZ_CHEIGHTD" : "HQ",
+                        },
+                        "add": {"2A":["01", "03"]}, # 添加的箱区为必须使用箱区贝位
+                        "remove": {"2A":["01", "03"]} # 删除的箱区为不能用的箱区贝位
+                    },
+                    {	"attribute" : {
+                            "IYC_CSZ_CSIZECD" : "20",
+                            "IYC_CSZ_CHEIGHTD" : "PQ",
+                        },
+                        "add": {"2B":["01", "03"]}, # 添加的箱区为必须使用箱区贝位
+                        "remove": {"2A":["01", "03"]} # 删除的箱区为不能用的箱区贝位
+                    },
+                        ],
+                "voyid2" : [      航次id
+                    {	"attribute" : {
+                            "IYC_CSZ_CSIZECD" : "20",
+                            "IYC_CSZ_CHEIGHTD" : "HQ",
+                        },
+                        "add": {"2A":["01", "03"]}, # 添加的箱区为必须使用箱区贝位
+                        "remove": {"2A":["01", "03"]} # 删除的箱区为不能用的箱区贝位
+                    },
+                    {	"attribute" : {
+                            "IYC_CSZ_CSIZECD" : "20",
+                            "IYC_CSZ_CHEIGHTD" : "PQ",
+                        },
+                        "add": {"2B":["01", "03"]}, # 添加的箱区为必须使用箱区贝位
+                        "remove": {"2A":["01", "03"]} # 删除的箱区为不能用的箱区贝位
+                    },
+                        ]
+            }
+}

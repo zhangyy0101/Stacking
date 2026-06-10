@@ -7,16 +7,16 @@ run_flat_full_yard_plan.py 是完整大、中、小计划流水线入口，负�
 2. 大计划输入构建和求解
 3. 大计划结果可视化
 4. 中计划和小计划输入构建
-5. 中计划和小计划求解
+5. 中计划和小计划列生成求解
 6. 汇总输出 pipeline_summary.json
 
 推荐运行方式：
 
-python run_flat_full_yard_plan.py --run-name object_input_full_check
+python run_flat_full_yard_plan.py --run-name latest_full_plan --large-quiet
 
 也可以显式指定 adapter JSON：
 
-python run_flat_full_yard_plan.py --adapter-json input_data.json --run-name object_input_full_check
+python run_flat_full_yard_plan.py --adapter-json input_data.json --run-name latest_full_plan --large-quiet
 
 如果不显式指定 --adapter-json，主脚本默认读取当前目录下的 input_data.json。
 
@@ -93,26 +93,31 @@ run_flat_full_yard_plan.py
   大计划求解完成后，不再把 allocation.csv 作为中小计划的输入文件重新读取。
   adapter 输入模式下会把大计划 solution 转成内存 DataFrame，然后传给 input_adapter_standard.load_medium_small_inputs()。
   pipeline_summary.json 中 large_allocation_used_by_medium_small 会记录为 in_memory。
+  中小计划求解器已切换为 medium_small_column_generation_scip.column_generation_planner.ColumnGenerationPlanner。
 
 input_adapter_standard.py
   load_medium_small_inputs() 直接从 InputAdapterGd 对象和内存大计划结果构建 MediumSmallInputs。
   build_problem() 进一步构建中小计划 ProblemData，包括箱组、可用 bay、箱区作业冲突、泊位距离、容量等信息。
 
-block_bay_planning/models.py
-  定义中小计划使用的数据结构和配置。
-
-block_bay_planning/sa_solver.py
-  SimulatedAnnealingSolver 是中小计划求解器。
-  负责把中计划箱区分配细化到小计划 bay/六贝位层级。
+medium_small_column_generation_scip/column_generation_planner.py
+  ColumnGenerationPlanner 是当前中小计划列生成求解器。
+  默认使用 PySCIPOpt/SCIP 求解 LP 主问题和最终整数主问题。
+  若显式传入 --cg-no-scip，才会关闭 SCIP 并走贪心兜底。
+  若 SCIP 不可用或求解异常，diagnostics.json 会记录 used_greedy_fallback 和 scip_failure。
 
 中小计划主要输出：
   full_plan_outputs/<run_name>/medium_small_plan/medium_plan.csv
   full_plan_outputs/<run_name>/medium_small_plan/small_plan.csv
   full_plan_outputs/<run_name>/medium_small_plan/small_plan_six_bay_blocks.csv
   full_plan_outputs/<run_name>/medium_small_plan/medium_demand_by_port.csv
-  full_plan_outputs/<run_name>/medium_small_plan/energy_convergence.csv
+  full_plan_outputs/<run_name>/medium_small_plan/generated_columns.csv
   full_plan_outputs/<run_name>/medium_small_plan/big_plan_used.csv
   full_plan_outputs/<run_name>/medium_small_plan/diagnostics.json
+
+说明：
+  当前列生成版本不再输出 energy_convergence.csv。
+  generated_columns.csv 记录列生成候选列。
+  diagnostics.json 记录列生成口径、SCIP 是否可用、是否走贪心兜底、最终主问题状态、MIP gap、未放置惩罚变量等诊断信息。
 
 六、当前整体数据流
 
@@ -122,20 +127,58 @@ input_data.json
   -> planning_large_solver.py 求解大计划
   -> planning_large_visualize.py 生成可视化
   -> input_adapter_standard.py 使用内存大计划结果构建中小计划输入
-  -> block_bay_planning/sa_solver.py 求解中计划和小计划
+  -> medium_small_column_generation_scip/column_generation_planner.py 用列生成求解中计划和小计划
   -> run_flat_full_yard_plan.py 汇总输出
 
-七、本轮验证结果
+七、列生成相关入口参数
+
+run_flat_full_yard_plan.py 中当前暴露的中小计划列生成参数包括：
+  --cg-max-iterations
+  --cg-columns-per-iteration
+  --cg-initial-columns-per-group
+  --cg-max-candidate-bays-per-group
+  --cg-mip-time-limit
+  --cg-mip-gap
+  --cg-demand-mode
+  --cg-no-scip
+  --cg-quiet
+  --cg-fine-group-area-penalty
+  --cg-fine-group-block-penalty
+  --cg-fine-group-bay-penalty
+  --cg-coarse-area-block-penalty
+  --cg-coarse-area-bay-penalty
+  --cg-medium-concentrated-group-threshold
+  --cg-medium-small-group-area-split-penalty
+  --cg-medium-small-group-fragment-penalty
+  --cg-medium-large-group-min-area-boxes
+  --cg-medium-large-group-small-area-penalty
+
+默认 --cg-demand-mode 为 original，用于对齐原中计划和资料箱小计划口径。
+默认使用 SCIP；只有传入 --cg-no-scip 时才禁用 SCIP。
+
+八、本轮验证结果
 
 本轮已清理旧 full_plan_outputs 后重新运行：
 
-python run_flat_full_yard_plan.py --run-name object_input_no_flat_io_check --large-quiet
+python -X utf8 -B run_flat_full_yard_plan.py --run-name latest_full_plan --large-quiet --cg-mip-time-limit 300
 
 验证结论：
-1. 完整大、中、小计划执行成功。
+1. 完整入口执行成功，输出目录为 full_plan_outputs/latest_full_plan。
 2. pipeline_summary.json 中 input_mode 为 adapter_object。
 3. pipeline_summary.json 中 large_allocation_used_by_medium_small 为 in_memory。
-4. 本次运行目录下未生成 adapter_flat_data。
-5. 本次运行目录下未生成 bay_slots_detail.parquet、container_info_*.parquet、predict_data_*.xlsx 等还原 flat 原始输入文件。
-6. 可视化已生成 yard_allocation_annotated.png 和 visualization_allocation_check.csv。
-7. adapter_input_bridge.py 和 flat_yard_plan_data_io.py 均已删除，主流程仍可完整运行。
+4. pipeline_summary.json 中 medium_small_solver 为 medium_small_column_generation_scip。
+5. pipeline_summary.json 中 column_generation_scip_available 为 true。
+6. pipeline_summary.json 中 column_generation_used_greedy_fallback 为 false。
+7. 本次运行目录下未生成 adapter_flat_data。
+8. 本次运行目录下未生成 bay_slots_detail.parquet、container_info_*.parquet、predict_data_*.xlsx 等还原 flat 原始输入文件。
+9. 可视化已生成 yard_allocation_annotated.png 和 visualization_allocation_check.csv。
+10. 中小计划已生成 medium_plan.csv、small_plan.csv、small_plan_six_bay_blocks.csv、generated_columns.csv 和 diagnostics.json。
+
+本轮诊断摘要：
+  大计划 allocation.csv 行数：2403。
+  中计划 medium_plan.csv 行数：341。
+  小计划 small_plan.csv 行数：143。
+  generated_columns.csv 行数：11570。
+  最终整数主问题状态：timelimit。
+  最终整数主问题 MIP gap：约 1.91%。
+  diagnostics.json 中 unplaced_boxes：2879。

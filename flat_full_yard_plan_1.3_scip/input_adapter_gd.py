@@ -6,6 +6,19 @@ from datetime import datetime
 import pandas as pd
 import numpy as np
 
+DEFAULT_ROUGH_ATTR = ["IYC_CSZ_CSIZECD", "IYC_POT_UNLDPORT"]
+DEFAULT_DETAIL_ATTR = ["IYC_CSZ_CSIZECD", "IYC_POT_UNLDPORT", "IYC_CHEIGHTCD"]
+DEFAULT_BAY_RULES = ["IYC_CHEIGHTCD"]
+DEFAULT_ROW_RULES = ["IYC_POT_UNLDPORT"]
+DEFAULT_WEIGHT_LEVEL = [0, 10, 15, 20, 25, 30]
+
+def list_or_default(value: Any, default: List[Any]) -> List[Any]:
+    if value is None:
+        return list(default)
+    if isinstance(value, (list, tuple, set)):
+        return list(value)
+    return [value]
+
 def clean_for_json(obj: Any) -> Any:
     if obj is None:
         return None
@@ -80,63 +93,18 @@ class InputAdapterGd():
         self.planning_time: pd.Timestamp = pd.Timestamp.now()     # 做计划时间
         self.history_plan_info: pd.DataFrame = None       # 接管航次的上一次计划信息
         self.vessel_containers: Dict[str, Dict[str, pd.DataFrame|Dict]] = {}      # 航次的箱信息
-        # 结构信息
-        # vessel_containers： {
-        #    "452364" : {
-        #         "doc_cntrs" : 航次对应的箱表 (pd.DataFrame),
-        #         "predict_cntrs" : {
-        #                   "20" : {
-        #                       "total_volume" : 200,
-        #                       "detail_info" : {
-        #                               "DEHAM" : 20,
-        #                           }
-        #                   }
-        #               },
-        #         "work_lanes" : 3,
-        #         "type" : "E"
-        #   }
-        #}
         self.closed_area: Set[str] = set()                # 关闭的箱区
         self.berth_area_dist_matrix: pd.DataFrame = None  # 泊位箱区距离矩阵
-        self.voyage_predict: Dict = {}                    # 航次预测信息,已融合到vessel_containers中
-        self.large_plan: Dict = {}                        # 大计划计算结果,大计划的计算结果，转成中计划输入所需的dict形式，存入这个成员变量，供中计划使用
+        self.voyage_predict: Dict = {}                    # 航次预测信息
+        self.large_plan: Dict = {}                        # 大计划计算结果
         self.adjust_plan_info: Dict = {}                  # 计划的人工调整信息
-        """
-        {
-        "large_plan":
-            {
-                "voyid":{
-                    "add": [],  # 添加的箱区为必须使用箱区
-                    "remove": []  # 删除的箱区为不能用的箱区
-                },
-            },
-        "medium_plan":
-            {
-                "voyid":{
-                    "20_port":{
-                    "add": [],  # 添加的箱区为必须使用箱区
-                    "remove": []  # 删除的箱区为不能用的箱区
-                    },
-                    "40_port":{
-                    "add": [],  # 添加的箱区为必须使用箱区
-                    "remove": []  # 删除的箱区为不能用的箱区
-                },
-            },
-        "small_plan":{
-            {
-                "voyid":{
-                    "20_port_hq":{
-                    "add": [],  # 添加的箱区、贝为必须使用箱区
-                    "remove": []  # 删除的箱区、贝为不能用的箱区
-                    },
-                    "40_port_hq":{
-                    "add": [],  # 添加的箱区、贝为必须使用箱区
-                    "remove": []  # 删除的箱区、贝为不能用的箱区
-                },
-            }
-        """
-        self.user_design: bool = True                     # 是否用户指定大计划区域，区域放在user_design_large_plan_area里
-        self.user_design_large_plan_area: List[str] = []     # 用户指定的大计划区域列表
+        self.user_design: bool = True                     # 用户指定大计划区域，区域放在user_design_large_plan_area,大中小计划都不能突破用户给定的区域
+        self.user_design_large_plan_area: List[str] = []  # 用户指定的大计划区域
+        self.rough_attr: List[str] = list(DEFAULT_ROUGH_ATTR)   # 粗属性分组依据
+        self.detail_attr: List[str] = list(DEFAULT_DETAIL_ATTR) # 细分属性分组依据
+        self.bay_rules: List[str] = list(DEFAULT_BAY_RULES)     # 贝不能混
+        self.row_rules: List[str] = list(DEFAULT_ROW_RULES)     # 排不能混
+        self.weight_level: List[int] = list(DEFAULT_WEIGHT_LEVEL)
         self.is_data_local: bool = False                  # 是否本地加载信息
         self.local_path: str = None                       # 本地加载文件地址
         self.need_save_data: bool = True                  # 是否保存输入信息
@@ -152,21 +120,26 @@ class InputAdapterGd():
             "vessel_berth_info": clean_for_json(self.vessel_berth_info),
             "planning_time": self.planning_time,  # Handled by SafeJSONEncoder
             "history_plan_info": clean_for_json(self.history_plan_info),
-            "vessel_containers": clean_for_json(self.vessel_containers),
+            "vessel_containers": clean_for_json(self.vessel_containers),  # ✅ Recursive!
             "closed_area": list(self.closed_area),
             "berth_area_dist_matrix": clean_for_json(self.berth_area_dist_matrix),
             "voyage_predict": clean_for_json(self.voyage_predict),
             "large_plan": clean_for_json(self.large_plan),
             "adjust_plan_info": clean_for_json(self.adjust_plan_info),
             "user_design": self.user_design,
-            "user_design_large_plan_area": clean_for_json(self.user_design_large_plan_area),
+            "user_design_large_plan_area": self.user_design_large_plan_area,
+            "rough_attr": self.rough_attr,
+            "detail_attr": self.detail_attr,
+            "bay_rules": self.bay_rules,
+            "row_rules": self.row_rules,
+            "weight_level": self.weight_level,
             "is_data_local": self.is_data_local,
             "local_path": self.local_path,
             "need_save_data": self.need_save_data,
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "InputAdapter":
+    def from_dict(cls, data: dict) -> "InputAdapterGd":
         """Reconstruct object from dictionary (with DataFrame restoration)."""
         obj = cls()
 
@@ -181,6 +154,7 @@ class InputAdapterGd():
 
         obj.history_plan_info = restore_dataframe_from_split(data.get("history_plan_info"))
 
+        # 🔁 Restore nested DataFrames in vessel_containers
         vessel_containers_raw = data.get("vessel_containers", {})
         vessel_containers_restored = {}
         for vid, content in vessel_containers_raw.items():
@@ -198,8 +172,14 @@ class InputAdapterGd():
         obj.voyage_predict = data.get("voyage_predict", {})
         obj.large_plan = data.get("large_plan", {})
         obj.adjust_plan_info = data.get("adjust_plan_info", {})
-        obj.user_design = bool(data.get("user_design", obj.user_design))
-        obj.user_design_large_plan_area = data.get("user_design_large_plan_area", obj.user_design_large_plan_area)
+        user_design_value = data["user_design"] if "user_design" in data else obj.user_design
+        obj.user_design = bool(user_design_value) if user_design_value is not None else False
+        obj.user_design_large_plan_area = list_or_default(data.get("user_design_large_plan_area"), [])
+        obj.rough_attr = list_or_default(data.get("rough_attr"), DEFAULT_ROUGH_ATTR)
+        obj.detail_attr = list_or_default(data.get("detail_attr"), DEFAULT_DETAIL_ATTR)
+        obj.bay_rules = list_or_default(data.get("bay_rules"), DEFAULT_BAY_RULES)
+        obj.row_rules = list_or_default(data.get("row_rules"), DEFAULT_ROW_RULES)
+        obj.weight_level = list_or_default(data.get("weight_level"), DEFAULT_WEIGHT_LEVEL)
         obj.is_data_local = data.get("is_data_local", False)
         obj.local_path = data.get("local_path")
         obj.need_save_data = data.get("need_save_data", True)

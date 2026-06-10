@@ -6,7 +6,7 @@ import math
 import re
 import uuid
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from itertools import combinations
 from pathlib import Path
@@ -25,11 +25,8 @@ DEFAULT_PLANNING_TIME = "2026-05-19 09:30:00"
 DEFAULT_EXPORT_VESSELS = None
 DEFAULT_IMPORT_VESSELS = None
 DEFAULT_TARGET_VOYAGES = ()
-DEFAULT_FLOW_ALIASES = {"IE": "IF", "RF": "IF", "RE": "IF"}
-IGNORED_EXPORT_VESSELS = {"454447"}
 KNOWN_EXPORT_SNAPSHOT_FLOWS = {"OF", "OZ", "T"}
 UNKNOWN_EXPORT_SNAPSHOT_FLOW_FALLBACK = "OF"
-BERTH_CONFLICT_THRESHOLD_HOURS = 2.0
 DEFAULT_MISPLACED_BAY_EXCLUSION_RATIO = 2.0 / 3.0
 SIZE_MODES = ("20", "40", "45")
 
@@ -44,6 +41,33 @@ class YardPlanningWeights:
     berth_conflict: float = 25.0
     adjustment: float = 10.0
     balance: float = 1.0
+
+
+@dataclass(frozen=True)
+class LargePlanningConfig:
+    flow_aliases: Mapping[str, str] = field(
+        default_factory=lambda: {"IE": "IF", "RF": "IF", "RE": "IF"}
+    )
+    berth_conflict_threshold_hours: float = 2.0
+    weights: YardPlanningWeights = field(default_factory=YardPlanningWeights)
+    required_area_penalty: float = 10000.0
+    allow_unmet_demand: bool = True
+    strict_validation: bool = True
+
+    def active_flow_aliases(self, disable_default_flow_aliases: bool = False) -> dict[str, str]:
+        if disable_default_flow_aliases:
+            return {}
+        return dict(self.flow_aliases)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "flow_aliases": dict(self.flow_aliases),
+            "berth_conflict_threshold_hours": self.berth_conflict_threshold_hours,
+            "weights": asdict(self.weights),
+            "required_area_penalty": self.required_area_penalty,
+            "allow_unmet_demand": self.allow_unmet_demand,
+            "strict_validation": self.strict_validation,
+        }
 
 
 @dataclass
@@ -592,17 +616,48 @@ def _has_container_frame(content: Mapping[str, Any]) -> bool:
     return isinstance(frame, pd.DataFrame) and not frame.empty
 
 
+def _take_over_vessels(input_guandong: InputAdapterGd, direction: str) -> list[str]:
+    take_over = getattr(input_guandong, "take_over_vessel", {}) or {}
+    if not isinstance(take_over, Mapping):
+        return []
+    return normalize_voyage_list(take_over.get(direction, []))
+
+
 def discover_export_vessels(input_guandong: InputAdapterGd) -> list[str]:
+    take_over_exports = _take_over_vessels(input_guandong, "E")
+    if take_over_exports:
+        return [
+            vessel
+            for vessel in take_over_exports
+            if isinstance(input_guandong.vessel_containers.get(vessel, {}), Mapping)
+            and normalize_code(input_guandong.vessel_containers.get(vessel, {}).get("type")) != "I"
+            and (
+                _has_container_frame(input_guandong.vessel_containers.get(vessel, {}))
+                or bool(
+                    input_guandong.vessel_containers.get(vessel, {}).get("predict_cntrs")
+                    or input_guandong.vessel_containers.get(vessel, {}).get("cntr_volume")
+                )
+            )
+        ]
     vessels: set[str] = set()
     for voyage, content in _adapter_vessel_items(input_guandong):
         vessel_type = normalize_code(content.get("type"))
         has_prediction = bool(content.get("predict_cntrs") or content.get("cntr_volume"))
         if vessel_type != "I" and (_has_container_frame(content) or has_prediction):
             vessels.add(voyage)
-    return sorted(vessel for vessel in vessels if vessel not in IGNORED_EXPORT_VESSELS)
+    return sorted(vessels)
 
 
 def discover_import_vessels(input_guandong: InputAdapterGd) -> list[str]:
+    take_over_imports = _take_over_vessels(input_guandong, "I")
+    if take_over_imports:
+        return [
+            vessel
+            for vessel in take_over_imports
+            if isinstance(input_guandong.vessel_containers.get(vessel, {}), Mapping)
+            and normalize_code(input_guandong.vessel_containers.get(vessel, {}).get("type")) == "I"
+            and _has_container_frame(input_guandong.vessel_containers.get(vessel, {}))
+        ]
     vessels: set[str] = set()
     for voyage, content in _adapter_vessel_items(input_guandong):
         if normalize_code(content.get("type")) == "I" and _has_container_frame(content):
@@ -1336,13 +1391,15 @@ def build_large_inputs(
     export_vessels: Sequence[str] | None = DEFAULT_EXPORT_VESSELS,
     import_vessels: Sequence[str] | None = DEFAULT_IMPORT_VESSELS,
     disable_default_flow_aliases: bool = False,
+    config: LargePlanningConfig | None = None,
 ) -> tuple[PlanningInputArtifacts, RollingPlanningState]:
-    flow_aliases = {} if disable_default_flow_aliases else DEFAULT_FLOW_ALIASES
+    config = config or LargePlanningConfig()
+    flow_aliases = config.active_flow_aliases(disable_default_flow_aliases)
     if export_vessels is None:
         export_vessels = discover_export_vessels(input_guandong)
     if import_vessels is None:
         import_vessels = discover_import_vessels(input_guandong)
-    export_vessels = [v for v in normalize_voyage_list(export_vessels) if v not in IGNORED_EXPORT_VESSELS]
+    export_vessels = normalize_voyage_list(export_vessels)
     import_vessels = normalize_voyage_list(import_vessels)
     all_vessels = export_vessels + import_vessels
     state = RollingPlanningState(input_guandong.history_plan_info)
@@ -1389,7 +1446,7 @@ def build_large_inputs(
         close_berth_pairs, close_berth_diagnostics = build_close_export_berth_pairs(
             vessel_info=vessel_info,
             export_vessels=export_vessels,
-            threshold_hours=BERTH_CONFLICT_THRESHOLD_HOURS,
+            threshold_hours=config.berth_conflict_threshold_hours,
         )
 
     available_slots = prepare_slot_frame(snapshot, areas, bad_bays)
@@ -1468,18 +1525,10 @@ def build_large_inputs(
         berth_conflict_pairs=close_berth_pairs,
         allowed_areas_by_vessel=allowed_areas_by_vessel,
         required_areas_by_vessel=required_areas_by_vessel,
-        weights=YardPlanningWeights(
-            miss=100.0,
-            operation=50.0,
-            of_area=40.0,
-            distance=30.0,
-            share=20.0,
-            berth_conflict=25.0,
-            adjustment=10.0,
-            balance=1.0,
-        ),
-        allow_unmet_demand=True,
-        strict_validation=True,
+        weights=config.weights,
+        required_area_penalty=config.required_area_penalty,
+        allow_unmet_demand=config.allow_unmet_demand,
+        strict_validation=config.strict_validation,
     )
     diagnostics = {
         "data_dir": "",
@@ -1499,7 +1548,8 @@ def build_large_inputs(
         "departure_operation_deduction_total": float(sum(departure_deductions.values())),
         "departure_operation_deductions_by_area": departure_deductions,
         "departure_operation_avoidance": departure_avoidance,
-        "close_berth_conflict_threshold_hours": BERTH_CONFLICT_THRESHOLD_HOURS,
+        "large_planning_config": config.to_dict(),
+        "close_berth_conflict_threshold_hours": config.berth_conflict_threshold_hours,
         "close_berth_conflict_pairs": [list(pair) for pair in close_berth_pairs],
         "close_berth_conflict_pair_details": close_berth_diagnostics,
         "old_vessels": sorted([v for v, flag in old_flags.items() if flag]),
@@ -2542,9 +2592,12 @@ __all__ = [
     "DEFAULT_MISPLACED_BAY_EXCLUSION_RATIO",
     "DEFAULT_PLANNING_TIME",
     "DEFAULT_TARGET_VOYAGES",
+    "LargePlanningConfig",
+    "LargePlanningData",
     "MediumSmallInputs",
     "PlanningInputArtifacts",
     "RollingPlanningState",
+    "YardPlanningWeights",
     "allocation_output_rows",
     "build_large_inputs",
     "load_medium_small_inputs",
