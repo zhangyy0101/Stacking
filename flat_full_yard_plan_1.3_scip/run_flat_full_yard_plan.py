@@ -90,11 +90,14 @@ def main() -> None:
     print("Input mode: InputAdapterGd object (no adapter_flat_data files are generated)")
     print(f"Run output directory: {run_dir}")
 
+    large_config = adapter_data_io.LargePlanningConfig()
+
     print("\n[1/2] Building large-plan inputs")
     artifacts, state = adapter_data_io.build_large_inputs(
         adapter_input,
         planning_time,
         disable_default_flow_aliases=args.disable_default_flow_aliases,
+        config=large_config,
     )
     print_case_summary(artifacts)
     medium_voyages = list(args.medium_voyages or artifacts.export_vessels)
@@ -161,6 +164,13 @@ def main() -> None:
     )
     print_diagnostics_summary(medium_diagnostics)
 
+    medium_plan_path = medium_small_output_dir / "medium_plan.csv"
+    small_plan_path = medium_small_output_dir / "small_plan.csv"
+    small_plan_six_bay_blocks_path = medium_small_output_dir / "small_plan_six_bay_blocks.csv"
+    big_plan_used_path = medium_small_output_dir / "big_plan_used.csv"
+    generated_columns_path = medium_small_output_dir / "generated_columns.csv"
+    medium_small_diagnostics_path = medium_small_output_dir / "diagnostics.json"
+
     summary = {
         "planning_time": str(planning_time),
         "input_mode": "adapter_object",
@@ -172,6 +182,13 @@ def main() -> None:
         "large_visualization_dir": str(large_visualization_dir),
         "large_visualization": visualization_info,
         "medium_small_output_dir": str(medium_small_output_dir),
+        "large_plan": str(large_allocation_path),
+        "medium_plan": str(medium_plan_path),
+        "small_plan": str(small_plan_path),
+        "small_plan_six_bay_blocks": str(small_plan_six_bay_blocks_path),
+        "big_plan_used": str(big_plan_used_path),
+        "generated_columns": str(generated_columns_path),
+        "medium_small_diagnostics": str(medium_small_diagnostics_path),
         "large_allocation_output": str(large_allocation_path),
         "large_allocation_used_by_medium_small": "in_memory_large_solution",
         "export_vessels": list(artifacts.export_vessels),
@@ -179,6 +196,11 @@ def main() -> None:
         "medium_voyages": medium_voyages,
         "large_status": large_solution.status_name,
         "large_objective_value": large_solution.objective_value,
+        "medium_small_solver": "flat_full_yard_plan_1.3_scip_column_generation",
+        "column_generation_used_greedy_fallback": medium_diagnostics.get("used_greedy_fallback"),
+        "column_generation_scip_available": medium_diagnostics.get("scip_available"),
+        "column_generation_elapsed_seconds": medium_diagnostics.get("elapsed_seconds"),
+        "generated_column_count": medium_diagnostics.get("final_column_count"),
         "medium_objective": medium_diagnostics.get("final_objective"),
         "medium_algorithm": medium_diagnostics.get("algorithm"),
         "medium_master_status": medium_diagnostics.get("master_status"),
