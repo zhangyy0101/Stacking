@@ -175,7 +175,7 @@ pipeline_summary.json 里的关键字段：
 - large_plan / medium_plan / small_plan / generated_columns 等输出路径
 - medium_small_solver
 - medium_small_algorithm
-- medium_small_unplaced_boxes
+- medium_unplaced_boxes
 - column_generation_used_greedy_fallback
 - column_generation_scip_available
 - generated_column_count
