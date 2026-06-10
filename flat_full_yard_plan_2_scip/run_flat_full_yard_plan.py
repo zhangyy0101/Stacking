@@ -6,13 +6,17 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
+from time import perf_counter
 
 sys.dont_write_bytecode = True
 
 import pandas as pd
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parent
 DEFAULT_ADAPTER_JSON = SCRIPT_DIR / "input_data.json"
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 import input_adapter_standard as adapter_data_io
 from input_adapter_gd import InputAdapterGd
@@ -22,8 +26,11 @@ from input_adapter_standard import (
 )
 from planning_large_solver import solve_daily_rolling_yard_plan
 from planning_large_visualize import generate_yard_visualization
-from block_bay_planning.models import SAConfig
-from block_bay_planning.sa_solver import SimulatedAnnealingSolver
+from medium_small_column_generation_scip.column_generation_planner import (
+    ColumnGenerationConfig,
+    ColumnGenerationPlanner,
+    write_columns,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -44,16 +51,35 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--large-quiet", action="store_true")
     parser.add_argument("--no-write-large-state", action="store_true")
     parser.add_argument("--disable-default-flow-aliases", action="store_true")
-    parser.add_argument("--medium-iterations", type=int, default=30000)
-    parser.add_argument("--medium-seed", type=int, default=7)
     parser.add_argument("--horizon-hours", type=float, default=24.0)
-    parser.add_argument("--energy-record-every", type=int, default=3000)
-    parser.add_argument("--log-every", type=int, default=1000)
-    parser.add_argument("--max-small-plan-retries", type=int, default=5)
-    parser.add_argument("--small-plan-check-every", type=int, default=3000)
-    parser.add_argument("--small-plan-proxy-height-capacity-penalty", type=float, default=240.0)
-    parser.add_argument("--small-plan-proxy-every", type=int, default=1)
     parser.add_argument("--misplaced-bay-exclusion-ratio", type=float, default=DEFAULT_MISPLACED_BAY_EXCLUSION_RATIO)
+    parser.add_argument("--cg-max-iterations", type=int, default=30)
+    parser.add_argument("--cg-columns-per-iteration", type=int, default=2500)
+    parser.add_argument("--cg-initial-columns-per-group", type=int, default=16)
+    parser.add_argument("--cg-max-candidate-bays-per-group", type=int, default=500)
+    parser.add_argument("--cg-mip-time-limit", type=float, default=120.0)
+    parser.add_argument("--cg-mip-gap", type=float, default=0.01)
+    parser.add_argument(
+        "--cg-demand-mode",
+        choices=["original", "medium", "medium-with-doc-floor", "doc-only"],
+        default="original",
+    )
+    parser.add_argument("--cg-fine-group-area-penalty", type=float, default=80.0)
+    parser.add_argument("--cg-fine-group-block-penalty", type=float, default=35.0)
+    parser.add_argument("--cg-fine-group-bay-penalty", type=float, default=8.0)
+    parser.add_argument("--cg-coarse-area-block-penalty", type=float, default=24.0)
+    parser.add_argument("--cg-coarse-area-bay-penalty", type=float, default=2.5)
+    parser.add_argument("--cg-medium-concentrated-group-threshold", type=int, default=26)
+    parser.add_argument("--cg-medium-small-group-area-split-penalty", type=float, default=500.0)
+    parser.add_argument("--cg-medium-small-group-fragment-penalty", type=float, default=20.0)
+    parser.add_argument("--cg-medium-large-group-min-area-boxes", type=int, default=5)
+    parser.add_argument("--cg-medium-large-group-small-area-penalty", type=float, default=120.0)
+    parser.add_argument("--cg-quiet", action="store_true")
+    parser.add_argument(
+        "--cg-no-scip",
+        action="store_true",
+        help="Disable SCIP column generation and use the deterministic greedy fallback.",
+    )
     return parser.parse_args()
 
 
@@ -82,11 +108,14 @@ def main() -> None:
     print("Input mode: InputAdapterGd object (no adapter_flat_data files are generated)")
     print(f"Run output directory: {run_dir}")
 
+    large_config = adapter_data_io.LargePlanningConfig()
+
     print("\n[1/2] Building large-plan inputs")
     artifacts, state = adapter_data_io.build_large_inputs(
         adapter_input,
         planning_time,
         disable_default_flow_aliases=args.disable_default_flow_aliases,
+        config=large_config,
     )
     print_case_summary(artifacts)
     medium_voyages = list(args.medium_voyages or artifacts.export_vessels)
@@ -129,26 +158,36 @@ def main() -> None:
     )
     adapter_data_io.write_demand_rows(medium_small_output_dir / "medium_demand_by_port.csv", medium_inputs.demand_rows)
 
-    print("[2/2] Solving medium and small plans")
-    config = SAConfig(
-        iterations=args.medium_iterations,
-        seed=args.medium_seed,
-        progress_every=args.energy_record_every,
-        log_every=args.log_every,
-        max_small_plan_retries=args.max_small_plan_retries,
-        small_plan_check_every=args.small_plan_check_every,
-        small_plan_proxy_height_capacity_penalty=args.small_plan_proxy_height_capacity_penalty,
-        small_plan_proxy_every=args.small_plan_proxy_every,
-    )
-    solver = SimulatedAnnealingSolver(medium_inputs.problem, config)
+    print("[2/2] Solving medium and small plans with column generation")
+    column_generation_config = make_column_generation_config(args)
+    solver_started_at = perf_counter()
+    solver = ColumnGenerationPlanner(medium_inputs.problem, column_generation_config)
     result = solver.solve()
+    column_generation_elapsed_seconds = perf_counter() - solver_started_at
 
-    write_rows(medium_small_output_dir / "medium_plan.csv", result.medium_rows)
-    write_rows(medium_small_output_dir / "small_plan.csv", result.small_rows)
-    write_rows(medium_small_output_dir / "small_plan_six_bay_blocks.csv", make_six_bay_block_rows(result.small_rows))
-    write_rows(medium_small_output_dir / "energy_convergence.csv", result.convergence_rows)
-    write_rows(medium_small_output_dir / "big_plan_used.csv", [row.__dict__ for row in medium_inputs.problem.big_plan])
-    write_json(medium_small_output_dir / "diagnostics.json", result.diagnostics)
+    medium_plan_path = medium_small_output_dir / "medium_plan.csv"
+    small_plan_path = medium_small_output_dir / "small_plan.csv"
+    small_plan_six_bay_blocks_path = medium_small_output_dir / "small_plan_six_bay_blocks.csv"
+    big_plan_used_path = medium_small_output_dir / "big_plan_used.csv"
+    generated_columns_path = medium_small_output_dir / "generated_columns.csv"
+    medium_small_diagnostics_path = medium_small_output_dir / "diagnostics.json"
+
+    write_rows(medium_plan_path, result.medium_rows)
+    write_rows(small_plan_path, result.small_rows)
+    write_rows(small_plan_six_bay_blocks_path, make_six_bay_block_rows(result.small_rows))
+    write_rows(big_plan_used_path, [row.__dict__ for row in medium_inputs.problem.big_plan])
+    write_columns(generated_columns_path, result.columns)
+    medium_small_diagnostics = dict(result.diagnostics)
+    medium_small_diagnostics.update(
+        {
+            "solver": "medium_small_column_generation_scip",
+            "input_mode": "adapter_object",
+            "big_plan_source": "in_memory_large_solution",
+            "column_generation_elapsed_seconds": round(column_generation_elapsed_seconds, 3),
+            "column_generation_config": column_generation_config_dict(column_generation_config),
+        }
+    )
+    write_json(medium_small_diagnostics_path, medium_small_diagnostics)
 
     summary = {
         "planning_time": str(planning_time),
@@ -161,6 +200,13 @@ def main() -> None:
         "large_visualization_dir": str(large_visualization_dir),
         "large_visualization": visualization_info,
         "medium_small_output_dir": str(medium_small_output_dir),
+        "large_plan": str(large_allocation_path),
+        "medium_plan": str(medium_plan_path),
+        "small_plan": str(small_plan_path),
+        "small_plan_six_bay_blocks": str(small_plan_six_bay_blocks_path),
+        "big_plan_used": str(big_plan_used_path),
+        "generated_columns": str(generated_columns_path),
+        "medium_small_diagnostics": str(medium_small_diagnostics_path),
         "large_allocation_output": str(large_allocation_path),
         "large_allocation_used_by_medium_small": "in_memory",
         "export_vessels": list(artifacts.export_vessels),
@@ -168,15 +214,21 @@ def main() -> None:
         "medium_voyages": medium_voyages,
         "large_status": large_solution.status_name,
         "large_objective_value": large_solution.objective_value,
-        "medium_energy": result.energy,
+        "medium_small_solver": "medium_small_column_generation_scip",
+        "column_generation_used_greedy_fallback": medium_small_diagnostics.get("used_greedy_fallback"),
+        "column_generation_scip_available": medium_small_diagnostics.get("scip_available"),
+        "column_generation_elapsed_seconds": round(column_generation_elapsed_seconds, 3),
+        "generated_column_count": len(result.columns),
         "medium_row_count": len(result.medium_rows),
         "small_row_count": len(result.small_rows),
     }
     write_json(run_dir / "pipeline_summary.json", summary)
 
     print("\nPipeline complete.")
-    print(f"large_plan: {large_output_dir}")
-    print(f"medium_small_plan: {medium_small_output_dir}")
+    print(f"large_plan: {large_allocation_path}")
+    print(f"medium_plan: {medium_plan_path}")
+    print(f"small_plan: {small_plan_path}")
+    print(f"medium_small_plan_dir: {medium_small_output_dir}")
     print(f"summary: {run_dir / 'pipeline_summary.json'}")
 
 
@@ -194,6 +246,63 @@ def resolve_adapter_json(path: Path) -> Path:
     if not resolved.exists():
         raise FileNotFoundError(f"InputAdapterGd JSON not found: {resolved}")
     return resolved
+
+
+def make_column_generation_config(args: argparse.Namespace) -> ColumnGenerationConfig:
+    return ColumnGenerationConfig(
+        max_iterations=args.cg_max_iterations,
+        columns_per_iteration=args.cg_columns_per_iteration,
+        initial_columns_per_group=args.cg_initial_columns_per_group,
+        max_candidate_bays_per_group=args.cg_max_candidate_bays_per_group,
+        mip_time_limit=args.cg_mip_time_limit,
+        mip_gap=args.cg_mip_gap,
+        demand_mode=args.cg_demand_mode,
+        small_plan_group_area_split_penalty=args.cg_fine_group_area_penalty,
+        small_plan_group_block_split_penalty=args.cg_fine_group_block_penalty,
+        small_plan_group_bay_split_penalty=args.cg_fine_group_bay_penalty,
+        small_plan_coarse_area_block_split_penalty=args.cg_coarse_area_block_penalty,
+        small_plan_coarse_area_bay_split_penalty=args.cg_coarse_area_bay_penalty,
+        medium_concentrated_group_threshold=args.cg_medium_concentrated_group_threshold,
+        medium_small_group_area_split_penalty=args.cg_medium_small_group_area_split_penalty,
+        medium_small_group_fragment_penalty=args.cg_medium_small_group_fragment_penalty,
+        medium_large_group_min_area_boxes=args.cg_medium_large_group_min_area_boxes,
+        medium_large_group_small_area_penalty=args.cg_medium_large_group_small_area_penalty,
+        verbose=not args.cg_quiet,
+        use_scip=not args.cg_no_scip,
+    )
+
+
+def column_generation_config_dict(config: ColumnGenerationConfig) -> dict:
+    return {
+        "max_iterations": config.max_iterations,
+        "columns_per_iteration": config.columns_per_iteration,
+        "initial_columns_per_group": config.initial_columns_per_group,
+        "max_candidate_bays_per_group": config.max_candidate_bays_per_group,
+        "mip_time_limit": config.mip_time_limit,
+        "mip_gap": config.mip_gap,
+        "verbose": config.verbose,
+        "use_scip": config.use_scip,
+        "demand_mode": config.demand_mode,
+        "unplaced_penalty": config.unplaced_penalty,
+        "group_area_balance_penalty": config.group_area_balance_penalty,
+        "medium_concentrated_group_threshold": config.medium_concentrated_group_threshold,
+        "medium_small_group_area_split_penalty": config.medium_small_group_area_split_penalty,
+        "medium_small_group_fragment_penalty": config.medium_small_group_fragment_penalty,
+        "medium_large_group_min_area_boxes": config.medium_large_group_min_area_boxes,
+        "medium_large_group_small_area_penalty": config.medium_large_group_small_area_penalty,
+        "big_plan_area_deviation_penalty": config.big_plan_area_deviation_penalty,
+        "small_plan_group_area_split_penalty": config.small_plan_group_area_split_penalty,
+        "small_plan_group_block_split_penalty": config.small_plan_group_block_split_penalty,
+        "small_plan_group_bay_split_penalty": config.small_plan_group_bay_split_penalty,
+        "small_plan_coarse_area_block_split_penalty": config.small_plan_coarse_area_block_split_penalty,
+        "small_plan_coarse_area_bay_split_penalty": config.small_plan_coarse_area_bay_split_penalty,
+        "berth_distance_penalty": config.berth_distance_penalty,
+        "active_loading_area_penalty": config.active_loading_area_penalty,
+        "post_window_loading_area_reward": config.post_window_loading_area_reward,
+        "fallback_bay_penalty": config.fallback_bay_penalty,
+        "non_preferred_block_penalty": config.non_preferred_block_penalty,
+        "port_mismatch_penalty": config.port_mismatch_penalty,
+    }
 
 
 def print_case_summary(artifacts) -> None:

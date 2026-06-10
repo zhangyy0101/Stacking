@@ -350,12 +350,14 @@ def build_current_case_data(
             vessel_info=vessel_info,
             snapshot=snapshot,
             planning_time=planning_time,
+            
             areas=areas,
         )
         effective_load_capacity = {
             area: max(0.0, float(load_capacity.get(area, 0.0)) - float(departure_deductions.get(area, 0.0)))
             for area in areas
         }
+        
         close_berth_pairs, close_berth_diagnostics = build_close_export_berth_pairs(
             vessel_info=vessel_info,
             export_vessels=export_vessels,
