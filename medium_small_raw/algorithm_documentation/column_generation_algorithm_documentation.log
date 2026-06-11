@@ -1,4 +1,4 @@
-This is XeTeX, Version 3.141592653-2.6-0.999998 (TeX Live 2026) (preloaded format=xelatex 2026.4.15)  4 JUN 2026 11:37
+This is XeTeX, Version 3.141592653-2.6-0.999998 (TeX Live 2026) (preloaded format=xelatex 2026.4.15)  5 JUN 2026 18:17
 entering extended mode
  restricted \write18 enabled.
  %&-line parsing enabled.
@@ -1104,34 +1104,54 @@ Underfull \hbox (badness 10000) in alignment at lines 187--194
  []
 
 [6] [7]
-Underfull \hbox (badness 10000) in paragraph at lines 269--270
+Underfull \hbox (badness 6559) in paragraph at lines 256--257
+[]\TU/lmr/m/n/10.95 repair \TU/MicrosoftYaHei(0)/m/n/10.95 结 束 后，|  程 序 执 行 箱 区
+ 内 贝 位 重 排。|  该 步 骤 固 定 每 个 细 属 性 组 在 每 个 箱 区 的 箱 量
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 273--274
 []\TU/MicrosoftYaHei(0)/m/n/10.95 同 一 粗 属 性 组 在 同 一 箱 区 内 使 用 更 多 \TU/lmr/m/n/1
 0.95 6 \TU/MicrosoftYaHei(0)/m/n/10.95 小 贝 区 块 和 更 多 贝 位 会 产 生 惩 罚，|  参 数 为
  []
 
 
-Overfull \hbox (6.19916pt too wide) in paragraph at lines 274--275
+Overfull \hbox (6.19916pt too wide) in paragraph at lines 278--279
 []\TU/MicrosoftYaHei(0)/m/n/10.95 大 数 量 粗 属 性 组：|  不 强 求 只 用 极 少 箱 区，|  而 是 惩 罚
  低 于 $[][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][
 ][][][][][]$
  []
 
-
-Underfull \hbox (badness 10000) in paragraph at lines 277--278
+[8]
+Underfull \hbox (badness 10000) in paragraph at lines 281--282
 []\TU/MicrosoftYaHei(0)/m/n/10.95 大 数 量 粗 属 性 组 的 相 关 参 数 包 括 $[][][][][][][][]
 [][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][]$、|
 
  []
 
-[8]
-Underfull \hbox (badness 2884) in paragraph at lines 312--313
+[9]
+Underfull \hbox (badness 2884) in paragraph at lines 318--319
 [][][][][]$ \TU/MicrosoftYaHei(0)/m/n/10.95 中。|  诊 断 文 件 中 的 $[][][][][] [] [][
 ][][][][] [] [][][][][][][][][][][] [] [][][][][][][][][][]$ 和 $[][][][][] [] [
 ][][][][][] [] [][][] []
  []
 
-[9]
-Underfull \hbox (badness 10000) in alignment at lines 331--356
+
+Underfull \hbox (badness 10000) in paragraph at lines 328--329
+[]$[][][][] [] [][][][][][] [] [][][][] [] [][][][][][][][] [] [][][][][][][]$\
+TU/MicrosoftYaHei(0)/m/n/10.95 、| $[][][][] [] [][][][][][] [] [][][][] [] [][]
+[][][][][][] [] [][][][][][][][]$、|
+ []
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 328--329
+[][][][] [] [][][][][][] [] [][][][] [] [][][][][][][][] [] [][][][][][]$\TU/Mi
+crosoftYaHei(0)/m/n/10.95 、| $[][][][] [] [][][][][][] [] [][][][] [] [][][][][
+][][][] [] [][][][][]$，|  记 录 箱
+ []
+
+
+Underfull \hbox (badness 10000) in alignment at lines 338--365
 []
  []
 
@@ -1153,7 +1173,7 @@ t' has not changed.
 Here is how much of TeX's memory you used:
  19821 strings out of 468168
  415330 string characters out of 5436524
- 897735 words of memory out of 5000000
+ 903735 words of memory out of 5000000
  48240 multiletter control sequences out of 15000+600000
  636316 words of font info for 117 fonts, out of 8000000 for 9000
  1348 hyphenation exceptions out of 8191

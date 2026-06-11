@@ -178,7 +178,7 @@ c=(h,b,q,R_c),
 
 \section{四阶段业务流程}
 
-求解过程采用“stage0 主分配 + stage1--stage3 repair 补齐 + LNS 局部重排”的流程。
+求解过程采用“stage0 主分配 + stage1--stage3 repair 补齐 + repair LNS + 箱区内贝位重排”的流程。stage0 和 repair 决定箱区层方案；箱区内贝位重排在箱区层方案固定后运行，只重新安排箱区内部的贝位和排级可行列。
 
 \begin{longtable}{L{0.13\linewidth}L{0.22\linewidth}L{0.55\linewidth}}
 \toprule
@@ -253,6 +253,10 @@ repair 候选方案按如下顺序排序：
 \]
 因此 repair LNS 只有在未放置箱数更少，或未放置箱数相同但目标更好时才替换 incumbent。零未放置 incumbent 下，LNS 子问题保持零未放置，不通过多留箱来换集中性。
 
+repair 结束后，程序执行箱区内贝位重排。该步骤固定每个细属性组在每个箱区的箱量 \((group\_id, area\_no)\)，不改变箱区层分配、不改变大计划继承比例，也不改变每个粗属性组在每个箱区的合计箱量。重排只在同一箱区内重新选择贝位，并为所选贝位生成排级可行的 \code{row_allocation}。排号在这里主要用于证明贝位方案能够真实落排，重排评分只关心细属性组贝位集中、粗属性组箱区内贝位集中和小尾巴贝位减少。
+
+箱区内贝位重排逐箱区尝试。某个箱区若无法在排级硬约束下完成重排，则该箱区保留 repair 后的原贝位方案；其它箱区仍可继续尝试。只有当整体贝位集中性评分变好，且所有 \((group\_id, area\_no)\) 箱量完全一致时，重排方案才会成为最终方案。若外部中计划给定贝位级硬配额，箱区内贝位重排不运行，因为贝位层方案已经由外部输入固定。
+
 \section{目标函数}
 
 \subsection{细属性组集中}
@@ -275,6 +279,8 @@ repair 候选方案按如下顺序排序：
 \end{itemize}
 
 大数量粗属性组的相关参数包括 \code{--medium-large-group-small-area-penalty}、\code{--medium-large-group-area-open-penalty} 和 \code{--medium-large-group-target-area-boxes}。
+
+箱区内贝位重排阶段继续使用“细属性组少跨贝位、粗属性组少跨贝位、减少小尾巴贝位”的集中性口径。该阶段不再考虑大计划偏离、泊位距离、作业窗口等目标，因为箱区层方案已经固定；它只在不改变箱区量且满足排级可行性的前提下改善贝位层分布。
 
 \subsection{大计划继承}
 
@@ -319,6 +325,7 @@ plan\_level, voyage\_id, group\_id, demand\_source, flow, port, size, height, we
   \item \code{stage0_unplaced_cap} 和 \code{stage0_unplaced_cap_source}。
   \item \code{master_status}、\code{master_algorithm}、\code{final_column_count}、\code{selected_column_count}。
   \item \code{repair_lns_rounds_run}、\code{repair_lns_improvements}、\code{repair_lns_stop_reason}。
+  \item \code{post_repair_area_relayout_enabled}、\code{post_repair_area_relayout_accepted}、\code{post_repair_area_relayout_before}、\code{post_repair_area_relayout_after}，记录箱区内贝位重排是否运行、是否接受以及重排前后的贝位集中性指标。
   \item \code{medium_big_plan_inheritance.inheritance_ratio}。
   \item \code{medium_fragmentation} 下的 \code{tiny_area_rows}、\code{small_coarse_multi_area_groups}、\code{large_coarse_tiny_area_rows}。
   \item \code{attribute_rules}，记录本次使用的粗属性、细属性、贝位不混属性和排不混属性。
@@ -340,6 +347,8 @@ plan\_level, voyage\_id, group\_id, demand\_source, flow, port, size, height, we
 \code{--diving-improvement-rounds=6}、\code{--diving-improvement-time-limit=6.0}：diving 后局部重优化轮数和单轮时间。\\
 \code{--repair-lns-rounds=2}、\code{--repair-lns-time-limit=3.0}：未放置修复 LNS 轮数和单轮时间。\\
 \code{--coarse-compaction-lns-rounds=0}：额外粗属性组压实 LNS，默认关闭。\\
+\code{post\_repair\_area\_relayout\_enabled=True}：repair 后箱区内贝位重排，固定每个细属性组在每个箱区的箱量，只优化箱区内贝位集中性。\\
+\code{post\_repair\_area\_relayout\_max\_patterns=1}：箱区内贝位重排时每个候选贝位只取一个排级可行模式，排只作为可行性证明，不作为主要优化目标。\\
 \code{--medium-concentrated-group-threshold=26}：小数量粗属性组和大数量粗属性组的分界。\\
 \code{--medium-small-group-area-split-penalty=2400}：小数量粗属性组跨箱区惩罚。\\
 \code{--medium-small-group-fragment-penalty=90}：小数量粗属性组碎片惩罚。\\

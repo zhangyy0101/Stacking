@@ -74,6 +74,8 @@ class ColumnGenerationConfig:
     coarse_compaction_lns_time_limit: float = 4.0
     coarse_compaction_lns_max_groups: int = 16
     coarse_compaction_lns_max_no_improve_rounds: int = 1
+    post_repair_area_relayout_enabled: bool = True
+    post_repair_area_relayout_max_patterns: int = 1
     diving_price_columns: bool = False
     diving_stop_on_lp_unplaced: bool = True
     diving_skip_when_lp_unplaced: bool = True
@@ -133,6 +135,7 @@ class ColumnGenerationPlanner:
         self.demand_stats: dict[str, int | str] = {}
         self.groups = sorted(self._build_planning_groups(), key=self._group_sort_key)
         self.groups_by_id = {group.group_id: group for group in self.groups}
+        self._expand_user_bay_adjust_rules()
         self.bays = problem.bays
         self.attribute_rules = getattr(problem, "attribute_rules", None)
         self.bays_by_area: dict[str, list[str]] = defaultdict(list)
@@ -163,6 +166,53 @@ class ColumnGenerationPlanner:
     @property
     def columns(self) -> list[PlacementColumn]:
         return self._columns
+
+    def _expand_user_bay_adjust_rules(self) -> None:
+        rules = getattr(self.problem, "user_bay_adjust_rules", []) or []
+        if not rules:
+            return
+        requirements = {
+            str(group_id): set(values)
+            for group_id, values in getattr(self.problem, "user_group_bay_requirements", {}).items()
+        }
+        blocklist = {
+            str(group_id): set(values)
+            for group_id, values in getattr(self.problem, "user_group_bay_blocklist", {}).items()
+        }
+        matched = 0
+        for rule in rules:
+            if not isinstance(rule, dict):
+                continue
+            voyage_id = str(rule.get("voyage_id", ""))
+            attributes = rule.get("attributes", {}) if isinstance(rule.get("attributes", {}), dict) else {}
+            required_bays = set(rule.get("required_bays", set()) or set())
+            blocked_bays = set(rule.get("blocked_bays", set()) or set())
+            for group in self.groups:
+                if voyage_id and str(group.voyage_id) != voyage_id:
+                    continue
+                if not self._group_matches_bay_adjust_attributes(group, attributes):
+                    continue
+                matched += 1
+                if required_bays:
+                    requirements.setdefault(group.group_id, set()).update(required_bays)
+                if blocked_bays:
+                    blocklist.setdefault(group.group_id, set()).update(blocked_bays)
+        for group_id, blocked in blocklist.items():
+            if blocked and group_id in requirements:
+                requirements[group_id].difference_update(blocked)
+        self.problem.user_group_bay_requirements = {group_id: values for group_id, values in requirements.items() if values}
+        self.problem.user_group_bay_blocklist = {group_id: values for group_id, values in blocklist.items() if values}
+        summary = dict(getattr(self.problem, "user_bay_constraint_summary", {}) or {})
+        summary["expanded_matched_planning_groups"] = matched
+        summary["expanded_required_group_count"] = len(self.problem.user_group_bay_requirements)
+        summary["expanded_blocked_group_count"] = len(self.problem.user_group_bay_blocklist)
+        self.problem.user_bay_constraint_summary = summary
+
+    def _group_matches_bay_adjust_attributes(self, group: SmallBoxGroup, attributes: dict) -> bool:
+        for attr, expected in attributes.items():
+            if self._group_attr_value(group, str(attr)) != str(expected):
+                return False
+        return True
 
     def _build_planning_groups(self) -> list[SmallBoxGroup]:
         mode = (self.config.demand_mode or "original").strip().lower().replace("_", "-")
@@ -513,6 +563,8 @@ class ColumnGenerationPlanner:
 
         selected, unplaced, repair_stats = self._repair_or_replace_unplaced_solution(selected, unplaced)
         diagnostics.update(repair_stats)
+        selected, relayout_stats = self._post_repair_area_relayout(selected, unplaced)
+        diagnostics.update(relayout_stats)
 
         if self._uses_original_output_scope():
             small_rows = self._make_small_rows(selected, allowed_sources={"document"})
@@ -603,6 +655,320 @@ class ColumnGenerationPlanner:
             }
         )
         return best_selected, best_unplaced, stats
+
+    def _post_repair_area_relayout(
+        self,
+        selected: Counter[int],
+        unplaced: Counter[str],
+    ) -> tuple[Counter[int], dict]:
+        stats: dict = {
+            "post_repair_area_relayout_enabled": bool(getattr(self.config, "post_repair_area_relayout_enabled", True)),
+            "post_repair_area_relayout_used": False,
+            "post_repair_area_relayout_accepted": False,
+            "post_repair_area_relayout_skip_reason": "",
+        }
+        if not stats["post_repair_area_relayout_enabled"]:
+            stats["post_repair_area_relayout_skip_reason"] = "disabled"
+            return selected, stats
+        if sum(unplaced.values()) > 0:
+            stats["post_repair_area_relayout_skip_reason"] = "has_unplaced_boxes"
+            return selected, stats
+        if self.config.medium_plan_bay_quota is not None:
+            stats["post_repair_area_relayout_skip_reason"] = "fixed_medium_bay_quota"
+            return selected, stats
+
+        target_group_area = self._selected_group_area_quantities(selected)
+        if not target_group_area:
+            stats["post_repair_area_relayout_skip_reason"] = "empty_solution"
+            return selected, stats
+
+        before_metrics = self._area_relayout_concentration_metrics(selected)
+        candidate, candidate_stats = self._build_area_relayout_solution(target_group_area, selected)
+        stats.update(candidate_stats)
+        stats["post_repair_area_relayout_before"] = before_metrics
+        if candidate is None:
+            stats["post_repair_area_relayout_skip_reason"] = candidate_stats.get("post_repair_area_relayout_failure_reason", "failed")
+            return selected, stats
+        if self._selected_group_area_quantities(candidate) != target_group_area:
+            stats["post_repair_area_relayout_skip_reason"] = "area_quantities_changed"
+            return selected, stats
+
+        after_metrics = self._area_relayout_concentration_metrics(candidate)
+        stats["post_repair_area_relayout_after"] = after_metrics
+        stats["post_repair_area_relayout_delta_score"] = round(before_metrics["score"] - after_metrics["score"], 6)
+        stats["post_repair_area_relayout_used"] = True
+        if after_metrics["score"] + 1e-6 < before_metrics["score"]:
+            stats["post_repair_area_relayout_accepted"] = True
+            return candidate, stats
+        stats["post_repair_area_relayout_skip_reason"] = "no_concentration_improvement"
+        return selected, stats
+
+    def _selected_group_area_quantities(self, selected: Counter[int]) -> Counter[tuple[str, str]]:
+        quantities: Counter[tuple[str, str]] = Counter()
+        for idx, chosen in selected.items():
+            if chosen <= 0 or idx < 0 or idx >= len(self._columns):
+                continue
+            col = self._columns[idx]
+            quantities[(col.group_id, col.area_no)] += int(chosen) * int(col.quantity)
+        return quantities
+
+    def _area_relayout_concentration_metrics(self, selected: Counter[int]) -> dict[str, float | int]:
+        fine_area_bays: set[tuple[str, str, str]] = set()
+        coarse_area_bays: Counter[tuple[str, str, str, str, str, str]] = Counter()
+        for idx, chosen in selected.items():
+            if chosen <= 0 or idx < 0 or idx >= len(self._columns):
+                continue
+            col = self._columns[idx]
+            qty = int(chosen) * int(col.quantity)
+            fine_area_bays.add((col.group_id, col.area_no, col.bay_key))
+            coarse_area_bays[col.coarse_key + (col.area_no, col.bay_key)] += qty
+
+        fine_area_pairs = {(group_id, area_no) for group_id, area_no, _bay_key in fine_area_bays}
+        coarse_area_pairs = {key[:5] for key in coarse_area_bays}
+        fine_excess_bays = max(0, len(fine_area_bays) - len(fine_area_pairs))
+        coarse_excess_bays = max(0, len(coarse_area_bays) - len(coarse_area_pairs))
+        min_boxes = max(0, int(self.config.medium_large_group_min_area_boxes or 0))
+        coarse_tail_boxes = 0
+        if min_boxes > 0:
+            for qty in coarse_area_bays.values():
+                if 0 < qty < min_boxes:
+                    coarse_tail_boxes += min_boxes - int(qty)
+        score = (
+            1000.0 * fine_excess_bays
+            + 360.0 * coarse_excess_bays
+            + 24.0 * coarse_tail_boxes
+            + 10.0 * len(fine_area_bays)
+            + 4.0 * len(coarse_area_bays)
+        )
+        return {
+            "score": round(score, 6),
+            "fine_area_bays": len(fine_area_bays),
+            "fine_area_pairs": len(fine_area_pairs),
+            "fine_excess_bays": fine_excess_bays,
+            "coarse_area_bays": len(coarse_area_bays),
+            "coarse_area_pairs": len(coarse_area_pairs),
+            "coarse_excess_bays": coarse_excess_bays,
+            "coarse_tail_boxes": coarse_tail_boxes,
+        }
+
+    def _build_area_relayout_solution(
+        self,
+        target_group_area: Counter[tuple[str, str]],
+        original_selected: Counter[int],
+    ) -> tuple[Counter[int] | None, dict]:
+        selected: Counter[int] = Counter()
+        state = self._empty_selection_state()
+        relayout_state = {
+            "coarse_area_bay_load": Counter(),
+            "group_area_bay_load": Counter(),
+        }
+        stats: dict = {
+            "post_repair_area_relayout_group_area_pairs": len(target_group_area),
+            "post_repair_area_relayout_selected_columns": 0,
+            "post_repair_area_relayout_failure_reason": "",
+            "post_repair_area_relayout_areas_attempted": 0,
+            "post_repair_area_relayout_areas_relaid": 0,
+            "post_repair_area_relayout_areas_kept_original": 0,
+        }
+
+        coarse_area_total: Counter[tuple[str, str, str, str, str]] = Counter()
+        for (group_id, area_no), qty in target_group_area.items():
+            group = self.groups_by_id.get(group_id)
+            if group is None:
+                stats["post_repair_area_relayout_failure_reason"] = "missing_group"
+                stats["post_repair_area_relayout_failed_group"] = group_id
+                return None, stats
+            coarse_area_total[self._coarse_key(group) + (area_no,)] += int(qty)
+
+        by_area_coarse: defaultdict[tuple[str, tuple[str, str, str, str]], list[tuple[SmallBoxGroup, str, int]]] = defaultdict(list)
+        target_areas: set[str] = set()
+        for (group_id, area_no), qty in target_group_area.items():
+            qty = int(qty)
+            if qty <= 0:
+                continue
+            target_areas.add(area_no)
+            group = self.groups_by_id[group_id]
+            by_area_coarse[(area_no, self._coarse_key(group))].append((group, area_no, qty))
+
+        original_by_area: defaultdict[str, list[tuple[int, PlacementColumn, int]]] = defaultdict(list)
+        for idx, chosen in original_selected.items():
+            if chosen <= 0 or idx < 0 or idx >= len(self._columns):
+                continue
+            col = self._columns[idx]
+            original_by_area[col.area_no].append((idx, col, int(chosen)))
+
+        for area_no in sorted(target_areas):
+            stats["post_repair_area_relayout_areas_attempted"] += 1
+            trial_selected = Counter(selected)
+            trial_state = self._copy_selection_state_for_relayout(state)
+            trial_relayout_state = self._copy_area_relayout_state(relayout_state)
+            area_success = True
+            area_coarse_keys = sorted(
+                [key for key in by_area_coarse if key[0] == area_no],
+                key=lambda key: (
+                    0 if coarse_area_total[key[1] + (key[0],)] <= self.config.medium_concentrated_group_threshold else 1,
+                    coarse_area_total[key[1] + (key[0],)] if coarse_area_total[key[1] + (key[0],)] <= self.config.medium_concentrated_group_threshold else -coarse_area_total[key[1] + (key[0],)],
+                    key[1],
+                ),
+            )
+            for area_coarse_key in area_coarse_keys:
+                entries = sorted(
+                    by_area_coarse[area_coarse_key],
+                    key=lambda item: (-int(item[2]), self._group_sort_key(item[0])),
+                )
+                for group, entry_area_no, target_qty in entries:
+                    remaining = int(target_qty)
+                    while remaining > 0:
+                        choice = self._best_area_relayout_column(group, entry_area_no, remaining, trial_state, trial_relayout_state)
+                        if choice is None:
+                            area_success = False
+                            stats["post_repair_area_relayout_failure_reason"] = "partial_area_fallback"
+                            stats["post_repair_area_relayout_last_failed_group"] = group.group_id
+                            stats["post_repair_area_relayout_last_failed_area"] = entry_area_no
+                            stats["post_repair_area_relayout_last_failed_remaining"] = remaining
+                            break
+                        idx, col = choice
+                        self._apply_column_to_state(col, trial_state)
+                        self._apply_column_to_area_relayout_state(col, trial_relayout_state)
+                        trial_selected[idx] += 1
+                        remaining -= int(col.quantity)
+                    if not area_success:
+                        break
+                if not area_success:
+                    break
+            if area_success:
+                selected = trial_selected
+                state = trial_state
+                relayout_state = trial_relayout_state
+                stats["post_repair_area_relayout_areas_relaid"] += 1
+            else:
+                stats["post_repair_area_relayout_areas_kept_original"] += 1
+                for idx, col, chosen in original_by_area.get(area_no, []):
+                    for _ in range(chosen):
+                        self._apply_column_to_state(col, state)
+                        self._apply_column_to_area_relayout_state(col, relayout_state)
+                        selected[idx] += 1
+
+        stats["post_repair_area_relayout_selected_columns"] = sum(1 for qty in selected.values() if qty > 0)
+        return selected, stats
+
+    @staticmethod
+    def _copy_selection_state_for_relayout(state: dict) -> dict:
+        copied = {}
+        for key, value in state.items():
+            if isinstance(value, Counter):
+                copied[key] = Counter(value)
+            elif isinstance(value, set):
+                copied[key] = set(value)
+            elif isinstance(value, dict):
+                copied[key] = dict(value)
+            else:
+                copied[key] = value
+        return copied
+
+    @staticmethod
+    def _copy_area_relayout_state(state: dict) -> dict:
+        return {key: Counter(value) for key, value in state.items()}
+
+    def _best_area_relayout_column(
+        self,
+        group: SmallBoxGroup,
+        area_no: str,
+        remaining: int,
+        state: dict,
+        relayout_state: dict,
+    ) -> tuple[int, PlacementColumn] | None:
+        best: tuple[tuple[float, int, int, str], int, PlacementColumn] | None = None
+        for bay_key in self.bays_by_area.get(area_no, []):
+            if self._max_quantity_in_bay(group, bay_key) <= 0:
+                continue
+            base_cost = self._column_base_cost(group, bay_key)
+            capacity = self._remaining_capacity_for_group_bay(group, bay_key, state, remaining, enforce_quota=False)
+            if capacity <= 0:
+                continue
+            qty = min(int(remaining), int(capacity))
+            patterns = self._row_allocation_patterns_for_column(
+                group,
+                bay_key,
+                qty,
+                state=state,
+                max_patterns=max(1, int(getattr(self.config, "post_repair_area_relayout_max_patterns", 8) or 8)),
+            )
+            for pattern in patterns:
+                idx = self._ensure_area_relayout_column(group, bay_key, qty, base_cost, pattern)
+                if idx is None:
+                    continue
+                col = self._columns[idx]
+                if not self._column_fits_state(col, state, remaining, enforce_quota=False):
+                    continue
+                score = (
+                    self._area_relayout_column_score(col, relayout_state, remaining),
+                    0 if int(col.quantity) >= int(remaining) else 1,
+                    -int(col.quantity),
+                    col.bay_key,
+                )
+                candidate = (score, idx, col)
+                if best is None or candidate < best:
+                    best = candidate
+        if best is None:
+            return None
+        return best[1], best[2]
+
+    def _ensure_area_relayout_column(
+        self,
+        group: SmallBoxGroup,
+        bay_key: str,
+        quantity: int,
+        base_cost: float,
+        row_allocation: tuple[tuple[str, str, int], ...],
+    ) -> int | None:
+        signature = self._row_allocation_signature(row_allocation)
+        for idx, col in enumerate(self._columns):
+            if (
+                col.group_id == group.group_id
+                and col.bay_key == bay_key
+                and int(col.quantity) == int(quantity)
+                and col.row_allocation == signature
+            ):
+                return idx
+        before = len(self._columns)
+        self._add_column(group, bay_key, int(quantity), base_cost, row_allocation=signature)
+        for idx in range(before, len(self._columns)):
+            col = self._columns[idx]
+            if (
+                col.group_id == group.group_id
+                and col.bay_key == bay_key
+                and int(col.quantity) == int(quantity)
+                and col.row_allocation == signature
+            ):
+                return idx
+        return None
+
+    def _area_relayout_column_score(self, col: PlacementColumn, relayout_state: dict, remaining: int) -> float:
+        group_bay_key = (col.group_id, col.area_no, col.bay_key)
+        coarse_bay_key = col.coarse_key + (col.area_no, col.bay_key)
+        existing_group_bay = int(relayout_state["group_area_bay_load"][group_bay_key])
+        existing_coarse_bay = int(relayout_state["coarse_area_bay_load"][coarse_bay_key])
+        score = 0.0
+        if existing_group_bay <= 0:
+            score += 1000.0
+        else:
+            score -= min(300.0, float(existing_group_bay))
+        if existing_coarse_bay <= 0:
+            score += 360.0
+        else:
+            score -= min(180.0, float(existing_coarse_bay))
+        score -= 12.0 * int(col.quantity)
+        if int(remaining) - int(col.quantity) > 0:
+            score += 80.0
+        score += 0.01 * self.bays[col.bay_key].bay_order
+        return score
+
+    def _apply_column_to_area_relayout_state(self, col: PlacementColumn, relayout_state: dict) -> None:
+        group_bay_key = (col.group_id, col.area_no, col.bay_key)
+        coarse_bay_key = col.coarse_key + (col.area_no, col.bay_key)
+        relayout_state["group_area_bay_load"][group_bay_key] += int(col.quantity)
+        relayout_state["coarse_area_bay_load"][coarse_bay_key] += int(col.quantity)
 
     def _solution_rank(self, selected: Counter[int], unplaced: Counter[str]) -> tuple[int, float, int]:
         return (
@@ -2023,12 +2389,12 @@ class ColumnGenerationPlanner:
             for footprint_key in self._placement_footprint_keys(col.bay_key, col.size):
                 bay_capacity_cols[footprint_key].append((idx, col))
                 bay_port_size_cols[(footprint_key, self._row_mix_key_for_column(col), col.size)].append((idx, col))
-                for attr in self._bay_no_mix_attrs():
+                for attr in self._bay_no_mix_attrs(col.voyage_id):
                     bay_attr_choice_cols[(footprint_key, attr, self._column_attr_value(col, attr))].append(idx)
             for footprint_key, row_no, qty in col.row_allocation:
                 row_capacity_cols[(footprint_key, row_no)].append((idx, int(qty)))
                 row_size_capacity_cols[(footprint_key, row_no, col.size)].append((idx, int(qty)))
-                for attr in self._row_no_mix_attrs():
+                for attr in self._row_no_mix_attrs(col.voyage_id):
                     row_attr_choice_cols[(footprint_key, row_no, attr, self._column_attr_value(col, attr))].append(idx)
             bay_size_capacity_cols[(col.bay_key, col.size)].append((idx, col))
             group_bay_cols[(col.group_id, col.bay_key)].append(idx)
@@ -2060,6 +2426,15 @@ class ColumnGenerationPlanner:
                 required_area_limit[(voyage_id, area_no)] = model.addCons(
                     quicksum(self._columns[idx].quantity * columns[idx] for idx in indices) >= 1.0,
                     name=f"user_required_area_{len(required_area_limit)}",
+                )
+
+        required_group_bay_limit = {}
+        for group_id, bay_keys in sorted(getattr(self.problem, "user_group_bay_requirements", {}).items()):
+            for bay_key in sorted(bay_keys):
+                indices = group_bay_cols.get((group_id, bay_key), [])
+                required_group_bay_limit[(group_id, bay_key)] = model.addCons(
+                    quicksum(self._columns[idx].quantity * columns[idx] for idx in indices) >= 1.0,
+                    name=f"user_required_bay_{len(required_group_bay_limit)}",
                 )
 
         bay_capacity_limit = {}
@@ -2209,6 +2584,7 @@ class ColumnGenerationPlanner:
             "quota_limit": quota_limit,
             "medium_plan_quota_limit": medium_plan_quota_limit,
             "required_area_limit": required_area_limit,
+            "required_group_bay_limit": required_group_bay_limit,
             "seed_unplaced_limit": seed_unplaced_limit,
             "stage0_unplaced_limit": stage0_unplaced_limit,
             **relaxed_objective_constraints,
@@ -2778,12 +3154,18 @@ class ColumnGenerationPlanner:
                 for qty in self._quantity_options(group, max_qty):
                     self._add_column(group, bay_key, qty, base_cost)
 
-    def _bay_no_mix_attrs(self) -> tuple[str, ...]:
-        attrs = getattr(self.attribute_rules, "bay_no_mix_attributes", ("size", "height"))
+    def _bay_no_mix_attrs(self, voyage_id: object = None) -> tuple[str, ...]:
+        if self.attribute_rules is not None and voyage_id is not None and hasattr(self.attribute_rules, "bay_no_mix_for"):
+            attrs = self.attribute_rules.bay_no_mix_for(voyage_id)
+        else:
+            attrs = getattr(self.attribute_rules, "bay_no_mix_attributes", ("size", "height"))
         return tuple(str(attr) for attr in attrs if str(attr))
 
-    def _row_no_mix_attrs(self) -> tuple[str, ...]:
-        attrs = getattr(self.attribute_rules, "row_no_mix_attributes", ("port",))
+    def _row_no_mix_attrs(self, voyage_id: object = None) -> tuple[str, ...]:
+        if self.attribute_rules is not None and voyage_id is not None and hasattr(self.attribute_rules, "row_no_mix_for"):
+            attrs = self.attribute_rules.row_no_mix_for(voyage_id)
+        else:
+            attrs = getattr(self.attribute_rules, "row_no_mix_attributes", ("port",))
         return tuple(str(attr) for attr in attrs if str(attr))
 
     @staticmethod
@@ -2808,14 +3190,14 @@ class ColumnGenerationPlanner:
         return str(value)
 
     def _row_mix_key_for_group(self, group: SmallBoxGroup) -> str:
-        return "|".join(f"{attr}={self._group_attr_value(group, attr)}" for attr in self._row_no_mix_attrs()) or "__all__"
+        return "|".join(f"{attr}={self._group_attr_value(group, attr)}" for attr in self._row_no_mix_attrs(group.voyage_id)) or "__all__"
 
     def _row_mix_key_for_column(self, col: PlacementColumn) -> str:
-        return "|".join(f"{attr}={self._column_attr_value(col, attr)}" for attr in self._row_no_mix_attrs()) or "__all__"
+        return "|".join(f"{attr}={self._column_attr_value(col, attr)}" for attr in self._row_no_mix_attrs(col.voyage_id)) or "__all__"
 
     def _row_existing_attrs_allow_group(self, bay: Bay, row_no: str, group: SmallBoxGroup) -> bool:
         row_attrs = getattr(bay, "existing_attrs_by_row", {}).get(str(row_no), {})
-        for attr in self._row_no_mix_attrs():
+        for attr in self._row_no_mix_attrs(group.voyage_id):
             values = set(row_attrs.get(attr, set()))
             if values and self._group_attr_value(group, attr) not in values:
                 return False
@@ -2825,7 +3207,7 @@ class ColumnGenerationPlanner:
         for key in footprint:
             bay = self.bays[key]
             existing_attrs = getattr(bay, "existing_attrs", {})
-            for attr in self._bay_no_mix_attrs():
+            for attr in self._bay_no_mix_attrs(group.voyage_id):
                 values = set(existing_attrs.get(attr, set()))
                 if values and values != {self._group_attr_value(group, attr)}:
                     return False
@@ -2834,7 +3216,7 @@ class ColumnGenerationPlanner:
     def _bay_state_attrs_allow_group(self, group: SmallBoxGroup, footprint: tuple[str, ...], state: dict) -> bool:
         used_attrs = state.setdefault("bay_used_attrs", {})
         for key in footprint:
-            for attr in self._bay_no_mix_attrs():
+            for attr in self._bay_no_mix_attrs(group.voyage_id):
                 state_key = (key, attr)
                 value = self._group_attr_value(group, attr)
                 if used_attrs.get(state_key, value) != value:
@@ -2888,7 +3270,7 @@ class ColumnGenerationPlanner:
                         int(bay.row_physical_capacity.get(row_no, raw_cap)) - int(state["row_load"][row_key]),
                         int(raw_cap) - int(state["row_size_load"][row_size_key]),
                     )
-                    for attr in self._row_no_mix_attrs():
+                    for attr in self._row_no_mix_attrs(group.voyage_id):
                         value = self._group_attr_value(group, attr)
                         used = state["row_used_attrs"].get((footprint_key, row_no, attr), value)
                         if used != value:
@@ -3045,6 +3427,8 @@ class ColumnGenerationPlanner:
         state: dict | None = None,
     ) -> bool:
         if quantity <= 0:
+            return False
+        if not self._user_bay_policy_allows(group, bay_key):
             return False
         stack_units = self._column_stack_units(group, bay_key, quantity)
         if stack_units >= 10**9:
@@ -3525,12 +3909,12 @@ class ColumnGenerationPlanner:
             for footprint_key in self._placement_footprint_keys(col.bay_key, col.size):
                 bay_capacity_cols[footprint_key].append((idx, col))
                 bay_port_size_cols[(footprint_key, self._row_mix_key_for_column(col), col.size)].append((idx, col))
-                for attr in self._bay_no_mix_attrs():
+                for attr in self._bay_no_mix_attrs(col.voyage_id):
                     bay_attr_choice_cols[(footprint_key, attr, self._column_attr_value(col, attr))].append(idx)
             for footprint_key, row_no, qty in col.row_allocation:
                 row_capacity_cols[(footprint_key, row_no)].append((idx, int(qty)))
                 row_size_cols[(footprint_key, row_no, col.size)].append((idx, int(qty)))
-                for attr in self._row_no_mix_attrs():
+                for attr in self._row_no_mix_attrs(col.voyage_id):
                     row_attr_choice_cols[(footprint_key, row_no, attr, self._column_attr_value(col, attr))].append(idx)
             bay_size_cols[(col.bay_key, col.size)].append((idx, col))
             group_bay_cols[(col.group_id, col.bay_key)].append(idx)
@@ -3648,6 +4032,18 @@ class ColumnGenerationPlanner:
                 indices = voyage_area_cols.get((voyage_id, area_no), [])
                 if indices:
                     model.addCons(quicksum(self._columns[idx].quantity * column_vars[idx] for idx in indices) >= 1)
+
+        fixed_group_bay_qty: Counter[tuple[str, str]] = Counter()
+        for idx, qty in fixed_selected.items():
+            if qty > 0 and 0 <= idx < len(self._columns):
+                col = self._columns[idx]
+                fixed_group_bay_qty[(col.group_id, col.bay_key)] += int(qty) * int(col.quantity)
+        for group_id, bay_keys in sorted(getattr(self.problem, "user_group_bay_requirements", {}).items()):
+            for bay_key in sorted(bay_keys):
+                if fixed_group_bay_qty[(group_id, bay_key)] >= 1:
+                    continue
+                indices = group_bay_cols.get((group_id, bay_key), [])
+                model.addCons(quicksum(self._columns[idx].quantity * column_vars[idx] for idx in indices) >= 1)
 
         mip_start_added = self._add_repair_lns_start(model, column_vars, unplaced_vars, incumbent_selected, incumbent_unplaced)
         stats["mip_start_added"] = mip_start_added
@@ -4330,7 +4726,7 @@ class ColumnGenerationPlanner:
                 return False
             if not self._row_existing_attrs_allow_group(bay, row_no, group):
                 return False
-            for attr in self._row_no_mix_attrs():
+            for attr in self._row_no_mix_attrs(group.voyage_id):
                 value = self._column_attr_value(col, attr)
                 used = state["row_used_attrs"].get((footprint_key, row_no, attr), value)
                 if used != value:
@@ -4347,6 +4743,8 @@ class ColumnGenerationPlanner:
         enforce_quota: bool = True,
     ) -> int:
         if (group.group_id, bay_key) in state["group_bay_used"]:
+            return 0
+        if not self._user_bay_policy_allows(group, bay_key):
             return 0
         bay = self.bays[bay_key]
         footprint = self._placement_footprint_keys(bay_key, group.size)
@@ -4391,7 +4789,7 @@ class ColumnGenerationPlanner:
             state["bay_load"][key] += col.quantity
             state["bay_used_size"][key] = col.size
             state["bay_used_height"][key] = col.height
-            for attr in self._bay_no_mix_attrs():
+            for attr in self._bay_no_mix_attrs(col.voyage_id):
                 state.setdefault("bay_used_attrs", {})[(key, attr)] = self._column_attr_value(col, attr)
         state["bay_size_load"][(col.bay_key, col.size)] += col.quantity
         group = self.groups_by_id.get(col.group_id)
@@ -4403,7 +4801,7 @@ class ColumnGenerationPlanner:
                 continue
             state["row_load"][(footprint_key, row_no)] += qty
             state["row_size_load"][(footprint_key, row_no, col.size)] += qty
-            for attr in self._row_no_mix_attrs():
+            for attr in self._row_no_mix_attrs(col.voyage_id):
                 state["row_used_attrs"][(footprint_key, row_no, attr)] = self._column_attr_value(col, attr)
         state["group_bay_used"].add((col.group_id, col.bay_key))
         state["used_group_area"].add((col.group_id, col.area_no))
@@ -4449,13 +4847,15 @@ class ColumnGenerationPlanner:
                 bay = self.bays[col.bay_key]
                 if (col.group_id, col.bay_key) in group_bay_used:
                     continue
+                if not self._user_bay_policy_allows(group, col.bay_key):
+                    continue
                 footprint = self._placement_footprint_keys(col.bay_key, col.size)
                 if not footprint:
                     continue
                 if any(
                     bay_used_attrs.get((key, attr), self._column_attr_value(col, attr)) != self._column_attr_value(col, attr)
                     for key in footprint
-                    for attr in self._bay_no_mix_attrs()
+                    for attr in self._bay_no_mix_attrs(col.voyage_id)
                 ):
                     continue
                 if any(bay_load[key] + col.quantity > self.bays[key].physical_capacity for key in footprint):
@@ -4487,7 +4887,7 @@ class ColumnGenerationPlanner:
                     bay_load[key] += col.quantity
                     bay_used_size[key] = col.size
                     bay_used_height[key] = col.height
-                    for attr in self._bay_no_mix_attrs():
+                    for attr in self._bay_no_mix_attrs(col.voyage_id):
                         bay_used_attrs[(key, attr)] = self._column_attr_value(col, attr)
                 bay_size_load[(col.bay_key, col.size)] += col.quantity
                 group_bay_used.add((col.group_id, col.bay_key))
@@ -4512,6 +4912,8 @@ class ColumnGenerationPlanner:
         out: list[tuple[str, int, float]] = []
         for area_no in self._candidate_areas_for_group(group, scope=scope):
             for bay_key in self.bays_by_area.get(area_no, []):
+                if not self._user_bay_policy_allows(group, bay_key):
+                    continue
                 max_qty = self._max_quantity_in_bay(group, bay_key)
                 if max_qty <= 0:
                     continue
@@ -4520,6 +4922,7 @@ class ColumnGenerationPlanner:
         if self._prefers_concentrated_coarse_key(self._coarse_key(group)):
             out.sort(
                 key=lambda item: (
+                    0 if self._user_bay_policy_requires(group, item[0]) else 1,
                     self._area_fallback_tier_for_group(group, self.bays[item[0]].area_no),
                     self._concentrated_area_sort_key(group, self.bays[item[0]].area_no),
                     item[2],
@@ -4530,6 +4933,7 @@ class ColumnGenerationPlanner:
         else:
             out.sort(
                 key=lambda item: (
+                    0 if self._user_bay_policy_requires(group, item[0]) else 1,
                     self._area_fallback_tier_for_group(group, self.bays[item[0]].area_no),
                     item[2],
                     -item[1],
@@ -4582,6 +4986,14 @@ class ColumnGenerationPlanner:
         required = getattr(self.problem, "user_voyage_area_requirements", {}).get(voyage_id, set())
         return area_no in allow or area_no in required
 
+    def _user_bay_policy_allows(self, group: SmallBoxGroup, bay_key: str) -> bool:
+        blocked = getattr(self.problem, "user_group_bay_blocklist", {}).get(group.group_id, set())
+        return bay_key not in blocked
+
+    def _user_bay_policy_requires(self, group: SmallBoxGroup, bay_key: str) -> bool:
+        required = getattr(self.problem, "user_group_bay_requirements", {}).get(group.group_id, set())
+        return bay_key in required
+
     def _area_supports_group_flow(self, group: SmallBoxGroup, area_no: str) -> bool:
         if self._is_big_plan_area_for_group(group, area_no):
             return True
@@ -4598,16 +5010,19 @@ class ColumnGenerationPlanner:
         limit = max(0, int(self.config.max_candidate_bays_per_group or 0))
         if limit <= 0 or len(candidates) <= limit:
             return candidates
+        required_bays = getattr(self.problem, "user_group_bay_requirements", {}).get(group.group_id, set())
+        required = [item for item in candidates if item[0] in required_bays]
+        remaining_limit = max(0, limit - len(required))
         preferred_areas = set(self._area_weights(group))
         if not preferred_areas:
-            return candidates[:limit]
-        preferred = [item for item in candidates if self.bays[item[0]].area_no in preferred_areas]
-        fallback = [item for item in candidates if self.bays[item[0]].area_no not in preferred_areas]
+            return required + [item for item in candidates if item[0] not in required_bays][:remaining_limit]
+        preferred = [item for item in candidates if item[0] not in required_bays and self.bays[item[0]].area_no in preferred_areas]
+        fallback = [item for item in candidates if item[0] not in required_bays and self.bays[item[0]].area_no not in preferred_areas]
         if not fallback:
-            return preferred[:limit]
-        fallback_limit = min(len(fallback), max(1, limit // 4))
-        preferred_limit = max(0, limit - fallback_limit)
-        return preferred[:preferred_limit] + fallback[:fallback_limit]
+            return required + preferred[:remaining_limit]
+        fallback_limit = min(len(fallback), max(1, remaining_limit // 4)) if remaining_limit > 0 else 0
+        preferred_limit = max(0, remaining_limit - fallback_limit)
+        return required + preferred[:preferred_limit] + fallback[:fallback_limit]
 
     def _max_quantity_in_bay(self, group: SmallBoxGroup, bay_key: str) -> int:
         bay = self.bays[bay_key]
@@ -4647,6 +5062,8 @@ class ColumnGenerationPlanner:
             cost += self.config.port_mismatch_penalty
         if bay.is_fallback_bay:
             cost += self.config.fallback_bay_penalty
+        if self._user_bay_policy_requires(group, bay_key):
+            cost -= float(self.config.required_area_reward)
         if group.special_stow or group.pre_stow:
             cost -= 1.0
         return cost
@@ -4863,8 +5280,12 @@ class ColumnGenerationPlanner:
 
         allowlist = getattr(self.problem, "user_voyage_area_allowlist", {})
         blocklist = getattr(self.problem, "user_voyage_area_blocklist", {})
+        bay_requirements = getattr(self.problem, "user_group_bay_requirements", {})
+        bay_blocklist = getattr(self.problem, "user_group_bay_blocklist", {})
         forbidden_usage: Counter[tuple[str, str, str]] = Counter()
         outside_only_usage: Counter[tuple[str, str, str]] = Counter()
+        required_bay_usage: Counter[tuple[str, str]] = Counter()
+        forbidden_bay_usage: Counter[tuple[str, str, str]] = Counter()
         for plan_level, rows in (("medium", medium_rows), ("small", small_rows)):
             for row in rows:
                 qty = int(row.get("planned_boxes", 0) or 0)
@@ -4872,11 +5293,17 @@ class ColumnGenerationPlanner:
                     continue
                 voyage_id = str(row.get("voyage_id", ""))
                 area_no = str(row.get("area_no", ""))
+                group_id = str(row.get("group_id", ""))
+                bay_key = str(row.get("bay_key", ""))
                 if area_no in blocklist.get(voyage_id, set()):
                     forbidden_usage[(voyage_id, area_no, plan_level)] += qty
                 allowed = allowlist.get(voyage_id, set())
                 if allowed and area_no not in allowed:
                     outside_only_usage[(voyage_id, area_no, plan_level)] += qty
+                if group_id and bay_key in bay_requirements.get(group_id, set()):
+                    required_bay_usage[(group_id, bay_key)] += qty
+                if group_id and bay_key in bay_blocklist.get(group_id, set()):
+                    forbidden_bay_usage[(group_id, bay_key, plan_level)] += qty
 
         forbidden = [
             {"voyage_id": voyage_id, "area_no": area_no, "plan_level": level, "boxes": qty}
@@ -4886,11 +5313,23 @@ class ColumnGenerationPlanner:
             {"voyage_id": voyage_id, "area_no": area_no, "plan_level": level, "boxes": qty}
             for (voyage_id, area_no, level), qty in sorted(outside_only_usage.items())
         ]
+        unmet_required_bays = [
+            {"group_id": group_id, "bay_key": bay_key, "reason": "required_bay_not_used"}
+            for group_id, bay_keys in sorted(bay_requirements.items())
+            for bay_key in sorted(bay_keys)
+            if required_bay_usage[(group_id, bay_key)] <= 0
+        ]
+        forbidden_bays = [
+            {"group_id": group_id, "bay_key": bay_key, "plan_level": level, "boxes": qty}
+            for (group_id, bay_key, level), qty in sorted(forbidden_bay_usage.items())
+        ]
         return {
-            "has_violations": bool(unmet_required or forbidden or outside_only),
+            "has_violations": bool(unmet_required or forbidden or outside_only or unmet_required_bays or forbidden_bays),
             "unmet_required_areas": unmet_required,
             "forbidden_area_usage": forbidden,
             "outside_only_area_usage": outside_only,
+            "unmet_required_bays": unmet_required_bays,
+            "forbidden_bay_usage": forbidden_bays,
         }
 
     def _unplaced_group_details(self, unplaced: Counter[str]) -> list[dict]:

@@ -20,7 +20,17 @@ from .input_json import (
     vessel_container_ids,
     vessel_doc_frame,
 )
-from .models import AreaOperation, AttributeRules, Bay, BigPlanRow, BoxGroup, ProblemData, SmallBoxGroup, VoyageSchedule
+from .models import (
+    DEFAULT_WEIGHT_LEVELS,
+    AreaOperation,
+    AttributeRules,
+    Bay,
+    BigPlanRow,
+    BoxGroup,
+    ProblemData,
+    SmallBoxGroup,
+    VoyageSchedule,
+)
 
 
 DEFAULT_PLANNING_TIME = datetime(2026, 5, 19, 9, 30)
@@ -646,18 +656,23 @@ def load_small_doc_groups(
             frame = frame.loc[~in_yard].copy()
             if frame.empty:
                 continue
+        weight_levels = (
+            attribute_rules.weight_levels_for(voyage_id)
+            if attribute_rules is not None and hasattr(attribute_rules, "weight_levels_for")
+            else DEFAULT_WEIGHT_LEVELS
+        )
         work = pd.DataFrame(
             {
                 "status": frame.get("IYC_STS_CSTATUSCD", pd.Series(index=frame.index, dtype=object)).map(_flow),
                 "size": frame.get("IYC_CSZ_CSIZECD", pd.Series(index=frame.index, dtype=object)).map(_size_mode),
                 "port": frame.get("IYC_POT_UNLDPORT", pd.Series(index=frame.index, dtype=object)).map(lambda value: _norm(value, "UNK")),
                 "height": frame.get("IYC_CHEIGHTCD", pd.Series(index=frame.index, dtype=object)).map(lambda value: _norm(value, "UNK")),
-                "weight": frame.get("IYC_CWEIGHT", pd.Series(index=frame.index, dtype=object)).map(_weight_class),
+                "weight": frame.get("IYC_CWEIGHT", pd.Series(index=frame.index, dtype=object)).map(lambda value: _weight_class(value, weight_levels)),
                 "special_code": "",
                 "pre_stow": False,
             }
         )
-        group_columns = _small_groupby_columns(attribute_rules)
+        group_columns = _small_groupby_columns(attribute_rules, voyage_id)
         counts = work.groupby(list(group_columns), sort=True).size()
         counter: Counter[tuple] = Counter()
         for key, count in counts.items():
@@ -971,6 +986,39 @@ def _raw_attribute_value(raw: object, *keys: str) -> object:
     return None
 
 
+def _canonical_weight_levels(raw: object, default: tuple[int, ...]) -> tuple[int, ...]:
+    if raw is None:
+        return default
+    if isinstance(raw, str):
+        raw_items = re.split(r"[,|;/\s]+", raw.strip())
+    elif isinstance(raw, (list, tuple, set)):
+        raw_items = list(raw)
+    else:
+        return default
+    levels: list[int] = []
+    for item in raw_items:
+        try:
+            levels.append(int(round(float(item))))
+        except (TypeError, ValueError):
+            continue
+    return tuple(sorted(set(levels))) if levels else default
+
+
+def _voyage_rule_map(raw: object, voyages: list[str], default: tuple, canonicalizer) -> dict[str, tuple]:
+    if isinstance(raw, dict):
+        out = {
+            _voyage(voyage): canonicalizer(value, default)
+            for voyage, value in raw.items()
+            if _voyage(voyage)
+        }
+    elif raw is None:
+        out = {}
+    else:
+        shared = canonicalizer(raw, default)
+        out = {_voyage(voyage): shared for voyage in voyages if _voyage(voyage)}
+    return {voyage: values for voyage, values in out.items() if values != default}
+
+
 def read_attribute_rules(data_dir: str | Path) -> AttributeRules:
     if not has_input_json(data_dir):
         return AttributeRules()
@@ -980,32 +1028,56 @@ def read_attribute_rules(data_dir: str | Path) -> AttributeRules:
     if raw is None:
         raw = input_value(data_dir, "grouping_rules", None)
     defaults = AttributeRules()
+    voyages = [_voyage(voyage) for voyage in vessel_container_ids(data_dir) if _voyage(voyage)]
+    coarse_raw = _raw_attribute_value(raw, "coarse_group_attributes", "medium_group_attributes", "coarse_attributes")
+    fine_raw = _raw_attribute_value(raw, "fine_group_attributes", "small_group_attributes", "fine_attributes")
+    bay_raw = _raw_attribute_value(raw, "bay_no_mix_attributes", "no_mix_bay_attributes", "bay_attributes")
+    row_raw = _raw_attribute_value(raw, "row_no_mix_attributes", "stack_no_mix_attributes", "no_mix_row_attributes", "no_mix_stack_attributes", "row_attributes")
+    weight_raw = _raw_attribute_value(raw, "weight_levels", "weight_level", "weight_class_levels")
     return AttributeRules(
         coarse_group_attributes=_canonical_attribute_tuple(
-            _raw_attribute_value(raw, "coarse_group_attributes", "medium_group_attributes", "coarse_attributes"),
+            coarse_raw,
             defaults.coarse_group_attributes,
         ),
         fine_group_attributes=_canonical_attribute_tuple(
-            _raw_attribute_value(raw, "fine_group_attributes", "small_group_attributes", "fine_attributes"),
+            fine_raw,
             defaults.fine_group_attributes,
         ),
         bay_no_mix_attributes=_canonical_attribute_tuple(
-            _raw_attribute_value(raw, "bay_no_mix_attributes", "no_mix_bay_attributes", "bay_attributes"),
+            bay_raw,
             defaults.bay_no_mix_attributes,
         ),
         row_no_mix_attributes=_canonical_attribute_tuple(
-            _raw_attribute_value(raw, "row_no_mix_attributes", "stack_no_mix_attributes", "no_mix_row_attributes", "no_mix_stack_attributes", "row_attributes"),
+            row_raw,
             defaults.row_no_mix_attributes,
         ),
+        weight_levels=_canonical_weight_levels(weight_raw, defaults.weight_levels),
+        coarse_group_attributes_by_voyage=_voyage_rule_map(coarse_raw, voyages, defaults.coarse_group_attributes, _canonical_attribute_tuple),
+        fine_group_attributes_by_voyage=_voyage_rule_map(fine_raw, voyages, defaults.fine_group_attributes, _canonical_attribute_tuple),
+        bay_no_mix_attributes_by_voyage=_voyage_rule_map(bay_raw, voyages, defaults.bay_no_mix_attributes, _canonical_attribute_tuple),
+        row_no_mix_attributes_by_voyage=_voyage_rule_map(row_raw, voyages, defaults.row_no_mix_attributes, _canonical_attribute_tuple),
+        weight_levels_by_voyage=_voyage_rule_map(weight_raw, voyages, defaults.weight_levels, _canonical_weight_levels),
     )
 
 
-def _small_groupby_columns(attribute_rules: AttributeRules | None) -> tuple[str, ...]:
+def _small_groupby_columns(attribute_rules: AttributeRules | None, voyage_id: object = None) -> tuple[str, ...]:
     if attribute_rules is None:
         return DEFAULT_FINE_GROUP_COLUMNS
-    attrs = list(attribute_rules.fine_group_attributes)
-    attrs.extend(attribute_rules.bay_no_mix_attributes)
-    attrs.extend(attribute_rules.row_no_mix_attributes)
+    attrs = list(
+        attribute_rules.fine_for(voyage_id)
+        if voyage_id is not None and hasattr(attribute_rules, "fine_for")
+        else attribute_rules.fine_group_attributes
+    )
+    attrs.extend(
+        attribute_rules.bay_no_mix_for(voyage_id)
+        if voyage_id is not None and hasattr(attribute_rules, "bay_no_mix_for")
+        else attribute_rules.bay_no_mix_attributes
+    )
+    attrs.extend(
+        attribute_rules.row_no_mix_for(voyage_id)
+        if voyage_id is not None and hasattr(attribute_rules, "row_no_mix_for")
+        else attribute_rules.row_no_mix_attributes
+    )
     columns = ["status", "size", "port"]
     for attr in attrs:
         column = SMALL_GROUP_COLUMN_BY_ATTR.get(attr)
@@ -1066,19 +1138,19 @@ def _explicit_special_stow_code(row: dict) -> str:
     return ""
 
 
-def _weight_class(value: object) -> str:
+def _weight_class(value: object, levels: tuple[int, ...] = DEFAULT_WEIGHT_LEVELS) -> str:
     if value is None or pd.isna(value):
         return "UNK"
     try:
         tons = float(value) / 1000.0
     except (TypeError, ValueError):
         return "UNK"
-    bands = [(0, 10), (10, 15), (15, 20), (20, 25), (25, 30)]
+    bands = list(zip(levels, levels[1:]))
     for lower, upper in bands:
         if lower <= tons < upper:
             return f"{lower}_{upper}"
-    if tons >= 30:
-        return "GT30"
+    if levels and tons >= levels[-1]:
+        return f"GT{levels[-1]}"
     return "UNK"
 
 
