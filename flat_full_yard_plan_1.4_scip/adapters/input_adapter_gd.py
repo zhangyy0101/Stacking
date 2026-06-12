@@ -8,8 +8,6 @@ import pandas as pd
 
 DEFAULT_ROUGH_ATTR = ["IYC_CSZ_CSIZECD", "IYC_POT_UNLDPORT"]
 DEFAULT_DETAIL_ATTR = ["IYC_CSZ_CSIZECD", "IYC_POT_UNLDPORT", "IYC_CHEIGHTCD"]
-DEFAULT_BAY_RULES = ["IYC_CHEIGHTCD"]
-DEFAULT_ROW_RULES = ["IYC_POT_UNLDPORT"]
 DEFAULT_WEIGHT_LEVEL = [0, 10, 15, 20, 25, 30]
 
 
@@ -29,7 +27,7 @@ def list_or_default(value: Any, default: List[Any]) -> List[Any]:
     return [value]
 
 
-def voyage_rule_dict(value: Any, voyages: List[str], default: List[Any]) -> Dict[str, List[Any]]:
+def voyage_rule_dict(value: Any, voyages: List[str], default: List[Any], *, fill_missing: bool = True) -> Dict[str, List[Any]]:
     normalized_voyages = [normalize_voyage_id(voyage) for voyage in voyages if normalize_voyage_id(voyage)]
     if isinstance(value, dict):
         out = {
@@ -42,8 +40,9 @@ def voyage_rule_dict(value: Any, voyages: List[str], default: List[Any]) -> Dict
     else:
         shared = list_or_default(value, default)
         out = {voyage: list(shared) for voyage in normalized_voyages}
-    for voyage in normalized_voyages:
-        out.setdefault(voyage, list(default))
+    if fill_missing:
+        for voyage in normalized_voyages:
+            out.setdefault(voyage, list(default))
     return out
 
 
@@ -189,9 +188,14 @@ class InputAdapterGd:
         obj.user_design_large_plan_area = list_or_default(data.get("user_design_large_plan_area"), [])
         obj.rough_attr = voyage_rule_dict(data.get("rough_attr"), takeover_vessel_list, DEFAULT_ROUGH_ATTR)
         obj.detail_attr = voyage_rule_dict(data.get("detail_attr"), takeover_vessel_list, DEFAULT_DETAIL_ATTR)
-        obj.bay_rules = voyage_rule_dict(data.get("bay_rules"), takeover_vessel_list, DEFAULT_BAY_RULES)
-        obj.row_rules = voyage_rule_dict(data.get("row_rules"), takeover_vessel_list, DEFAULT_ROW_RULES)
-        obj.weight_level = voyage_rule_dict(data.get("weight_level"), takeover_vessel_list, DEFAULT_WEIGHT_LEVEL)
+        obj.bay_rules = voyage_rule_dict(data.get("bay_rules"), takeover_vessel_list, [], fill_missing=False)
+        obj.row_rules = voyage_rule_dict(data.get("row_rules"), takeover_vessel_list, [], fill_missing=False)
+        obj.weight_level = voyage_rule_dict(
+            data.get("weight_level"),
+            takeover_vessel_list,
+            DEFAULT_WEIGHT_LEVEL,
+            fill_missing=False,
+        )
         obj.is_data_local = data.get("is_data_local", False)
         obj.local_path = data.get("local_path")
         obj.need_save_data = data.get("need_save_data", True)

@@ -44,7 +44,6 @@ def run_full_yard_plan(
 from medium_small.bridge import (
     add_column_generation_arguments,
     build_problem_from_large_plan_records_adapter,
-    make_config,
     print_diagnostics_summary,
     solve_medium_small_problem,
     write_medium_demand_rows_from_rows,
@@ -78,6 +77,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     args = parse_args()
+    algorithm_config = YardPlanAlgorithmConfig.from_cli_args(args)
     run_dir = create_run_dir(args.output_root.resolve(), args.run_name)
     large_output_dir = run_dir / "outputs_large" / "latest_run"
     large_state_dir = run_dir / "outputs_large" / "state"
@@ -100,24 +100,25 @@ def main() -> None:
     print("Input mode: InputAdapterGd object (no adapter_flat_data files are generated)")
     print(f"Run output directory: {run_dir}")
 
-    large_config = adapter_data_io.LargePlanningConfig()
-
     print("\n[1/2] Building large-plan inputs")
     artifacts, state = adapter_data_io.build_large_inputs(
         adapter_input,
         planning_time,
-        disable_default_flow_aliases=args.disable_default_flow_aliases,
-        config=large_config,
+        disable_default_flow_aliases=algorithm_config.disable_default_flow_aliases,
+        config=algorithm_config.large,
     )
     print_case_summary(artifacts)
-    medium_voyages = list(args.medium_voyages or artifacts.export_vessels)
+    medium_voyages = list(
+        algorithm_config.medium_voyages
+        or (list(artifacts.export_vessels) + list(artifacts.import_vessels))
+    )
 
     print("\n[1/2] Solving large plan with weighted objectives")
     large_solution = solve_daily_rolling_yard_plan(
         artifacts.data,
-        time_limit=args.large_time_limit,
-        mip_gap=args.large_mip_gap,
-        verbose=not args.large_quiet,
+        time_limit=algorithm_config.large_time_limit,
+        mip_gap=algorithm_config.large_mip_gap,
+        verbose=algorithm_config.large_verbose,
     )
     print_solution_summary(large_solution)
 
@@ -150,8 +151,8 @@ def main() -> None:
         large_allocation_rows,
         planning_time=medium_planning_time,
         voyages=medium_voyages,
-        horizon_hours=args.horizon_hours,
-        misplaced_bay_exclusion_ratio=args.misplaced_bay_exclusion_ratio,
+        horizon_hours=algorithm_config.horizon_hours,
+        misplaced_bay_exclusion_ratio=algorithm_config.misplaced_bay_exclusion_ratio,
     )
     write_medium_demand_rows_from_rows(
         medium_small_output_dir / "medium_demand_by_port.csv",
@@ -161,7 +162,7 @@ def main() -> None:
     print("[2/2] Solving medium and small plans with SCIP column generation")
     result, medium_diagnostics = solve_medium_small_problem(
         medium_problem,
-        make_config(args),
+        algorithm_config.medium_small,
         medium_small_output_dir,
         diagnostics_context={
             "adapter_json": str(adapter_json_path),

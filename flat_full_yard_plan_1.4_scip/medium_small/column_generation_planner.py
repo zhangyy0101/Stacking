@@ -17,6 +17,15 @@ SIZE_ORDER = {"45": 0, "20": 1, "40": 2}
 EXPORT_FLOWS = frozenset({"OF"})
 
 
+def _area_flow(flow: object) -> str:
+    text = "" if flow is None else str(flow).strip().upper()
+    if text == "OF":
+        return "OF"
+    if text in {"IF", "IZ", "T"}:
+        return text
+    return "OZ"
+
+
 @dataclass(frozen=True)
 class PlacementColumn:
     column_id: str
@@ -30,6 +39,7 @@ class PlacementColumn:
     height: str
     weight_class: str
     special_stow_code: str
+    attributes: dict[str, str]
     area_no: str
     bay_key: str
     bay_no: str
@@ -48,13 +58,17 @@ class ColumnGenerationConfig:
     max_iterations: int = 30
     columns_per_iteration: int = 2500
     stalled_pricing_columns: int = 500
+    min_pricing_iterations: int = 3
+    pricing_early_stop_new_columns: int = 500
+    feasibility_early_stop_enabled: bool = True
+    feasibility_early_stop_min_iteration: int = 1
     primal_expansion_columns: int = 800
     max_primal_expansion_rounds: int = 3
     primal_expansion_reduced_cost_limit: float = 1_000_000.0
     stage0_closure_enabled: bool = True
     stage0_closure_max_extra_columns: int = 1500
     stage0_min_unplaced_time_limit: float = 12.0
-    initial_columns_per_group: int = 16
+    initial_columns_per_group: int = 8
     max_candidate_bays_per_group: int = 500
     mip_time_limit: float = 120.0
     mip_gap: float = 0.01
@@ -66,16 +80,17 @@ class ColumnGenerationConfig:
     diving_improvement_time_limit: float = 6.0
     diving_improvement_max_groups: int = 14
     diving_improvement_max_no_improve_rounds: int = 2
-    repair_lns_rounds: int = 2
-    repair_lns_time_limit: float = 3.0
-    repair_lns_max_groups: int = 16
-    repair_lns_max_no_improve_rounds: int = 2
+    repair_lns_rounds: int = 24
+    repair_lns_time_limit: float = 4.0
+    repair_lns_max_groups: int = 24
+    repair_lns_max_no_improve_rounds: int = 4
     coarse_compaction_lns_rounds: int = 0
     coarse_compaction_lns_time_limit: float = 4.0
     coarse_compaction_lns_max_groups: int = 16
     coarse_compaction_lns_max_no_improve_rounds: int = 1
     post_repair_area_relayout_enabled: bool = True
     post_repair_area_relayout_max_patterns: int = 1
+    enable_diving: bool = False
     diving_price_columns: bool = False
     diving_stop_on_lp_unplaced: bool = True
     diving_skip_when_lp_unplaced: bool = True
@@ -85,6 +100,7 @@ class ColumnGenerationConfig:
     demand_mode: str = "original"
     medium_plan_quota: dict[tuple[str, str, str, str, str], int] | None = None
     medium_plan_bay_quota: dict[tuple[str, str, str, str, str, str], int] | None = None
+    repair_can_exceed_medium_plan_quota: bool = False
     unplaced_penalty: float = 100_000.0
     required_area_reward: float = 1_000.0
     group_area_balance_penalty: float = 18.0
@@ -107,7 +123,6 @@ class ColumnGenerationConfig:
     post_window_loading_area_reward: float = 5.0
     fallback_bay_penalty: float = 4.0
     non_preferred_block_penalty: float = 6.0
-    port_mismatch_penalty: float = 1.0
 
 
 @dataclass
@@ -133,6 +148,7 @@ class ColumnGenerationPlanner:
         self.config = config or ColumnGenerationConfig()
         self.group_source: dict[str, str] = {}
         self.demand_stats: dict[str, int | str] = {}
+        self.import_voyages = self._infer_import_voyages(problem)
         self.groups = sorted(self._build_planning_groups(), key=self._group_sort_key)
         self.groups_by_id = {group.group_id: group for group in self.groups}
         self._expand_user_bay_adjust_rules()
@@ -144,6 +160,7 @@ class ColumnGenerationPlanner:
         self.block_by_bay: dict[tuple[str, str], str] = {}
         self.block_bay_nos: dict[str, tuple[str, ...]] = {}
         self.area_size_height_cap: Counter[tuple[str, str, str]] = Counter()
+        self.area_group_cap: Counter[tuple[str, str]] = Counter()
         self.quota_by_key: Counter[tuple[str, str, str, str]] = Counter()
         self.group_demand = {group.group_id: int(group.demand) for group in self.groups}
         self.coarse_demand: Counter[tuple[str, str, str, str]] = Counter()
@@ -295,6 +312,7 @@ class ColumnGenerationPlanner:
                     pre_stow=False,
                     special_stow=False,
                     special_stow_code="",
+                    attributes=self._fallback_group_attributes(voyage_id, flow, port, size, height),
                 )
                 planning_groups.append(group)
                 self.group_source[group.group_id] = "forecast_fallback"
@@ -369,6 +387,7 @@ class ColumnGenerationPlanner:
                     pre_stow=False,
                     special_stow=False,
                     special_stow_code="",
+                    attributes=self._fallback_group_attributes(voyage_id, flow, port, size, height),
                 )
                 planning_groups.append(group)
                 self.group_source[group.group_id] = "forecast_fallback"
@@ -419,7 +438,32 @@ class ColumnGenerationPlanner:
             pre_stow=group.pre_stow,
             special_stow=group.special_stow,
             special_stow_code=group.special_stow_code,
+            attributes=dict(getattr(group, "attributes", {}) or {}),
         )
+
+    def _fallback_group_attributes(
+        self,
+        voyage_id: str,
+        flow: str,
+        port: str,
+        size: str,
+        height: str,
+        weight_class: str = "UNK",
+    ) -> dict[str, str]:
+        attrs: list[str] = []
+        rules = getattr(self.problem, "attribute_rules", None)
+        if rules is not None:
+            rule_sets = [rules.coarse_for(voyage_id), rules.fine_for(voyage_id)]
+            rule_sets.extend([rules.bay_no_mix_for(voyage_id), rules.row_no_mix_for(voyage_id)])
+            for values in rule_sets:
+                for attr in values:
+                    text = str(attr)
+                    if text and text not in attrs:
+                        attrs.append(text)
+        out: dict[str, str] = {}
+        for attr in attrs:
+            out[attr] = "MIXED"
+        return out
 
     @staticmethod
     def _small_group_coarse_key(group: SmallBoxGroup) -> tuple[str, str, str, str]:
@@ -561,8 +605,15 @@ class ColumnGenerationPlanner:
             diagnostics["scip_failure"] = f"{type(exc).__name__}: {exc}"
             selected, unplaced = self._greedy_fallback()
 
-        selected, unplaced, repair_stats = self._repair_or_replace_unplaced_solution(selected, unplaced)
-        diagnostics.update(repair_stats)
+        diagnostics.update(
+            {
+                "final_repair_enabled": False,
+                "pre_repair_unplaced_boxes": sum(unplaced.values()),
+                "post_repair_unplaced_boxes": sum(unplaced.values()),
+                "used_unplaced_repair": False,
+                "unplaced_repair_method": "not_run_after_diving",
+            }
+        )
         selected, relayout_stats = self._post_repair_area_relayout(selected, unplaced)
         diagnostics.update(relayout_stats)
 
@@ -633,14 +684,12 @@ class ColumnGenerationPlanner:
             method = "staged_fallback_repair_lns"
             best_selected = lns_selected
             best_unplaced = lns_unplaced
-        compaction_selected, compaction_unplaced, compaction_stats = self._run_coarse_compaction_lns_rounds(
-            best_selected,
-            best_unplaced,
-        )
-        if self._solution_rank(compaction_selected, compaction_unplaced) < self._solution_rank(best_selected, best_unplaced):
-            method = "staged_fallback_repair_lns_compaction"
-            best_selected = compaction_selected
-            best_unplaced = compaction_unplaced
+        compaction_stats = {
+            "coarse_compaction_lns_rounds_requested": 0,
+            "coarse_compaction_lns_rounds_run": 0,
+            "coarse_compaction_lns_improvements": 0,
+            "coarse_compaction_lns_stop_reason": "disabled_by_flow",
+        }
         stats.update(
             {
                 "used_unplaced_repair": method != "master_incumbent",
@@ -1246,7 +1295,25 @@ class ColumnGenerationPlanner:
     def _solve_by_column_generation(self) -> tuple[Counter[int], Counter[str], dict]:
         from pyscipopt import Model, quicksum
 
-        stats = {"scip_available": True, "pricing_iterations": []}
+        stats = {
+            "scip_available": True,
+            "pricing_iterations": [],
+            "pricing_stop_reason": "",
+            "pricing_iterations_run": 0,
+            "pricing_min_iterations": max(0, int(getattr(self.config, "min_pricing_iterations", 0) or 0)),
+            "pricing_early_stop_new_columns": max(
+                0,
+                int(getattr(self.config, "pricing_early_stop_new_columns", 0) or 0),
+            ),
+            "feasibility_early_stop_enabled": bool(
+                getattr(self.config, "feasibility_early_stop_enabled", False)
+            ),
+            "feasibility_early_stop_min_iteration": max(
+                0,
+                int(getattr(self.config, "feasibility_early_stop_min_iteration", 0) or 0),
+            ),
+            "feasibility_early_stop_checks": [],
+        }
         final_lp_bound = None
         best_start_source = "greedy_seed"
         best_start_selected = Counter(self._master_seed_selected)
@@ -1302,29 +1369,124 @@ class ColumnGenerationPlanner:
                     flush=True,
                 )
             self._free_scip_model(lp_model)
+            stats["pricing_iterations_run"] = iteration + 1
+            if (
+                stats["feasibility_early_stop_enabled"]
+                and iteration + 1 >= int(stats["feasibility_early_stop_min_iteration"])
+            ):
+                check_start = perf_counter()
+                early_source_unplaced = Counter(best_start_unplaced)
+                for group_id, qty in lp_unplaced.items():
+                    early_source_unplaced[group_id] = max(
+                        int(early_source_unplaced.get(group_id, 0)),
+                        int(qty),
+                    )
+                early_closure_stats = self._stage0_unplaced_column_closure(early_source_unplaced)
+                early_repaired_selected, _early_repaired_unplaced = self._repair_selected_solution(best_start_selected)
+                early_selected, early_unplaced, early_stage_stats = self._staged_repair_selected_solution(
+                    early_repaired_selected,
+                    allow_new_columns=True,
+                )
+                early_unplaced_boxes = sum(early_unplaced.values())
+                early_record = {
+                    "iteration": iteration,
+                    "source_unplaced_boxes": sum(qty for qty in early_source_unplaced.values() if qty > 0),
+                    "closure_added_columns": early_closure_stats.get("stage0_closure_added_columns", 0),
+                    "closure_hit_limit": early_closure_stats.get("stage0_closure_hit_limit", False),
+                    "staged_repair_unplaced_boxes": early_unplaced_boxes,
+                    "staged_repair_selected_candidate": early_stage_stats.get("selected_candidate", ""),
+                    "staged_repair_seconds": round(perf_counter() - check_start, 3),
+                }
+                stats["feasibility_early_stop_checks"].append(early_record)
+                stats["pricing_iterations"][-1].update(
+                    {
+                        "feasibility_early_stop_unplaced_boxes": early_unplaced_boxes,
+                        "feasibility_early_stop_seconds": early_record["staged_repair_seconds"],
+                        "feasibility_early_stop_added_columns": early_record["closure_added_columns"],
+                    }
+                )
+                if self._solution_rank(early_selected, early_unplaced) < self._solution_rank(
+                    best_start_selected,
+                    best_start_unplaced,
+                ):
+                    best_start_source = f"pricing_iter_{iteration}_feasibility_repair"
+                    best_start_selected = early_selected
+                    best_start_unplaced = early_unplaced
+                if early_unplaced_boxes <= 0:
+                    stats["pricing_stop_reason"] = "feasibility_repair_zero_unplaced"
+                    break
             if new_count == 0:
+                stats["pricing_stop_reason"] = "no_new_columns"
                 break
+            min_iterations = int(stats["pricing_min_iterations"])
+            early_stop_new_columns = int(stats["pricing_early_stop_new_columns"])
+            if (
+                early_stop_new_columns > 0
+                and iteration + 1 >= min_iterations
+                and new_count < early_stop_new_columns
+            ):
+                stats["pricing_stop_reason"] = "few_new_columns"
+                break
+        if not stats["pricing_stop_reason"]:
+            stats["pricing_stop_reason"] = "max_iterations"
 
-        closure_source_unplaced = Counter(best_start_unplaced)
-        for group_id, qty in last_lp_unplaced.items():
-            closure_source_unplaced[group_id] = max(int(closure_source_unplaced.get(group_id, 0)), int(qty))
+        closure_source_unplaced = Counter()
+        if sum(best_start_unplaced.values()) > 0:
+            closure_source_unplaced = Counter(best_start_unplaced)
+            for group_id, qty in last_lp_unplaced.items():
+                closure_source_unplaced[group_id] = max(int(closure_source_unplaced.get(group_id, 0)), int(qty))
         closure_stats = self._stage0_unplaced_column_closure(closure_source_unplaced)
         stats.update(closure_stats)
-        augmented_selected, augmented_unplaced = self._repair_selected_solution(best_start_selected)
-        augmented_stats = self._stage0_repaired_candidate_stats(
-            "stage0_augmented_repair",
-            best_start_selected,
-            best_start_unplaced,
-            augmented_selected,
-            augmented_unplaced,
-        )
-        stats.update(augmented_stats)
-        if augmented_stats.get("stage0_augmented_repair_accepted"):
-            best_start_source = "stage0_augmented_repair"
-            best_start_selected = augmented_selected
-            best_start_unplaced = augmented_unplaced
+        if sum(best_start_unplaced.values()) > 0:
+            augmented_selected, augmented_unplaced = self._repair_selected_solution(best_start_selected)
+            augmented_stats = self._stage0_repaired_candidate_stats(
+                "stage0_augmented_repair",
+                best_start_selected,
+                best_start_unplaced,
+                augmented_selected,
+                augmented_unplaced,
+            )
+            stats.update(augmented_stats)
+            if augmented_stats.get("stage0_augmented_repair_accepted"):
+                best_start_source = "stage0_augmented_repair"
+                best_start_selected, best_start_unplaced, _ = self._staged_repair_selected_solution(
+                    augmented_selected,
+                    allow_new_columns=True,
+                )
+        else:
+            stats.update(
+                {
+                    "stage0_augmented_repair_pre_unplaced_boxes": 0,
+                    "stage0_augmented_repair_final_unplaced_boxes": 0,
+                    "stage0_augmented_repair_final_objective": round(
+                        self._selected_solution_energy(best_start_selected, best_start_unplaced),
+                        6,
+                    ),
+                    "stage0_augmented_repair_incumbent_final_unplaced_boxes": 0,
+                    "stage0_augmented_repair_incumbent_final_objective": round(
+                        self._selected_solution_energy(best_start_selected, best_start_unplaced),
+                        6,
+                    ),
+                    "stage0_augmented_repair_accepted": False,
+                    "stage0_augmented_repair_comparison_added_columns": 0,
+                    "stage0_augmented_repair_skipped_reason": "zero_unplaced_start",
+                }
+            )
 
-        min_stage0_selected, min_stage0_unplaced, min_stage0_stats = self._solve_stage0_min_unplaced_master(Model, quicksum)
+        if sum(best_start_unplaced.values()) <= 0:
+            min_stage0_selected = Counter(best_start_selected)
+            min_stage0_unplaced = Counter(best_start_unplaced)
+            min_stage0_stats = {
+                "stage0_min_unplaced_has_solution": False,
+                "stage0_min_unplaced_status": "skipped_zero_unplaced_start",
+                "stage0_min_unplaced_boxes": 0,
+                "stage0_min_unplaced_columns": sum(1 for qty in min_stage0_selected.values() if qty > 0),
+                "stage0_min_unplaced_seconds": 0.0,
+                "stage0_min_unplaced_gap": None,
+                "stage0_min_unplaced_objective": None,
+            }
+        else:
+            min_stage0_selected, min_stage0_unplaced, min_stage0_stats = self._solve_stage0_min_unplaced_master(Model, quicksum)
         stats.update(min_stage0_stats)
         stage0_min_proven = (
             bool(min_stage0_stats.get("stage0_min_unplaced_has_solution"))
@@ -1357,19 +1519,186 @@ class ColumnGenerationPlanner:
             stats.update(candidate_stats)
             if candidate_stats.get("stage0_min_unplaced_candidate_accepted"):
                 best_start_source = "stage0_min_unplaced_candidate"
-                best_start_selected = min_stage0_selected
-                best_start_unplaced = min_stage0_unplaced
+                best_start_selected, best_start_unplaced, _ = self._staged_repair_selected_solution(
+                    min_stage0_selected,
+                    allow_new_columns=True,
+                )
 
-        final_lp_model, _final_lp_vars, _final_lp_constraints = self._build_restricted_master(
+        if sum(best_start_unplaced.values()) > 0:
+            pre_diving_selected, pre_diving_unplaced, pre_diving_repair_stats = self._staged_repair_selected_solution(
+                best_start_selected,
+                allow_new_columns=True,
+            )
+            stats.update(
+                {
+                    "pre_diving_staged_repair_selected_candidate": pre_diving_repair_stats.get("selected_candidate", ""),
+                    "pre_diving_staged_repair_unplaced_boxes": sum(pre_diving_unplaced.values()),
+                    "pre_diving_staged_repair_candidates": pre_diving_repair_stats.get("candidates", []),
+                    "pre_diving_staged_repair_iterations": pre_diving_repair_stats.get("iterations", []),
+                }
+            )
+            if self._solution_rank(pre_diving_selected, pre_diving_unplaced) < self._solution_rank(
+                best_start_selected,
+                best_start_unplaced,
+            ):
+                best_start_source = f"{best_start_source}_pre_diving_staged_repair"
+                best_start_selected = pre_diving_selected
+                best_start_unplaced = pre_diving_unplaced
+        else:
+            stats.update(
+                {
+                    "pre_diving_staged_repair_selected_candidate": "skipped_zero_unplaced",
+                    "pre_diving_staged_repair_unplaced_boxes": 0,
+                    "pre_diving_staged_repair_candidates": [],
+                    "pre_diving_staged_repair_iterations": [],
+                }
+            )
+
+        feasibility_lns_selected, feasibility_lns_unplaced, feasibility_lns_stats = self._run_repair_lns_rounds(
+            best_start_selected,
+            best_start_unplaced,
+            best_start_unplaced,
+        )
+        stats.update({f"feasibility_{key}": value for key, value in feasibility_lns_stats.items()})
+        if self._solution_rank(feasibility_lns_selected, feasibility_lns_unplaced) < self._solution_rank(
+            best_start_selected,
+            best_start_unplaced,
+        ):
+            best_start_source = f"{best_start_source}_feasibility_lns"
+            best_start_selected = feasibility_lns_selected
+            best_start_unplaced = feasibility_lns_unplaced
+
+        if sum(best_start_unplaced.values()) > 0:
+            post_lns_selected, post_lns_unplaced, post_lns_repair_stats = self._staged_repair_selected_solution(
+                best_start_selected,
+                allow_new_columns=True,
+            )
+            stats.update(
+                {
+                    "post_lns_staged_repair_selected_candidate": post_lns_repair_stats.get("selected_candidate", ""),
+                    "post_lns_staged_repair_unplaced_boxes": sum(post_lns_unplaced.values()),
+                    "post_lns_staged_repair_candidates": post_lns_repair_stats.get("candidates", []),
+                    "post_lns_staged_repair_iterations": post_lns_repair_stats.get("iterations", []),
+                }
+            )
+            if self._solution_rank(post_lns_selected, post_lns_unplaced) < self._solution_rank(
+                best_start_selected,
+                best_start_unplaced,
+            ):
+                best_start_source = f"{best_start_source}_post_lns_staged_repair"
+                best_start_selected = post_lns_selected
+                best_start_unplaced = post_lns_unplaced
+        else:
+            stats.update(
+                {
+                    "post_lns_staged_repair_selected_candidate": "skipped_zero_unplaced",
+                    "post_lns_staged_repair_unplaced_boxes": 0,
+                    "post_lns_staged_repair_candidates": [],
+                    "post_lns_staged_repair_iterations": [],
+                }
+            )
+
+        feasibility_unplaced_boxes = sum(best_start_unplaced.values())
+        stats.update(
+            {
+                "feasibility_repair_source": best_start_source,
+                "feasibility_repair_unplaced_boxes": feasibility_unplaced_boxes,
+                "feasibility_repair_columns": sum(1 for qty in best_start_selected.values() if qty > 0),
+            }
+        )
+        if feasibility_unplaced_boxes > 0:
+            objective = self._selected_solution_energy(best_start_selected, best_start_unplaced)
+            self._master_start_selected = best_start_selected
+            self._master_start_unplaced = best_start_unplaced
+            stats.update(
+                {
+                    "master_algorithm": "column_generation_feasibility_repair",
+                    "master_status": "feasibility_repair_unplaced",
+                    "master_objective": objective,
+                    "master_primal_bound": objective,
+                    "master_dual_bound": None,
+                    "master_mip_gap": None,
+                    "master_mip_gap_is_reliable": False,
+                    "restricted_master_lp_bound": None,
+                    "master_mip_start_source": best_start_source,
+                    "master_mip_start_repaired_columns": sum(1 for qty in best_start_selected.values() if qty > 0),
+                    "master_mip_start_repaired_unplaced_boxes": feasibility_unplaced_boxes,
+                    "stage0_min_unplaced_cap_enforced": False,
+                    "stage0_unplaced_cap": stage0_unplaced_cap,
+                    "diving_unplaced_cap": None,
+                    "stage0_unplaced_cap_source": stage0_unplaced_cap_source,
+                    "diving_skipped_reason": "feasibility_repair_unplaced",
+                }
+            )
+            return best_start_selected, best_start_unplaced, stats
+
+        if not bool(getattr(self.config, "enable_diving", False)):
+            objective = self._selected_solution_energy(best_start_selected, best_start_unplaced)
+            self._master_start_selected = best_start_selected
+            self._master_start_unplaced = best_start_unplaced
+            stats.update(
+                {
+                    "master_algorithm": "column_generation_feasibility_repair",
+                    "master_status": "diving_disabled",
+                    "master_objective": objective,
+                    "master_primal_bound": objective,
+                    "master_dual_bound": None,
+                    "master_mip_gap": None,
+                    "master_mip_gap_is_reliable": False,
+                    "master_mip_start_source": best_start_source,
+                    "master_mip_start_repaired_columns": sum(1 for qty in best_start_selected.values() if qty > 0),
+                    "master_mip_start_repaired_unplaced_boxes": sum(best_start_unplaced.values()),
+                    "stage0_min_unplaced_cap_enforced": False,
+                    "stage0_unplaced_cap": stage0_unplaced_cap,
+                    "diving_unplaced_cap": None,
+                    "stage0_unplaced_cap_source": stage0_unplaced_cap_source,
+                    "restricted_master_lp_bound": None,
+                    "restricted_master_lp_unplaced_boxes": None,
+                    "restricted_master_lp_fractional_column_count": None,
+                    "restricted_master_lp_solve_seconds": 0.0,
+                    "master_solve_seconds": 0.0,
+                    "diving_enabled": False,
+                    "diving_skipped_reason": "disabled_by_config",
+                    "diving_step_count": 0,
+                    "diving_iterations": [],
+                    "diving_improvement_rounds_requested": 0,
+                    "diving_improvement_time_limit": 0.0,
+                    "diving_improvement_max_groups": 0,
+                    "diving_improvement_max_no_improve_rounds": 0,
+                    "diving_improvement_rounds_run": 0,
+                    "diving_improvement_improvements": 0,
+                    "diving_improvement_incumbent_source": "",
+                    "diving_improvement_iterations": [],
+                    "diving_improvement_stop_reason": "disabled_by_config",
+                }
+            )
+            return best_start_selected, best_start_unplaced, stats
+
+        diving_unplaced_cap = None
+        final_lp_unplaced_boxes: int | None = None
+        final_lp_fractional_column_count: int | None = None
+        final_lp_model, final_lp_vars, _final_lp_constraints = self._build_restricted_master(
             Model,
             quicksum,
             relax=True,
-            unplaced_cap=stage0_unplaced_cap,
+            unplaced_cap=diving_unplaced_cap,
         )
         self._set_scip_param(final_lp_model, "limits/time", min(float(self.config.mip_time_limit), 30.0))
+        final_lp_solve_start = perf_counter()
         final_lp_model.optimize()
+        final_lp_solve_seconds = round(perf_counter() - final_lp_solve_start, 3)
         if self._scip_status_name(final_lp_model) == "optimal":
             final_lp_bound = self._scip_objective_value(final_lp_model)
+            final_lp_unplaced_float = self._scip_unplaced_float_values(final_lp_model, final_lp_vars)
+            final_lp_unplaced_boxes = sum(
+                int(round(value))
+                for value in final_lp_unplaced_float.values()
+                if value > 1e-6
+            )
+            final_lp_column_values = self._scip_column_values(final_lp_model, final_lp_vars)
+            final_lp_fractional_column_count = len(
+                self._fractional_column_values(final_lp_column_values, {}, 1e-6)
+            )
         self._free_scip_model(final_lp_model)
 
         self._master_start_selected = best_start_selected
@@ -1379,12 +1708,36 @@ class ColumnGenerationPlanner:
                 "master_mip_start_source": best_start_source,
                 "master_mip_start_repaired_columns": sum(1 for qty in best_start_selected.values() if qty > 0),
                 "master_mip_start_repaired_unplaced_boxes": sum(best_start_unplaced.values()),
-                "stage0_min_unplaced_cap_enforced": stage0_unplaced_cap is not None,
+                "stage0_min_unplaced_cap_enforced": diving_unplaced_cap is not None,
                 "stage0_unplaced_cap": stage0_unplaced_cap,
+                "diving_unplaced_cap": diving_unplaced_cap,
                 "stage0_unplaced_cap_source": stage0_unplaced_cap_source,
                 "restricted_master_lp_bound": final_lp_bound,
+                "restricted_master_lp_unplaced_boxes": final_lp_unplaced_boxes,
+                "restricted_master_lp_fractional_column_count": final_lp_fractional_column_count,
+                "restricted_master_lp_solve_seconds": final_lp_solve_seconds,
             }
         )
+        if final_lp_unplaced_boxes and final_lp_unplaced_boxes > 0:
+            objective = self._selected_solution_energy(best_start_selected, best_start_unplaced)
+            stats.update(
+                {
+                    "master_algorithm": "column_generation_diving",
+                    "master_status": "diving_lp_unplaced_stop",
+                    "master_objective": objective,
+                    "master_primal_bound": objective,
+                    "master_dual_bound": final_lp_bound,
+                    "master_mip_gap": None,
+                    "master_mip_gap_is_reliable": False,
+                    "master_solve_seconds": final_lp_solve_seconds,
+                    "diving_step_count": 0,
+                    "diving_iterations": [],
+                    "diving_skipped_reason": "restricted_master_lp_unplaced_without_fixed_columns",
+                    "diving_lp_unplaced_boxes": final_lp_unplaced_boxes,
+                    "diving_best_source": best_start_source,
+                }
+            )
+            return best_start_selected, best_start_unplaced, stats
 
         selected, unplaced, diving_stats = self._solve_master_by_diving(
             Model,
@@ -1393,7 +1746,7 @@ class ColumnGenerationPlanner:
             best_start_source,
             best_start_selected,
             best_start_unplaced,
-            stage0_unplaced_cap,
+            diving_unplaced_cap,
         )
         stats.update(diving_stats)
         return selected, unplaced, stats
@@ -1708,6 +2061,11 @@ class ColumnGenerationPlanner:
                     record["decision"] = "stop_on_lp_unplaced"
                     record["previous_fix_batch_size"] = current_fix_batch_size
                     fixed_columns = dict(rollback_fixed_columns)
+                    if not fixed_columns:
+                        record["decision"] = "stop_on_lp_unplaced_no_fixed_columns"
+                        diving_iterations.append(record)
+                        status = "diving_lp_unplaced_stop"
+                        break
                     if current_fix_batch_size > 1:
                         current_fix_batch_size = max(1, current_fix_batch_size // 2)
                         record["decision"] = "rollback_reduce_batch_after_lp_unplaced"
@@ -2389,12 +2747,12 @@ class ColumnGenerationPlanner:
             for footprint_key in self._placement_footprint_keys(col.bay_key, col.size):
                 bay_capacity_cols[footprint_key].append((idx, col))
                 bay_port_size_cols[(footprint_key, self._row_mix_key_for_column(col), col.size)].append((idx, col))
-                for attr in self._bay_no_mix_attrs(col.voyage_id):
+                for attr in self._bay_no_mix_attrs_for_column(col):
                     bay_attr_choice_cols[(footprint_key, attr, self._column_attr_value(col, attr))].append(idx)
             for footprint_key, row_no, qty in col.row_allocation:
                 row_capacity_cols[(footprint_key, row_no)].append((idx, int(qty)))
                 row_size_capacity_cols[(footprint_key, row_no, col.size)].append((idx, int(qty)))
-                for attr in self._row_no_mix_attrs(col.voyage_id):
+                for attr in self._row_no_mix_attrs_for_column(col):
                     row_attr_choice_cols[(footprint_key, row_no, attr, self._column_attr_value(col, attr))].append(idx)
             bay_size_capacity_cols[(col.bay_key, col.size)].append((idx, col))
             group_bay_cols[(col.group_id, col.bay_key)].append(idx)
@@ -3158,46 +3516,69 @@ class ColumnGenerationPlanner:
         if self.attribute_rules is not None and voyage_id is not None and hasattr(self.attribute_rules, "bay_no_mix_for"):
             attrs = self.attribute_rules.bay_no_mix_for(voyage_id)
         else:
-            attrs = getattr(self.attribute_rules, "bay_no_mix_attributes", ("size", "height"))
+            attrs = getattr(self.attribute_rules, "bay_no_mix_attributes", ())
         return tuple(str(attr) for attr in attrs if str(attr))
 
     def _row_no_mix_attrs(self, voyage_id: object = None) -> tuple[str, ...]:
         if self.attribute_rules is not None and voyage_id is not None and hasattr(self.attribute_rules, "row_no_mix_for"):
             attrs = self.attribute_rules.row_no_mix_for(voyage_id)
         else:
-            attrs = getattr(self.attribute_rules, "row_no_mix_attributes", ("port",))
+            attrs = getattr(self.attribute_rules, "row_no_mix_attributes", ())
         return tuple(str(attr) for attr in attrs if str(attr))
 
     @staticmethod
+    def _infer_import_voyages(problem: ProblemData) -> set[str]:
+        flows_by_voyage: defaultdict[str, set[str]] = defaultdict(set)
+        for row in getattr(problem, "big_plan", []) or []:
+            flows_by_voyage[str(row.voyage_id)].add(str(row.flow))
+        for group in list(getattr(problem, "groups", []) or []) + list(getattr(problem, "small_groups", []) or []):
+            flows_by_voyage[str(group.voyage_id)].add(str(group.status))
+        return {
+            voyage_id
+            for voyage_id, flows in flows_by_voyage.items()
+            if flows and not any(flow in EXPORT_FLOWS for flow in flows)
+        }
+
+    def _is_import_voyage(self, voyage_id: object) -> bool:
+        return str(voyage_id) in self.import_voyages
+
+    def _bay_no_mix_attrs_for_group(self, group: SmallBoxGroup) -> tuple[str, ...]:
+        return self._bay_no_mix_attrs(group.voyage_id)
+
+    def _row_no_mix_attrs_for_group(self, group: SmallBoxGroup) -> tuple[str, ...]:
+        return self._row_no_mix_attrs(group.voyage_id)
+
+    def _bay_no_mix_attrs_for_column(self, col: PlacementColumn) -> tuple[str, ...]:
+        return self._bay_no_mix_attrs(col.voyage_id)
+
+    def _row_no_mix_attrs_for_column(self, col: PlacementColumn) -> tuple[str, ...]:
+        return self._row_no_mix_attrs(col.voyage_id)
+
+    @staticmethod
     def _group_attr_value(group: SmallBoxGroup, attr: str) -> str:
-        if attr == "flow":
-            attr = "status"
-        value = getattr(group, attr, "")
+        attrs = getattr(group, "attributes", {}) or {}
+        value = attrs.get(attr, "")
         if isinstance(value, bool):
             return "1" if value else "0"
         return str(value)
 
     @staticmethod
     def _column_attr_value(col: PlacementColumn, attr: str) -> str:
-        if attr == "flow":
-            attr = "status"
-        if attr == "status":
-            value = col.flow
-        else:
-            value = getattr(col, attr, "")
+        attrs = getattr(col, "attributes", {}) or {}
+        value = attrs.get(attr, "")
         if isinstance(value, bool):
             return "1" if value else "0"
         return str(value)
 
     def _row_mix_key_for_group(self, group: SmallBoxGroup) -> str:
-        return "|".join(f"{attr}={self._group_attr_value(group, attr)}" for attr in self._row_no_mix_attrs(group.voyage_id)) or "__all__"
+        return "|".join(f"{attr}={self._group_attr_value(group, attr)}" for attr in self._row_no_mix_attrs_for_group(group)) or "__all__"
 
     def _row_mix_key_for_column(self, col: PlacementColumn) -> str:
-        return "|".join(f"{attr}={self._column_attr_value(col, attr)}" for attr in self._row_no_mix_attrs(col.voyage_id)) or "__all__"
+        return "|".join(f"{attr}={self._column_attr_value(col, attr)}" for attr in self._row_no_mix_attrs_for_column(col)) or "__all__"
 
     def _row_existing_attrs_allow_group(self, bay: Bay, row_no: str, group: SmallBoxGroup) -> bool:
         row_attrs = getattr(bay, "existing_attrs_by_row", {}).get(str(row_no), {})
-        for attr in self._row_no_mix_attrs(group.voyage_id):
+        for attr in self._row_no_mix_attrs_for_group(group):
             values = set(row_attrs.get(attr, set()))
             if values and self._group_attr_value(group, attr) not in values:
                 return False
@@ -3207,7 +3588,7 @@ class ColumnGenerationPlanner:
         for key in footprint:
             bay = self.bays[key]
             existing_attrs = getattr(bay, "existing_attrs", {})
-            for attr in self._bay_no_mix_attrs(group.voyage_id):
+            for attr in self._bay_no_mix_attrs_for_group(group):
                 values = set(existing_attrs.get(attr, set()))
                 if values and values != {self._group_attr_value(group, attr)}:
                     return False
@@ -3216,7 +3597,7 @@ class ColumnGenerationPlanner:
     def _bay_state_attrs_allow_group(self, group: SmallBoxGroup, footprint: tuple[str, ...], state: dict) -> bool:
         used_attrs = state.setdefault("bay_used_attrs", {})
         for key in footprint:
-            for attr in self._bay_no_mix_attrs(group.voyage_id):
+            for attr in self._bay_no_mix_attrs_for_group(group):
                 state_key = (key, attr)
                 value = self._group_attr_value(group, attr)
                 if used_attrs.get(state_key, value) != value:
@@ -3270,7 +3651,7 @@ class ColumnGenerationPlanner:
                         int(bay.row_physical_capacity.get(row_no, raw_cap)) - int(state["row_load"][row_key]),
                         int(raw_cap) - int(state["row_size_load"][row_size_key]),
                     )
-                    for attr in self._row_no_mix_attrs(group.voyage_id):
+                    for attr in self._row_no_mix_attrs_for_group(group):
                         value = self._group_attr_value(group, attr)
                         used = state["row_used_attrs"].get((footprint_key, row_no, attr), value)
                         if used != value:
@@ -3457,6 +3838,7 @@ class ColumnGenerationPlanner:
                 height=group.height,
                 weight_class=group.weight_class,
                 special_stow_code=group.special_stow_code,
+                attributes=dict(getattr(group, "attributes", {}) or {}),
                 area_no=bay.area_no,
                 bay_key=bay_key,
                 bay_no=bay.bay_no,
@@ -3485,6 +3867,7 @@ class ColumnGenerationPlanner:
     ) -> tuple[Counter[int], Counter[str]]:
         repaired, state, placed = self._selection_state(selected)
         unplaced: Counter[str] = Counter()
+        enforce_medium_plan_quota = self._repair_enforces_medium_plan_quota()
         for group in self.groups:
             remaining = int(group.demand) - int(placed.get(group.group_id, 0))
             while remaining > 0:
@@ -3494,6 +3877,7 @@ class ColumnGenerationPlanner:
                     remaining,
                     repaired,
                     allow_new_columns=allow_new_columns,
+                    enforce_medium_plan_quota=enforce_medium_plan_quota,
                 )
                 if choice is None:
                     break
@@ -3579,26 +3963,61 @@ class ColumnGenerationPlanner:
             stats["repair_lns_stop_reason"] = f"scip_unavailable:{type(exc).__name__}"
             return Counter(incumbent_selected), Counter(incumbent_unplaced), stats
 
-        neighborhoods = self._repair_lns_neighborhoods(incumbent_selected, seed_unplaced, max_rounds * 2, max_groups)
-        stats["repair_lns_candidate_neighborhoods"] = len(neighborhoods)
-        if not neighborhoods:
-            stats["repair_lns_stop_reason"] = "no_neighborhood"
-            return Counter(incumbent_selected), Counter(incumbent_unplaced), stats
-
         best_selected = Counter(incumbent_selected)
         best_unplaced = Counter(incumbent_unplaced)
         best_rank = self._solution_rank(best_selected, best_unplaced)
         no_improve_rounds = 0
-        for round_no, (label, release_group_ids) in enumerate(neighborhoods[:max_rounds]):
+        seen_signatures: set[tuple[tuple[tuple[str, int], ...], tuple[str, ...]]] = set()
+        hard_round_limit = max(max_rounds, max_rounds * 3)
+        round_no = 0
+        while round_no < hard_round_limit:
+            if not any(qty > 0 for qty in best_unplaced.values()):
+                stats["repair_lns_stop_reason"] = "no_unplaced"
+                break
+            if round_no >= max_rounds and no_improve_rounds > 0:
+                stats["repair_lns_stop_reason"] = "round_budget_exhausted_without_recent_improvement"
+                break
+            current_seed_unplaced = Counter({gid: qty for gid, qty in best_unplaced.items() if qty > 0})
+            neighborhoods = self._repair_lns_neighborhoods(
+                best_selected,
+                current_seed_unplaced,
+                max_rounds * 2,
+                max_groups,
+            )
+            stats["repair_lns_candidate_neighborhoods"] += len(neighborhoods)
+            if not neighborhoods:
+                stats["repair_lns_stop_reason"] = "no_neighborhood"
+                break
+            unplaced_signature = tuple(sorted((gid, int(qty)) for gid, qty in current_seed_unplaced.items() if qty > 0))
+            selected_neighborhood: tuple[str, set[str], tuple[tuple[tuple[str, int], ...], tuple[str, ...]]] | None = None
+            for label, release_group_ids in neighborhoods:
+                signature = (unplaced_signature, tuple(sorted(release_group_ids)))
+                if signature in seen_signatures:
+                    continue
+                selected_neighborhood = (label, release_group_ids, signature)
+                break
+            if selected_neighborhood is None:
+                stats["repair_lns_stop_reason"] = "no_new_neighborhood"
+                break
+            label, release_group_ids, neighborhood_signature = selected_neighborhood
+            seen_signatures.add(neighborhood_signature)
             before_columns = len(self._columns)
-            self._ensure_repair_lns_columns(release_group_ids, best_selected)
+            current_unplaced_total = sum(int(qty) for qty in current_seed_unplaced.values() if qty > 0)
+            expand_columns = len(release_group_ids) <= 8 or (
+                label == "seed_residual_all"
+                and current_unplaced_total <= max(24, max_groups)
+                and len(release_group_ids) <= max_groups
+            )
+            if expand_columns:
+                self._ensure_repair_lns_columns(release_group_ids, best_selected)
             added_columns = len(self._columns) - before_columns
             stats["repair_lns_added_columns"] += added_columns
             if self.config.verbose:
                 print(
                     "[column-generation-scip] repair LNS "
                     f"round={round_no} label={label} release_groups={len(release_group_ids)} "
-                    f"added_columns={added_columns} time_limit={per_round_time:.1f}s",
+                    f"added_columns={added_columns} expand_columns={expand_columns} "
+                    f"time_limit={per_round_time:.1f}s",
                     flush=True,
                 )
 
@@ -3642,17 +4061,20 @@ class ColumnGenerationPlanner:
                     "has_solution": has_solution,
                     "mip_start_added": mip_start_added,
                     "hard_no_unplaced": bool(sub_stats.get("hard_no_unplaced", False)),
+                    "enforce_medium_plan_quota": bool(sub_stats.get("enforce_medium_plan_quota", True)),
                     "unplaced_nonworsening_cap": sub_stats.get("unplaced_nonworsening_cap"),
                     "released_group_count": len(release_group_ids),
                     "candidate_column_count": sub_stats.get("candidate_column_count", 0),
                     "fixed_selected_column_count": sub_stats.get("fixed_selected_column_count", 0),
                     "added_columns": added_columns,
+                    "expand_columns": expand_columns,
                     "objective": round(candidate_objective, 6),
                     "unplaced_boxes": sum(candidate_unplaced.values()),
                     "improved": round_improved,
                 }
             )
             stats["repair_lns_rounds_run"] += 1
+            round_no += 1
             if max_no_improve_rounds > 0 and no_improve_rounds >= max_no_improve_rounds:
                 stats["repair_lns_stop_reason"] = "no_incumbent_improvement"
                 break
@@ -3756,6 +4178,7 @@ class ColumnGenerationPlanner:
                     "has_solution": has_solution,
                     "mip_start_added": bool(sub_stats.get("mip_start_added", False)),
                     "hard_no_unplaced": bool(sub_stats.get("hard_no_unplaced", False)),
+                    "enforce_medium_plan_quota": bool(sub_stats.get("enforce_medium_plan_quota", True)),
                     "unplaced_nonworsening_cap": sub_stats.get("unplaced_nonworsening_cap"),
                     "released_group_count": len(release_group_ids),
                     "candidate_column_count": sub_stats.get("candidate_column_count", 0),
@@ -3794,6 +4217,7 @@ class ColumnGenerationPlanner:
         )
         _fixed_repaired, fixed_state, fixed_placed = self._selection_state(fixed_selected)
         hard_no_unplaced = sum(incumbent_unplaced.values()) <= 0
+        enforce_medium_plan_quota = self._repair_enforces_medium_plan_quota()
         released_remaining = {
             group_id: max(0, int(self.groups_by_id[group_id].demand) - int(fixed_placed.get(group_id, 0)))
             for group_id in release_group_ids
@@ -3809,7 +4233,13 @@ class ColumnGenerationPlanner:
             remaining = int(group.demand) - int(fixed_placed.get(group.group_id, 0))
             if remaining <= 0 or col.quantity > remaining:
                 continue
-            if self._column_fits_state(col, fixed_state, remaining, enforce_quota=False):
+            if self._column_fits_state(
+                col,
+                fixed_state,
+                remaining,
+                enforce_quota=False,
+                enforce_medium_plan_quota=enforce_medium_plan_quota,
+            ):
                 candidate_indices.append(idx)
 
         stats = {
@@ -3819,6 +4249,7 @@ class ColumnGenerationPlanner:
             "candidate_column_count": len(candidate_indices),
             "fixed_selected_column_count": sum(1 for qty in fixed_selected.values() if qty > 0),
             "hard_no_unplaced": hard_no_unplaced,
+            "enforce_medium_plan_quota": enforce_medium_plan_quota,
         }
         if not candidate_indices:
             if hard_no_unplaced and any(qty > 0 for qty in released_remaining.values()):
@@ -3909,12 +4340,12 @@ class ColumnGenerationPlanner:
             for footprint_key in self._placement_footprint_keys(col.bay_key, col.size):
                 bay_capacity_cols[footprint_key].append((idx, col))
                 bay_port_size_cols[(footprint_key, self._row_mix_key_for_column(col), col.size)].append((idx, col))
-                for attr in self._bay_no_mix_attrs(col.voyage_id):
+                for attr in self._bay_no_mix_attrs_for_column(col):
                     bay_attr_choice_cols[(footprint_key, attr, self._column_attr_value(col, attr))].append(idx)
             for footprint_key, row_no, qty in col.row_allocation:
                 row_capacity_cols[(footprint_key, row_no)].append((idx, int(qty)))
                 row_size_cols[(footprint_key, row_no, col.size)].append((idx, int(qty)))
-                for attr in self._row_no_mix_attrs(col.voyage_id):
+                for attr in self._row_no_mix_attrs_for_column(col):
                     row_attr_choice_cols[(footprint_key, row_no, attr, self._column_attr_value(col, attr))].append(idx)
             bay_size_cols[(col.bay_key, col.size)].append((idx, col))
             group_bay_cols[(col.group_id, col.bay_key)].append(idx)
@@ -4000,12 +4431,12 @@ class ColumnGenerationPlanner:
             actual = fixed_actual + quicksum(col.quantity * column_vars[idx] for idx, col in items)
             model.addCons(actual - target == pos - neg)
 
-        if self.config.medium_plan_quota is not None:
+        if enforce_medium_plan_quota and self.config.medium_plan_quota is not None:
             medium_plan_quota = Counter(self.config.medium_plan_quota)
             for key, items in medium_quota_cols.items():
                 residual = medium_plan_quota[key] - fixed_state["medium_plan_quota_used"][key]
                 model.addCons(quicksum(col.quantity * column_vars[idx] for idx, col in items) <= residual)
-        if self.config.medium_plan_bay_quota is not None:
+        if enforce_medium_plan_quota and self.config.medium_plan_bay_quota is not None:
             medium_plan_bay_quota = Counter(self.config.medium_plan_bay_quota)
             for key, items in medium_bay_quota_cols.items():
                 residual = medium_plan_bay_quota[key] - fixed_state["medium_plan_bay_quota_used"][key]
@@ -4215,6 +4646,49 @@ class ColumnGenerationPlanner:
             seen.add(signature)
             neighborhoods.append((label, set(ordered)))
 
+        positive_seed_groups = [group_id for group_id, qty in seed_unplaced.items() if qty > 0]
+        residual_total = sum(int(qty) for qty in seed_unplaced.values() if qty > 0)
+        residual_flow_groups: defaultdict[tuple[str, str], list[str]] = defaultdict(list)
+        residual_flow_qty: Counter[tuple[str, str]] = Counter()
+        for group_id in positive_seed_groups:
+            group = self.groups_by_id.get(group_id)
+            if group is None:
+                continue
+            key = (group.voyage_id, group.status)
+            residual_flow_groups[key].append(group_id)
+            residual_flow_qty[key] += int(seed_unplaced.get(group_id, 0))
+
+        if residual_total <= 70:
+            for (voyage_id, flow), group_ids in residual_flow_qty.most_common(max_neighborhoods):
+                related: list[str] = []
+                for group_id in residual_flow_groups.get((voyage_id, flow), []):
+                    group = self.groups_by_id.get(group_id)
+                    if group is None:
+                        continue
+                    related.append(group_id)
+                    related.extend(
+                        gid for gid, _qty in coarse_to_groups.get(self._coarse_key(group), Counter()).most_common()
+                    )
+                    for (area_voyage_id, size, _area_no), area_groups in sorted(area_to_groups.items()):
+                        if area_voyage_id == group.voyage_id and size == group.size and group_id in area_groups:
+                            related.extend(gid for gid, _qty in area_groups.most_common())
+                add(f"seed_residual_flow_{voyage_id}_{flow}", related)
+
+        if 0 < residual_total <= max(24, max_groups) and len(positive_seed_groups) <= max_groups:
+            residual_related: list[str] = []
+            for group_id in positive_seed_groups:
+                group = self.groups_by_id.get(group_id)
+                if group is None:
+                    continue
+                residual_related.append(group_id)
+                residual_related.extend(
+                    gid for gid, _qty in coarse_to_groups.get(self._coarse_key(group), Counter()).most_common()
+                )
+                for (voyage_id, size, _area_no), area_groups in sorted(area_to_groups.items()):
+                    if voyage_id == group.voyage_id and size == group.size and group_id in area_groups:
+                        residual_related.extend(gid for gid, _qty in area_groups.most_common())
+            add("seed_residual_all", residual_related)
+
         for group_id, _qty in seed_unplaced.most_common():
             group = self.groups_by_id.get(group_id)
             if group is None:
@@ -4344,7 +4818,9 @@ class ColumnGenerationPlanner:
             ("stage1b", False),
             ("stage2", False),
             ("stage3", False),
+            ("stage4", False),
         ]
+        enforce_medium_plan_quota = self._repair_enforces_medium_plan_quota()
         for group_id in sorted(release_group_ids):
             group = self.groups_by_id.get(group_id)
             if group is None:
@@ -4360,6 +4836,7 @@ class ColumnGenerationPlanner:
                         state,
                         remaining,
                         enforce_quota=enforce_quota,
+                        enforce_medium_plan_quota=enforce_medium_plan_quota,
                     )
                     if capacity <= 0:
                         continue
@@ -4438,7 +4915,9 @@ class ColumnGenerationPlanner:
             ("stage1b", False),
             ("stage2", False),
             ("stage3", False),
+            ("stage4", False),
         ]
+        enforce_medium_plan_quota = self._repair_enforces_medium_plan_quota()
         stats: list[dict] = []
         for stage, enforce_quota in stages:
             before_unplaced = sum(max(0, int(group.demand) - int(placed.get(group.group_id, 0))) for group in self.groups)
@@ -4457,6 +4936,7 @@ class ColumnGenerationPlanner:
                         allow_new_columns=allow_new_columns,
                         stage=stage,
                         enforce_quota=enforce_quota,
+                        enforce_medium_plan_quota=enforce_medium_plan_quota,
                     )
                     if choice is None:
                         break
@@ -4470,6 +4950,7 @@ class ColumnGenerationPlanner:
                 {
                     "stage": stage,
                     "enforce_big_plan_quota": enforce_quota,
+                    "enforce_medium_plan_quota": enforce_medium_plan_quota,
                     "before_unplaced_boxes": before_unplaced,
                     "after_unplaced_boxes": after_unplaced,
                     "placed_boxes": before_unplaced - after_unplaced,
@@ -4518,7 +4999,6 @@ class ColumnGenerationPlanner:
             "row_size_load": Counter(),
             "row_used_attrs": {},
             "bay_used_size": {},
-            "bay_used_height": {},
             "bay_used_attrs": {},
             "group_bay_used": set(),
             "used_group_area": set(),
@@ -4534,9 +5014,19 @@ class ColumnGenerationPlanner:
             "medium_plan_bay_quota_used": Counter(),
         }
 
+    def _repair_enforces_medium_plan_quota(self) -> bool:
+        return not bool(getattr(self.config, "repair_can_exceed_medium_plan_quota", False))
+
     def _ensure_repair_columns(self, group: SmallBoxGroup, state: dict, remaining: int) -> None:
+        enforce_medium_plan_quota = self._repair_enforces_medium_plan_quota()
         for bay_key, _max_qty, base_cost in self._candidate_bays_for_group(group):
-            capacity = self._remaining_capacity_for_group_bay(group, bay_key, state, remaining)
+            capacity = self._remaining_capacity_for_group_bay(
+                group,
+                bay_key,
+                state,
+                remaining,
+                enforce_medium_plan_quota=enforce_medium_plan_quota,
+            )
             if capacity <= 0:
                 continue
             self._add_column(group, bay_key, min(remaining, capacity), base_cost, state=state)
@@ -4550,6 +5040,7 @@ class ColumnGenerationPlanner:
         allow_new_columns: bool = True,
         stage: str | None = None,
         enforce_quota: bool = True,
+        enforce_medium_plan_quota: bool = True,
     ) -> tuple[int, PlacementColumn] | None:
         best: tuple[tuple[float, int, int, str], str, int, float] | None = None
         for bay_key, _max_qty, base_cost in self._candidate_bays_for_group(group, scope=stage):
@@ -4559,6 +5050,7 @@ class ColumnGenerationPlanner:
                 state,
                 remaining,
                 enforce_quota=enforce_quota,
+                enforce_medium_plan_quota=enforce_medium_plan_quota,
             )
             if capacity <= 0:
                 continue
@@ -4586,7 +5078,13 @@ class ColumnGenerationPlanner:
         if selected.get(idx, 0) > 0:
             return None
         col = self._columns[idx]
-        if not self._column_fits_state(col, state, remaining, enforce_quota=enforce_quota):
+        if not self._column_fits_state(
+            col,
+            state,
+            remaining,
+            enforce_quota=enforce_quota,
+            enforce_medium_plan_quota=enforce_medium_plan_quota,
+        ):
             return None
         return idx, col
 
@@ -4695,6 +5193,7 @@ class ColumnGenerationPlanner:
         state: dict,
         remaining: int,
         enforce_quota: bool = True,
+        enforce_medium_plan_quota: bool = True,
     ) -> bool:
         group = self.groups_by_id.get(col.group_id)
         if group is None or col.quantity <= 0 or col.quantity > remaining:
@@ -4707,6 +5206,7 @@ class ColumnGenerationPlanner:
             state,
             remaining,
             enforce_quota=enforce_quota,
+            enforce_medium_plan_quota=enforce_medium_plan_quota,
         )
 
     def _column_row_allocation_fits_state(self, col: PlacementColumn, state: dict) -> bool:
@@ -4729,7 +5229,7 @@ class ColumnGenerationPlanner:
                 return False
             if not self._row_existing_attrs_allow_group(bay, row_no, group):
                 return False
-            for attr in self._row_no_mix_attrs(group.voyage_id):
+            for attr in self._row_no_mix_attrs_for_group(group):
                 value = self._column_attr_value(col, attr)
                 used = state["row_used_attrs"].get((footprint_key, row_no, attr), value)
                 if used != value:
@@ -4744,6 +5244,7 @@ class ColumnGenerationPlanner:
         state: dict,
         remaining: int,
         enforce_quota: bool = True,
+        enforce_medium_plan_quota: bool = True,
     ) -> int:
         if (group.group_id, bay_key) in state["group_bay_used"]:
             return 0
@@ -4776,11 +5277,11 @@ class ColumnGenerationPlanner:
         quota = self.quota_by_key.get(quota_key, 0)
         if enforce_quota and quota > 0:
             capacity = min(capacity, quota - state["big_plan_quota_used"][quota_key])
-        if self.config.medium_plan_quota is not None:
+        if enforce_medium_plan_quota and self.config.medium_plan_quota is not None:
             medium_plan_quota = Counter(self.config.medium_plan_quota)
             coarse_area_key = self._coarse_key(group) + (bay.area_no,)
             capacity = min(capacity, medium_plan_quota[coarse_area_key] - state["medium_plan_quota_used"][coarse_area_key])
-        if self.config.medium_plan_bay_quota is not None:
+        if enforce_medium_plan_quota and self.config.medium_plan_bay_quota is not None:
             medium_plan_bay_quota = Counter(self.config.medium_plan_bay_quota)
             coarse_bay_key = self._coarse_key(group) + (bay.area_no, bay_key)
             capacity = min(capacity, medium_plan_bay_quota[coarse_bay_key] - state["medium_plan_bay_quota_used"][coarse_bay_key])
@@ -4791,8 +5292,7 @@ class ColumnGenerationPlanner:
         for key in footprint:
             state["bay_load"][key] += col.quantity
             state["bay_used_size"][key] = col.size
-            state["bay_used_height"][key] = col.height
-            for attr in self._bay_no_mix_attrs(col.voyage_id):
+            for attr in self._bay_no_mix_attrs_for_column(col):
                 state.setdefault("bay_used_attrs", {})[(key, attr)] = self._column_attr_value(col, attr)
         state["bay_size_load"][(col.bay_key, col.size)] += col.quantity
         group = self.groups_by_id.get(col.group_id)
@@ -4804,7 +5304,7 @@ class ColumnGenerationPlanner:
                 continue
             state["row_load"][(footprint_key, row_no)] += qty
             state["row_size_load"][(footprint_key, row_no, col.size)] += qty
-            for attr in self._row_no_mix_attrs(col.voyage_id):
+            for attr in self._row_no_mix_attrs_for_column(col):
                 state["row_used_attrs"][(footprint_key, row_no, attr)] = self._column_attr_value(col, attr)
         state["group_bay_used"].add((col.group_id, col.bay_key))
         state["used_group_area"].add((col.group_id, col.area_no))
@@ -4829,7 +5329,6 @@ class ColumnGenerationPlanner:
         bay_load: Counter[str] = Counter()
         bay_size_load: Counter[tuple[str, str]] = Counter()
         bay_used_size: dict[str, str] = {}
-        bay_used_height: dict[str, str] = {}
         bay_used_attrs: dict[tuple[str, str], str] = {}
         group_bay_used: set[tuple[str, str]] = set()
         area_edge_has45: set[str] = set()
@@ -4856,7 +5355,7 @@ class ColumnGenerationPlanner:
                 if any(
                     bay_used_attrs.get((key, attr), self._column_attr_value(col, attr)) != self._column_attr_value(col, attr)
                     for key in footprint
-                    for attr in self._bay_no_mix_attrs(col.voyage_id)
+                    for attr in self._bay_no_mix_attrs_for_column(col)
                 ):
                     continue
                 if any(bay_load[key] + col.quantity > self.bays[key].physical_capacity for key in footprint):
@@ -4887,8 +5386,7 @@ class ColumnGenerationPlanner:
                 for key in footprint:
                     bay_load[key] += col.quantity
                     bay_used_size[key] = col.size
-                    bay_used_height[key] = col.height
-                    for attr in self._bay_no_mix_attrs(col.voyage_id):
+                    for attr in self._bay_no_mix_attrs_for_column(col):
                         bay_used_attrs[(key, attr)] = self._column_attr_value(col, attr)
                 bay_size_load[(col.bay_key, col.size)] += col.quantity
                 group_bay_used.add((col.group_id, col.bay_key))
@@ -4966,8 +5464,13 @@ class ColumnGenerationPlanner:
                 if in_scope(area_no)
                 and self._user_area_policy_allows(group.voyage_id, area_no)
                 and (
+                    (scope == "stage4" and group.status not in EXPORT_FLOWS)
+                    or
                     self._area_supports_group_flow(group, area_no)
-                    or self._user_area_policy_forces_support(group.voyage_id, area_no)
+                    or (
+                        group.status in EXPORT_FLOWS
+                        and self._user_area_policy_forces_support(group.voyage_id, area_no)
+                    )
                 )
             ],
             key=lambda area_no: (self._area_fallback_tier_for_group(group, area_no), area_no),
@@ -5001,7 +5504,9 @@ class ColumnGenerationPlanner:
         functions = self.problem.area_functions.get(area_no, set())
         if group.status in EXPORT_FLOWS:
             return "OF" in functions
-        return group.status in functions
+        if "E" in functions:
+            return True
+        return _area_flow(group.status) in functions
 
     def _limit_candidate_bays(
         self,
@@ -5059,8 +5564,6 @@ class ColumnGenerationPlanner:
         cost = 0.0
         if not self.block_by_bay.get((bay.area_no, bay_key)):
             cost += self.config.non_preferred_block_penalty
-        if group.port not in bay.existing_ports:
-            cost += self.config.port_mismatch_penalty
         if bay.is_fallback_bay:
             cost += self.config.fallback_bay_penalty
         if self._user_bay_policy_requires(group, bay_key):
@@ -5150,12 +5653,19 @@ class ColumnGenerationPlanner:
                 if not footprint:
                     continue
                 for height in heights:
-                    existing_heights = set().union(*(self.bays[key].existing_heights for key in footprint))
-                    if existing_heights and existing_heights != {height}:
-                        continue
                     self.area_size_height_cap[(bay.area_no, size, height)] += cap
+        for group in self.groups:
+            for bay_key, bay in self.bays.items():
+                cap = self._max_quantity_in_bay(group, bay_key)
+                if cap > 0:
+                    self.area_group_cap[(group.group_id, bay.area_no)] += cap
 
     def _prepare_quota(self) -> None:
+        for (voyage_id, flow, area_no, big_size), qty in getattr(self.problem, "area_size_quota", {}).items():
+            if qty > 0:
+                self.quota_by_key[(voyage_id, flow, area_no, big_size)] += int(qty)
+        if self.quota_by_key:
+            return
         requested_keys = {
             (group.voyage_id, group.status, self._big_plan_size(group.size))
             for group in self.groups
@@ -5203,9 +5713,11 @@ class ColumnGenerationPlanner:
         coarse_key = self._coarse_key(group)
         demand = max(int(self.coarse_demand.get(coarse_key, group.demand)), int(group.demand))
         quota = self.quota_by_key.get(self._quota_key(group, area_no), 0)
+        group_cap = self.area_group_cap.get((group.group_id, area_no), 0)
         height_cap = self.area_size_height_cap.get((area_no, group.size, group.height), 0)
+        candidate_cap = group_cap if group_cap > 0 else height_cap
         in_big_plan = self._is_big_plan_area_for_group(group, area_no)
-        useful_cap = min(quota, height_cap) if in_big_plan and quota > 0 else height_cap
+        useful_cap = min(quota, candidate_cap) if in_big_plan and quota > 0 else candidate_cap
         return (0 if in_big_plan else 1, 0 if useful_cap >= demand else 1, -useful_cap, -quota, area_no)
 
     def _coarse_area_target(self, coarse_key: tuple[str, str, str, str], area_no: str) -> float:
@@ -5473,6 +5985,7 @@ class ColumnGenerationPlanner:
                 row_specific_allocation = self._format_row_allocation(
                     tuple(item for item in col.row_allocation if str(item[1]) == row_no)
                 )
+                dynamic_attrs = tuple(sorted((str(k), str(v)) for k, v in (col.attributes or {}).items()))
                 counter[
                     (
                         col.voyage_id,
@@ -5489,6 +6002,7 @@ class ColumnGenerationPlanner:
                         col.block_id,
                         col.block_bays,
                         row_specific_allocation,
+                        dynamic_attrs,
                     )
                 ] += row_qty * chosen
         block_total: Counter[str] = Counter()
@@ -5498,30 +6012,32 @@ class ColumnGenerationPlanner:
                 block_total[block_id] += qty
         rows: list[dict] = []
         for key, qty in sorted(counter.items()):
-            voyage_id, group_id, flow, port, size, height, weight_class, special_code, area_no, bay_no, row_no, block_id, block_bays, row_allocation = key
-            rows.append(
-                {
-                    "plan_level": "small",
-                    "voyage_id": voyage_id,
-                    "group_id": group_id,
-                    "demand_source": self.group_source.get(group_id, "document"),
-                    "flow": flow,
-                    "port": port,
-                    "size": size,
-                    "height": height,
-                    "weight_class": weight_class,
-                    "special_stow": bool(special_code),
-                    "special_stow_code": special_code or "NORMAL",
-                    "area_no": area_no,
-                    "bay_no": bay_no,
-                    "row_no": row_no,
-                    "row_allocation": row_allocation,
-                    "six_bay_block_id": block_id,
-                    "six_bay_block_bays": "|".join(block_bays) if block_id else "",
-                    "six_bay_block_total_boxes": block_total.get(block_id, 0) if block_id else 0,
-                    "planned_boxes": qty,
-                }
-            )
+            voyage_id, group_id, flow, port, size, height, weight_class, special_code, area_no, bay_no, row_no, block_id, block_bays, row_allocation, dynamic_attrs = key
+            row = {
+                "plan_level": "small",
+                "voyage_id": voyage_id,
+                "group_id": group_id,
+                "demand_source": self.group_source.get(group_id, "document"),
+                "flow": flow,
+                "port": port,
+                "size": size,
+                "height": height,
+                "weight_class": weight_class,
+                "special_stow": bool(special_code),
+                "special_stow_code": special_code or "NORMAL",
+                "area_no": area_no,
+                "bay_no": bay_no,
+                "row_no": row_no,
+                "row_allocation": row_allocation,
+                "six_bay_block_id": block_id,
+                "six_bay_block_bays": "|".join(block_bays) if block_id else "",
+                "six_bay_block_total_boxes": block_total.get(block_id, 0) if block_id else 0,
+                "planned_boxes": qty,
+            }
+            for attr, value in dynamic_attrs:
+                if attr and attr not in row:
+                    row[attr] = value
+            rows.append(row)
         return rows
 
     @staticmethod
@@ -5542,9 +6058,10 @@ class ColumnGenerationPlanner:
         block_bays: tuple[str, ...],
         qty: int,
         source_counts: Counter[str] | None = None,
+        attributes: dict[str, str] | None = None,
     ) -> dict:
         source_counts = Counter(source_counts or {})
-        return {
+        row = {
             "plan_level": plan_level,
             "voyage_id": voyage_id,
             "flow": flow,
@@ -5558,15 +6075,47 @@ class ColumnGenerationPlanner:
             "document_boxes": int(source_counts.get("document", 0)),
             "forecast_fallback_boxes": int(source_counts.get("forecast_fallback", 0)),
         }
+        for attr, value in sorted((attributes or {}).items()):
+            if attr and attr not in row:
+                row[attr] = value
+        return row
 
     def _make_medium_rows(self, small_rows: list[dict]) -> list[dict]:
-        counter: Counter[tuple[str, str, str, str, str, str, str, str, tuple[str, ...]]] = Counter()
+        counter: Counter[tuple] = Counter()
         for row in small_rows:
             area_no = str(row["area_no"])
             bay_no = str(row.get("bay_no", ""))
             bay_key = str(row.get("bay_key") or f"{area_no}-{bay_no}" if bay_no else "")
             block_id = str(row.get("six_bay_block_id", ""))
             block_bays = tuple(str(row.get("six_bay_block_bays", "")).split("|")) if row.get("six_bay_block_bays") else ()
+            dynamic_attrs = tuple(
+                sorted(
+                    (str(key), str(value))
+                    for key, value in row.items()
+                    if key
+                    not in {
+                        "plan_level",
+                        "voyage_id",
+                        "group_id",
+                        "demand_source",
+                        "flow",
+                        "port",
+                        "size",
+                        "height",
+                        "weight_class",
+                        "special_stow",
+                        "special_stow_code",
+                        "area_no",
+                        "bay_no",
+                        "row_no",
+                        "row_allocation",
+                        "six_bay_block_id",
+                        "six_bay_block_bays",
+                        "six_bay_block_total_boxes",
+                        "planned_boxes",
+                    }
+                )
+            )
             key = (
                 str(row["voyage_id"]),
                 str(row["flow"]),
@@ -5577,15 +6126,31 @@ class ColumnGenerationPlanner:
                 bay_no,
                 block_id,
                 block_bays,
+                dynamic_attrs,
             )
             counter[key] += int(row["planned_boxes"])
         rows: list[dict] = []
-        for (voyage_id, flow, port, size, area_no, bay_key, bay_no, block_id, block_bays), qty in sorted(counter.items()):
-            rows.append(self._medium_output_row("medium_from_small", voyage_id, flow, port, size, area_no, bay_key, bay_no, block_id, block_bays, qty))
+        for (voyage_id, flow, port, size, area_no, bay_key, bay_no, block_id, block_bays, dynamic_attrs), qty in sorted(counter.items()):
+            rows.append(
+                self._medium_output_row(
+                    "medium_from_small",
+                    voyage_id,
+                    flow,
+                    port,
+                    size,
+                    area_no,
+                    bay_key,
+                    bay_no,
+                    block_id,
+                    block_bays,
+                    qty,
+                    attributes=dict(dynamic_attrs),
+                )
+            )
         return rows
 
     def _make_medium_rows_from_selected_columns(self, selected: Counter[int], plan_level: str = "medium") -> list[dict]:
-        counter: Counter[tuple[str, str, str, str, str, str, str, str, tuple[str, ...]]] = Counter()
+        counter: Counter[tuple] = Counter()
         source_counter: defaultdict[tuple, Counter[str]] = defaultdict(Counter)
         for idx, chosen in selected.items():
             if chosen <= 0 or idx < 0 or idx >= len(self._columns):
@@ -5602,13 +6167,14 @@ class ColumnGenerationPlanner:
                 col.bay_no,
                 col.block_id,
                 col.block_bays,
+                tuple(sorted((str(k), str(v)) for k, v in (col.attributes or {}).items())),
             )
             counter[key] += qty
             source_counter[key][self.group_source.get(col.group_id, "document")] += qty
         rows: list[dict] = []
-        for (voyage_id, flow, port, size, area_no, bay_key, bay_no, block_id, block_bays), qty in sorted(counter.items()):
+        for (voyage_id, flow, port, size, area_no, bay_key, bay_no, block_id, block_bays, dynamic_attrs), qty in sorted(counter.items()):
             if qty > 0:
-                key = (voyage_id, flow, port, size, area_no, bay_key, bay_no, block_id, block_bays)
+                key = (voyage_id, flow, port, size, area_no, bay_key, bay_no, block_id, block_bays, dynamic_attrs)
                 rows.append(
                     self._medium_output_row(
                         plan_level,
@@ -5623,6 +6189,7 @@ class ColumnGenerationPlanner:
                         block_bays,
                         qty,
                         source_counter[key],
+                        dict(dynamic_attrs),
                     )
                 )
         return rows
@@ -6206,15 +6773,23 @@ def write_rows(path: str | Path, rows: list[dict]) -> None:
     if not rows:
         out.write_text("", encoding="utf-8")
         return
+    fieldnames: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        for key in row:
+            if key not in seen:
+                seen.add(key)
+                fieldnames.append(key)
     with out.open("w", newline="", encoding="utf-8-sig") as fp:
-        writer = csv.DictWriter(fp, fieldnames=list(rows[0].keys()))
+        writer = csv.DictWriter(fp, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
 
 
 def write_columns(path: str | Path, columns: Iterable[PlacementColumn]) -> None:
-    rows = [
-        {
+    rows = []
+    for col in columns:
+        row = {
             "column_id": col.column_id,
             "group_id": col.group_id,
             "demand_source": col.demand_source,
@@ -6231,8 +6806,10 @@ def write_columns(path: str | Path, columns: Iterable[PlacementColumn]) -> None:
             "stack_units": col.stack_units,
             "intrinsic_cost": round(col.intrinsic_cost, 6),
         }
-        for col in columns
-    ]
+        for attr, value in sorted((col.attributes or {}).items()):
+            if attr and attr not in row:
+                row[attr] = value
+        rows.append(row)
     write_rows(path, rows)
 
 

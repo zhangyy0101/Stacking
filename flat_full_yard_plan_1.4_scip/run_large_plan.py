@@ -55,6 +55,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     args = parse_args()
+    algorithm_config = YardPlanAlgorithmConfig.from_cli_args(args)
     run_dir = create_run_dir(args.output_root.resolve(), args.run_name)
     large_output_dir = run_dir / "outputs_large" / "latest_run"
     large_state_dir = run_dir / "outputs_large" / "state"
@@ -73,16 +74,17 @@ def main() -> None:
     artifacts, state = adapter_data_io.build_large_inputs(
         adapter_input,
         planning_time,
-        disable_default_flow_aliases=args.disable_default_flow_aliases,
+        disable_default_flow_aliases=algorithm_config.disable_default_flow_aliases,
+        config=algorithm_config.large,
     )
     print_case_summary(artifacts)
 
     print("\n[1/1] Solving large plan with weighted objectives")
     large_solution = solve_daily_rolling_yard_plan(
         artifacts.data,
-        time_limit=args.large_time_limit,
-        mip_gap=args.large_mip_gap,
-        verbose=not args.large_quiet,
+        time_limit=algorithm_config.large_time_limit,
+        mip_gap=algorithm_config.large_mip_gap,
+        verbose=algorithm_config.large_verbose,
     )
     print_solution_summary(large_solution)
 

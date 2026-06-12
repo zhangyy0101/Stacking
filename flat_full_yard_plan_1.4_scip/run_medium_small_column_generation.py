@@ -19,7 +19,6 @@ from adapters.input_adapter_standard import DEFAULT_MISPLACED_BAY_EXCLUSION_RATI
 from medium_small.bridge import (
     add_column_generation_arguments,
     build_problem_from_large_plan_adapter,
-    make_config,
     print_diagnostics_summary,
     resolve_adapter_json,
     solve_medium_small_problem,
@@ -61,6 +60,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     args = parse_args()
+    algorithm_config = YardPlanAlgorithmConfig.from_cli_args(args)
     adapter_json_path = resolve_adapter_json(args.adapter_json)
     adapter_input = InputAdapterGd.load_from_json(str(adapter_json_path))
     planning_time = resolve_planning_time(adapter_input, args.planning_time)
@@ -74,9 +74,9 @@ def main() -> None:
         adapter_input,
         args.big_plan,
         planning_time=planning_time,
-        voyages=args.medium_voyages,
-        horizon_hours=args.horizon_hours,
-        misplaced_bay_exclusion_ratio=args.misplaced_bay_exclusion_ratio,
+        voyages=algorithm_config.medium_voyages,
+        horizon_hours=algorithm_config.horizon_hours,
+        misplaced_bay_exclusion_ratio=algorithm_config.misplaced_bay_exclusion_ratio,
     )
     write_medium_demand_rows_from_rows(
         output_dir / "medium_demand_by_port.csv",
@@ -84,7 +84,7 @@ def main() -> None:
     )
     result, diagnostics = solve_medium_small_problem(
         problem,
-        make_config(args),
+        algorithm_config.medium_small,
         output_dir,
         diagnostics_context={
             "adapter_json": str(adapter_json_path),

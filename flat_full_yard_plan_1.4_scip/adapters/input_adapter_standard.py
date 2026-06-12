@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import csv
 import json
@@ -23,29 +23,23 @@ for path in (MODULE_DIR, PROJECT_DIR):
 
 try:
     from .input_adapter_gd import (
-        DEFAULT_BAY_RULES,
         DEFAULT_DETAIL_ATTR,
         DEFAULT_ROUGH_ATTR,
-        DEFAULT_ROW_RULES,
         DEFAULT_WEIGHT_LEVEL,
         InputAdapterGd,
     )
 except ImportError:  # pragma: no cover - keeps compatibility with script-style imports.
     try:
         from input_adapter_gd import (
-            DEFAULT_BAY_RULES,
             DEFAULT_DETAIL_ATTR,
             DEFAULT_ROUGH_ATTR,
-            DEFAULT_ROW_RULES,
             DEFAULT_WEIGHT_LEVEL,
             InputAdapterGd,
         )
     except ImportError:  # pragma: no cover - keeps compatibility with the production package layout.
         from adapter.input.guandong.input_adapter_gd import (
-            DEFAULT_BAY_RULES,
             DEFAULT_DETAIL_ATTR,
             DEFAULT_ROUGH_ATTR,
-            DEFAULT_ROW_RULES,
             DEFAULT_WEIGHT_LEVEL,
             InputAdapterGd,
         )
@@ -58,44 +52,12 @@ DEFAULT_PLANNING_TIME = "2026-05-19 09:30:00"
 DEFAULT_EXPORT_VESSELS = None
 DEFAULT_IMPORT_VESSELS = None
 DEFAULT_TARGET_VOYAGES = ()
-DEFAULT_TARGET_BIG_PLAN_FLOWS = frozenset({"OF"})
+DEFAULT_TARGET_BIG_PLAN_FLOWS = frozenset({"OF", "IF", "IZ", "T", "OZ"})
 KNOWN_EXPORT_SNAPSHOT_FLOWS = {"OF", "OZ", "T"}
 UNKNOWN_EXPORT_SNAPSHOT_FLOW_FALLBACK = "OF"
 DEFAULT_MISPLACED_BAY_EXCLUSION_RATIO = 2.0 / 3.0
 SIZE_MODES = ("20", "40", "45")
-ATTRIBUTE_ALIASES = {
-    "voyage": "voyage_id",
-    "voyage_id": "voyage_id",
-    "voy_id": "voyage_id",
-    "flow": "status",
-    "status": "status",
-    "IYC_STS_CSTATUSCD": "status",
-    "port": "port",
-    "pod": "port",
-    "IYC_POT_UNLDPORT": "port",
-    "size": "size",
-    "size_mode": "size",
-    "IYC_CSZ_CSIZECD": "size",
-    "height": "height",
-    "IYC_CHEIGHTCD": "height",
-    "IYC_CSZ_CHEIGHTD": "height",
-    "weight": "weight_class",
-    "weight_class": "weight_class",
-    "IYC_CWEIGHT": "weight_class",
-    "special": "special_stow_code",
-    "special_code": "special_stow_code",
-    "special_stow_code": "special_stow_code",
-    "pre_stow": "pre_stow",
-}
-SMALL_GROUP_COLUMN_BY_ATTR = {
-    "status": "status",
-    "port": "port",
-    "size": "size",
-    "height": "height",
-    "weight_class": "weight",
-    "special_stow_code": "special_code",
-    "pre_stow": "pre_stow",
-}
+WEIGHT_ATTRIBUTE_NAMES = {"weight", "weight_class", "IYC_CWEIGHT"}
 
 
 @dataclass(frozen=True)
@@ -113,7 +75,7 @@ class YardPlanningWeights:
 @dataclass(frozen=True)
 class LargePlanningConfig:
     flow_aliases: Mapping[str, str] = field(
-        default_factory=lambda: {"IE": "IF", "RF": "IF", "RE": "IF"}
+        default_factory=lambda: {"IE": "OZ", "RF": "OZ", "RE": "OZ"}
     )
     berth_conflict_threshold_hours: float = 2.0
     weights: YardPlanningWeights = field(default_factory=YardPlanningWeights)
@@ -228,6 +190,7 @@ class BoxGroup:
     over_limit: bool
     special_codes: tuple[str, ...]
     demand: int
+    attributes: dict[str, str] = field(default_factory=dict)
 
     @property
     def size_mode(self) -> str:
@@ -321,6 +284,7 @@ class SmallBoxGroup:
     pre_stow: bool = False
     special_stow: bool = False
     special_stow_code: str = ""
+    attributes: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -560,6 +524,19 @@ def normalize_flow(value: Any, aliases: Mapping[str, str] | None = None, default
     return (aliases or {}).get(flow, flow)
 
 
+def normalize_medium_small_flow(value: Any, default: str = "OF") -> str:
+    return normalize_flow(value, default=default)
+
+
+def medium_small_area_flow(flow: Any) -> str:
+    normalized = normalize_medium_small_flow(flow, default="OF")
+    if normalized == "OF":
+        return "OF"
+    if normalized in {"IF", "IZ", "T"}:
+        return normalized
+    return "OZ"
+
+
 def normalize_export_snapshot_flow(value: Any, aliases: Mapping[str, str] | None = None) -> str:
     flow = normalize_flow(value, aliases, default=UNKNOWN_EXPORT_SNAPSHOT_FLOW_FALLBACK)
     if flow and flow not in KNOWN_EXPORT_SNAPSHOT_FLOWS:
@@ -620,11 +597,60 @@ def canonical_attribute_tuple(values: Any, default: Sequence[str]) -> tuple[str,
         raw = "" if value is None else str(value).strip()
         if not raw:
             continue
-        canonical = ATTRIBUTE_ALIASES.get(raw, ATTRIBUTE_ALIASES.get(raw.lower(), raw))
-        if canonical and canonical not in seen:
-            seen.add(canonical)
-            out.append(canonical)
+        if raw not in seen:
+            seen.add(raw)
+            out.append(raw)
     return tuple(out) or tuple(default)
+
+
+def attribute_output_name(attr: object) -> str:
+    return "" if attr is None else str(attr).strip()
+
+
+def is_weight_attribute(attr: object) -> bool:
+    raw = attribute_output_name(attr)
+    return raw in WEIGHT_ATTRIBUTE_NAMES or raw.lower() in {item.lower() for item in WEIGHT_ATTRIBUTE_NAMES}
+
+
+def raw_attribute_text(value: Any, default: str = "MIXED") -> str:
+    if value is None:
+        return default
+    try:
+        if pd.isna(value):
+            return default
+    except (TypeError, ValueError):
+        pass
+    return str(value).strip()
+
+
+def dynamic_attribute_value(
+    row: Mapping[str, Any],
+    attr: object,
+    *,
+    levels: Sequence[int] = DEFAULT_WEIGHT_LEVEL,
+    default: str = "MIXED",
+) -> str:
+    raw = attribute_output_name(attr)
+    if not raw:
+        return default
+    if is_weight_attribute(raw):
+        return weight_class(row.get(raw), levels)
+    return raw_attribute_text(row.get(raw), default)
+
+
+def dynamic_attributes_from_row(
+    row: Mapping[str, Any],
+    attrs: Sequence[str],
+    *,
+    levels: Sequence[int] = DEFAULT_WEIGHT_LEVEL,
+    default: str = "MIXED",
+) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for attr in attrs:
+        name = attribute_output_name(attr)
+        if name:
+            out[name] = dynamic_attribute_value(row, name, levels=levels, default=default)
+    return out
 
 
 def canonical_weight_levels(values: Any, default: Sequence[int] = DEFAULT_WEIGHT_LEVEL) -> tuple[int, ...]:
@@ -646,35 +672,62 @@ def canonical_weight_levels(values: Any, default: Sequence[int] = DEFAULT_WEIGHT
     return tuple(levels) if levels else tuple(int(value) for value in default)
 
 
+def has_rule_content(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, Mapping):
+        return any(has_rule_content(item) for item in value.values())
+    try:
+        iterator = list(value)
+    except TypeError:
+        return True
+    return any(has_rule_content(item) for item in iterator)
+
+
 def voyage_rule_map(
     value: Any,
     voyages: Sequence[str],
     default: Sequence[Any],
     canonicalizer,
+    *,
+    fill_missing: bool = True,
 ) -> dict[str, tuple]:
     normalized_voyages = [normalize_voyage(voyage) for voyage in voyages if normalize_voyage(voyage)]
     if isinstance(value, Mapping):
         out = {
             normalize_voyage(voyage): canonicalizer(rules, default)
             for voyage, rules in value.items()
-            if normalize_voyage(voyage)
+            if normalize_voyage(voyage) and (fill_missing or has_rule_content(rules))
         }
     elif value is None:
         out = {}
     else:
-        shared = canonicalizer(value, default)
-        out = {voyage: shared for voyage in normalized_voyages}
-    for voyage in normalized_voyages:
-        out.setdefault(voyage, canonicalizer(None, default))
+        out = {}
+        if fill_missing or has_rule_content(value):
+            shared = canonicalizer(value, default)
+            out = {voyage: shared for voyage in normalized_voyages}
+    if fill_missing:
+        for voyage in normalized_voyages:
+            out.setdefault(voyage, canonicalizer(None, default))
     return out
 
 
 def read_attribute_rules(input_guandong: InputAdapterGd, voyages: Sequence[str]) -> AttributeRules:
+    raw_weight_level = getattr(input_guandong, "weight_level", None)
+    weight_levels_by_voyage = voyage_rule_map(
+        raw_weight_level,
+        voyages,
+        DEFAULT_WEIGHT_LEVEL,
+        canonical_weight_levels,
+        fill_missing=False,
+    )
     return AttributeRules(
         coarse_group_attributes=canonical_attribute_tuple(DEFAULT_ROUGH_ATTR, AttributeRules().coarse_group_attributes),
         fine_group_attributes=canonical_attribute_tuple(DEFAULT_DETAIL_ATTR, AttributeRules().fine_group_attributes),
-        bay_no_mix_attributes=canonical_attribute_tuple(DEFAULT_BAY_RULES, AttributeRules().bay_no_mix_attributes),
-        row_no_mix_attributes=canonical_attribute_tuple(DEFAULT_ROW_RULES, AttributeRules().row_no_mix_attributes),
+        bay_no_mix_attributes=(),
+        row_no_mix_attributes=(),
         weight_levels=canonical_weight_levels(DEFAULT_WEIGHT_LEVEL),
         coarse_group_attributes_by_voyage=voyage_rule_map(
             getattr(input_guandong, "rough_attr", None),
@@ -691,45 +744,86 @@ def read_attribute_rules(input_guandong: InputAdapterGd, voyages: Sequence[str])
         bay_no_mix_attributes_by_voyage=voyage_rule_map(
             getattr(input_guandong, "bay_rules", None),
             voyages,
-            DEFAULT_BAY_RULES,
+            (),
             canonical_attribute_tuple,
+            fill_missing=False,
         ),
         row_no_mix_attributes_by_voyage=voyage_rule_map(
             getattr(input_guandong, "row_rules", None),
             voyages,
-            DEFAULT_ROW_RULES,
+            (),
             canonical_attribute_tuple,
+            fill_missing=False,
         ),
-        weight_levels_by_voyage=voyage_rule_map(
-            getattr(input_guandong, "weight_level", None),
-            voyages,
-            DEFAULT_WEIGHT_LEVEL,
-            canonical_weight_levels,
-        ),
+        weight_levels_by_voyage=weight_levels_by_voyage,
+        weight_group_voyages=frozenset(weight_levels_by_voyage),
     )
 
 
 def small_groupby_columns(attribute_rules: AttributeRules, voyage_id: str) -> tuple[str, ...]:
-    attrs: list[str] = ["status", "size", "port"]
+    attrs: list[str] = []
     attrs.extend(attribute_rules.fine_for(voyage_id))
     attrs.extend(attribute_rules.bay_no_mix_for(voyage_id))
     attrs.extend(attribute_rules.row_no_mix_for(voyage_id))
+    if getattr(attribute_rules, "weight_group_enabled_for", lambda _voyage_id: False)(voyage_id):
+        attrs.append("IYC_CWEIGHT")
     columns: list[str] = []
     for attr in attrs:
-        column = SMALL_GROUP_COLUMN_BY_ATTR.get(attr)
+        column = attribute_output_name(attr)
         if column and column not in columns:
             columns.append(column)
-    return tuple(columns or ["status", "size", "port"])
+    return tuple(columns)
 
 
 def medium_groupby_attributes(attribute_rules: AttributeRules, voyage_id: str) -> tuple[str, ...]:
-    attrs: list[str] = ["status", "size"]
+    attrs: list[str] = []
     attrs.extend(attribute_rules.coarse_for(voyage_id))
     out: list[str] = []
     for attr in attrs:
-        if attr in {"status", "size", "port", "height", "weight_class", "special_stow_code", "pre_stow"} and attr not in out:
-            out.append(attr)
-    return tuple(out or ["status", "size", "port"])
+        name = attribute_output_name(attr)
+        if name and name not in out:
+            out.append(name)
+    return tuple(out)
+
+
+def import_base_group_attributes(row: Mapping[str, Any], size_mode: str, port: str) -> tuple[tuple[str, ...], dict[str, str], str]:
+    evoy = normalize_voyage(row.get("IYC_EVOY_ID"))
+    if evoy:
+        return (
+            ("IYC_CSZ_CSIZECD", "IYC_EVOY_ID"),
+            {"IYC_CSZ_CSIZECD": size_mode, "IYC_EVOY_ID": evoy},
+            "MIXED",
+        )
+    return (
+        ("IYC_CSZ_CSIZECD", "IYC_POT_UNLDPORT"),
+        {"IYC_CSZ_CSIZECD": size_mode, "IYC_POT_UNLDPORT": port},
+        port,
+    )
+
+
+def import_small_groupby_columns(attribute_rules: AttributeRules, voyage_id: str, row: Mapping[str, Any], size_mode: str, port: str) -> tuple[str, ...]:
+    base_attrs, _base_values, _port_label = import_base_group_attributes(row, size_mode, port)
+    attrs: list[str] = list(base_attrs)
+    attrs.extend(attribute_rules.fine_for(voyage_id))
+    if getattr(attribute_rules, "weight_group_enabled_for", lambda _voyage_id: False)(voyage_id):
+        attrs.append("IYC_CWEIGHT")
+    columns: list[str] = []
+    for attr in attrs:
+        column = attribute_output_name(attr)
+        if column and column not in columns:
+            columns.append(column)
+    return tuple(columns)
+
+
+def normalized_doc_record(row: Mapping[str, Any], flow: str, size_mode: str, port: str) -> dict[str, Any]:
+    record = dict(row)
+    record["IYC_STS_CSTATUSCD"] = flow
+    record["IYC_CSZ_CSIZECD"] = size_mode
+    record["IYC_POT_UNLDPORT"] = port
+    evoy = normalize_voyage(row.get("IYC_EVOY_ID"))
+    if evoy:
+        record["IYC_EVOY_ID"] = evoy
+    return record
 
 
 def large_plan_adjust_entry(adjust_plan_info: Mapping[str, Any] | None, vessel: str) -> Mapping[str, Any]:
@@ -902,22 +996,17 @@ def _canonical_adjust_attributes(raw: Any) -> dict[str, str]:
 
 def _group_matches_adjust_attributes(group: Any, attr_filter: Mapping[str, str]) -> bool:
     for attr, expected in attr_filter.items():
-        actual = _normalize_adjust_attr_value(attr, getattr(group, attr, ""))
+        attrs = getattr(group, "attributes", {}) or {}
+        actual = _normalize_adjust_attr_value(attr, attrs.get(attr, ""))
         if actual != expected:
             return False
     return True
 
 
 def _normalize_adjust_attr_value(attr: str, value: Any) -> str:
-    if attr in {"voyage", "voyage_id"}:
-        return normalize_voyage(value)
-    if attr in {"size", "size_mode"}:
-        return normalize_size_small(value)
-    if attr in {"status", "flow"}:
-        return normalize_flow(value, default="")
-    if attr in {"pre_stow"}:
-        return "1" if bool(value) and str(value).strip().lower() not in {"0", "false", "no", ""} else "0"
-    return normalize_text(value, "")
+    if is_weight_attribute(attr):
+        return weight_class(value)
+    return raw_attribute_text(value, "")
 
 
 def _canonical_adjust_bays(raw: Any, bays: Mapping[str, Bay]) -> tuple[set[str], list[str]]:
@@ -1168,7 +1257,7 @@ def read_area_functions_large(input_guandong: InputAdapterGd) -> tuple[list[str]
     frame = input_guandong.area_function_info
     area_col = _first_existing(set(frame.columns), ["area_no", "AREA_NO", "YAA_AREANO"])
     type_col = _first_existing(set(frame.columns), ["cntr_type", "CNTR_TYPE", "function", "FUNCTION"])
-    load_col = _first_existing(set(frame.columns), ["load_capacity", "H", "capacity", "作业能力"])
+    load_col = _first_existing(set(frame.columns), ["load_capacity", "H", "capacity", "作业能力", "浣滀笟鑳藉姏"])
     if not area_col or not type_col:
         raise KeyError("Area function workbook must contain area_no and cntr_type columns.")
     area_functions: dict[str, set[str]] = {}
@@ -1256,7 +1345,7 @@ def extract_current_snapshot_rows(
         lambda value: normalize_export_snapshot_flow(value, flow_aliases)
     )
     rows.loc[~export_mask, "flow"] = rows.loc[~export_mask, "IYC_STS_CSTATUSCD"].map(
-        lambda value: normalize_flow(value, flow_aliases)
+        lambda value: medium_small_area_flow(normalize_flow(value, flow_aliases))
     )
     return rows
 
@@ -1371,7 +1460,7 @@ def normalize_container_frame(df: pd.DataFrame, flow_aliases: Mapping[str, str])
     df["i_voy"] = df["IYC_IVOY_ID"].map(normalize_voyage)
     df["size"] = df["IYC_CSZ_CSIZECD"].map(normalize_size_large)
     df["raw_flow"] = df["IYC_STS_CSTATUSCD"].map(normalize_code)
-    df["flow"] = df["raw_flow"].map(lambda value: normalize_flow(value, flow_aliases))
+    df["flow"] = df["raw_flow"].map(lambda value: medium_small_area_flow(normalize_flow(value, flow_aliases)))
     return df
 
 
@@ -1386,6 +1475,21 @@ def merge_snapshot_and_doc(doc: pd.DataFrame, snapshot_rows: pd.DataFrame) -> pd
     merged = pd.concat([snap_part, doc_part], ignore_index=True)
     merged = merged[merged["cntr_id"].notna() & merged["flow"].notna() & merged["size"].notna()].copy()
     return merged.sort_values("source_rank").drop_duplicates("cntr_id", keep="first")
+
+
+def unique_snapshot_rows(snapshot_rows: pd.DataFrame) -> pd.DataFrame:
+    if snapshot_rows.empty:
+        return snapshot_rows.copy()
+    rows = snapshot_rows[snapshot_rows["cntr_id"].notna()].copy()
+    rows = rows[rows["cntr_id"].astype(str).ne("-1")]
+    return rows.sort_values(["cntr_id", "area_no", "bay_no"]).drop_duplicates("cntr_id", keep="first")
+
+
+def valid_doc_rows(doc: pd.DataFrame) -> pd.DataFrame:
+    if doc.empty:
+        return doc.copy()
+    rows = doc[doc["cntr_id"].notna() & doc["flow"].notna() & doc["size"].notna()].copy()
+    return rows.sort_values("cntr_id").drop_duplicates("cntr_id", keep="first")
 
 
 def add_grouped_demand(
@@ -1420,7 +1524,14 @@ def read_prediction_counts(input_guandong: InputAdapterGd, vessel_id: str) -> tu
 
 def read_prediction_work_lanes(path: Path) -> float:
     xls = pd.ExcelFile(path)
-    sheet_name = next((name for name in xls.sheet_names if "作业" in str(name) or "璺" in str(name)), xls.sheet_names[-1])
+    sheet_name = next(
+        (
+            name
+            for name in xls.sheet_names
+            if "work" in str(name).lower() or "lane" in str(name).lower()
+        ),
+        xls.sheet_names[-1],
+    )
     frame = pd.read_excel(path, sheet_name=sheet_name)
     candidates: list[float] = []
 
@@ -1446,10 +1557,12 @@ def build_demand_params(
     import_vessels: Sequence[str],
     current_snapshot: pd.DataFrame,
     flow_aliases: Mapping[str, str],
+    covered_areas: Sequence[str] | None = None,
 ) -> tuple[dict[tuple[str, str], float], dict[tuple[str, str], float], dict[str, dict[str, Any]]]:
     d20: dict[tuple[str, str], float] = {}
     d40: dict[tuple[str, str], float] = {}
     diagnostics: dict[str, dict[str, Any]] = {}
+    covered_area_set = {normalize_area(area) for area in covered_areas or [] if normalize_area(area)}
     for vessel in export_vessels:
         doc_container = input_guandong.vessel_containers.get(vessel, {}).get("doc_cntrs", None)
         if isinstance(doc_container, pd.DataFrame):
@@ -1458,10 +1571,16 @@ def build_demand_params(
         else:
             doc = pd.DataFrame(columns=["cntr_id", "e_voy", "i_voy", "size", "raw_flow", "flow"])
         snap = current_snapshot[current_snapshot["voy_id"].eq(vessel)].copy()
-        merged = merge_snapshot_and_doc(doc, snap)
+        unique_snap = unique_snapshot_rows(snap)
+        covered_snap = unique_snap[unique_snap["area_no"].isin(covered_area_set)].copy() if covered_area_set else unique_snap
+        doc_unique = valid_doc_rows(doc)
+        snapshot_ids = set(unique_snap["cntr_id"].astype(str))
+        doc_new = doc_unique[~doc_unique["cntr_id"].astype(str).isin(snapshot_ids)].copy()
+        merged = merge_snapshot_and_doc(doc, unique_snap)
         detail20 = float((merged["size"] == "20").sum())
         detail40 = float((merged["size"] == "40").sum())
-        add_grouped_demand(merged, vessel, d20, d40)
+        add_grouped_demand(covered_snap, vessel, d20, d40)
+        add_grouped_demand(doc_new, vessel, d20, d40)
         pred20, pred40 = read_prediction_counts(input_guandong, vessel)
         extra20 = max(0.0, pred20 - detail20)
         extra40 = max(0.0, pred40 - detail40)
@@ -1473,6 +1592,9 @@ def build_demand_params(
             "type": "export",
             "doc_rows": int(len(doc)),
             "snapshot_rows": int(len(snap)),
+            "snapshot_unique_rows": int(len(unique_snap)),
+            "covered_snapshot_rows": int(len(covered_snap)),
+            "doc_new_rows": int(len(doc_new)),
             "dedup_rows": int(len(merged)),
             "prediction20": float(pred20),
             "prediction40": float(pred40),
@@ -1487,12 +1609,21 @@ def build_demand_params(
         else:
             doc = pd.DataFrame(columns=["cntr_id", "e_voy", "i_voy", "size", "raw_flow", "flow"])
         snap = current_snapshot[current_snapshot["voy_id"].eq(vessel)].copy()
-        merged = merge_snapshot_and_doc(doc, snap)
-        add_grouped_demand(merged, vessel, d20, d40)
+        unique_snap = unique_snapshot_rows(snap)
+        covered_snap = unique_snap[unique_snap["area_no"].isin(covered_area_set)].copy() if covered_area_set else unique_snap
+        doc_unique = valid_doc_rows(doc)
+        snapshot_ids = set(unique_snap["cntr_id"].astype(str))
+        doc_new = doc_unique[~doc_unique["cntr_id"].astype(str).isin(snapshot_ids)].copy()
+        merged = merge_snapshot_and_doc(doc, unique_snap)
+        add_grouped_demand(covered_snap, vessel, d20, d40)
+        add_grouped_demand(doc_new, vessel, d20, d40)
         diagnostics[vessel] = {
             "type": "import",
             "doc_rows": int(len(doc)),
             "snapshot_rows": int(len(snap)),
+            "snapshot_unique_rows": int(len(unique_snap)),
+            "covered_snapshot_rows": int(len(covered_snap)),
+            "doc_new_rows": int(len(doc_new)),
             "dedup_rows": int(len(merged)),
         }
     return d20, d40, diagnostics
@@ -1838,6 +1969,7 @@ def build_large_inputs(
         import_vessels,
         current_snapshot,
         flow_aliases,
+        covered_areas=areas,
     )
     of_work_lanes = {
         vessel: input_guandong.vessel_containers.get(vessel, {}).get("work_lanes", 0.0)
@@ -2058,21 +2190,17 @@ def read_yard_by_voyage_port_size(
     if not voyage_ids or not isinstance(frame, pd.DataFrame) or frame.empty or "HAS_CONTAINER" not in frame.columns:
         return {}
     occupied = frame.loc[frame["HAS_CONTAINER"].fillna(0).astype(int).eq(1)].copy()
-    if occupied.empty or "IYC_EVOY_ID" not in occupied.columns:
+    if occupied.empty:
         return {}
     if "IYC_INYTM" in occupied.columns:
         in_time = pd.to_datetime(occupied["IYC_INYTM"], errors="coerce")
         occupied = occupied.loc[in_time.isna() | (in_time <= pd.Timestamp(planning_time))]
     if occupied.empty:
         return {}
-    occupied["_voyage"] = occupied["IYC_EVOY_ID"].map(normalize_voyage)
-    occupied = occupied.loc[occupied["_voyage"].isin(voyage_ids)].copy()
-    if occupied.empty:
-        return {}
     occupied["_container_key"] = [container_identity(row, index) for index, row in occupied.iterrows()]
     occupied = occupied.drop_duplicates("_container_key")
     occupied["_flow"] = occupied.get("IYC_STS_CSTATUSCD", pd.Series(index=occupied.index, dtype=object)).map(
-        lambda value: normalize_flow(value, default="OF")
+        lambda value: normalize_medium_small_flow(value, default="OF")
     )
     occupied["_size"] = occupied.get("IYC_CSZ_CSIZECD", pd.Series(index=occupied.index, dtype=object)).map(
         normalize_size_small
@@ -2081,9 +2209,33 @@ def read_yard_by_voyage_port_size(
         lambda value: normalize_text(value, "UNK")
     )
     out: dict[str, Counter[tuple[str, str, str]]] = defaultdict(Counter)
-    counts = occupied.groupby(["_voyage", "_flow", "_size", "_port"], sort=False).size()
-    for (voyage_id, flow, size, port), count in counts.items():
-        out[str(voyage_id)][(str(flow), str(size), str(port))] += int(count)
+
+    voyage_columns = []
+    if "IYC_EVOY_ID" in occupied.columns:
+        voyage_columns.append("IYC_EVOY_ID")
+    if "IYC_IVOY_ID" in occupied.columns:
+        voyage_columns.append("IYC_IVOY_ID")
+    seen_voyage_containers: set[tuple[str, str]] = set()
+    for voyage_column in voyage_columns:
+        work = occupied.copy()
+        work["_voyage"] = work[voyage_column].map(normalize_voyage)
+        work = work.loc[work["_voyage"].isin(voyage_ids)].copy()
+        if work.empty:
+            continue
+        work = work.drop_duplicates(["_voyage", "_container_key"])
+        keep_mask = []
+        for voyage_id, container_key in zip(work["_voyage"], work["_container_key"]):
+            key = (str(voyage_id), str(container_key))
+            keep = key not in seen_voyage_containers
+            keep_mask.append(keep)
+            if keep:
+                seen_voyage_containers.add(key)
+        work = work.loc[keep_mask].copy()
+        if work.empty:
+            continue
+        counts = work.groupby(["_voyage", "_flow", "_size", "_port"], sort=False).size()
+        for (voyage_id, flow, size, port), count in counts.items():
+            out[str(voyage_id)][(str(flow), str(size), str(port))] += int(count)
     return dict(out)
 
 
@@ -2105,32 +2257,31 @@ def medium_demand_caps_from_big_plan(
 ) -> dict[tuple[str, str, str], int]:
     plan_date = planning_time.date().isoformat()
     voyage_set = {normalize_voyage(voyage_id) for voyage_id in target_voyages}
-    normalized_flows = {normalize_flow(flow, default="OF") for flow in target_flows}
-    size_pool: Counter[tuple[str, str]] = Counter()
-    all_size_pool: Counter[str] = Counter()
+    normalized_flows = {medium_small_area_flow(flow) for flow in target_flows}
+    size_pool: Counter[tuple[str, str, str]] = Counter()
+    all_size_pool: Counter[tuple[str, str]] = Counter()
     for row in big_plan:
         if row.voyage_id not in voyage_set:
             continue
-        if row.flow not in normalized_flows:
+        row_flow = medium_small_area_flow(row.flow)
+        if row_flow not in normalized_flows:
             continue
         if row.plan_date and row.plan_date != plan_date:
             continue
         if row.size_mode == "ALL":
-            all_size_pool[row.voyage_id] += row.planned_boxes
+            all_size_pool[(row.voyage_id, row_flow)] += row.planned_boxes
         else:
-            size_pool[(row.voyage_id, "40" if row.size_mode == "45" else row.size_mode)] += row.planned_boxes
+            size_pool[(row.voyage_id, row_flow, "40" if row.size_mode == "45" else row.size_mode)] += row.planned_boxes
 
     caps: dict[tuple[str, str, str], int] = {}
-    for (voyage_id, size_mode), qty in size_pool.items():
+    for (voyage_id, flow, size_mode), qty in size_pool.items():
         if qty <= 0:
             continue
-        for flow in normalized_flows:
-            caps[(voyage_id, flow, size_mode)] = qty
-    for voyage_id, qty in all_size_pool.items():
-        if qty <= 0 or any(v == voyage_id for v, _size in size_pool):
+        caps[(voyage_id, flow, size_mode)] = qty
+    for (voyage_id, flow), qty in all_size_pool.items():
+        if qty <= 0 or any(v == voyage_id and f == flow for v, f, _size in size_pool):
             continue
-        for flow in normalized_flows:
-            caps[(voyage_id, flow, "ALL")] = qty
+        caps[(voyage_id, flow, "ALL")] = qty
     return caps
 
 
@@ -2145,10 +2296,13 @@ def cap_demand_rows_by_big_plan(
     capped_rows: list[DemandRow] = []
     for key, items in grouped.items():
         total = sum(item.planned_boxes for item in items)
-        cap = big_plan_caps.get(key)
+        cap_flow = medium_small_area_flow(key[1])
+        cap = big_plan_caps.get((key[0], cap_flow, key[2]))
         if cap is None:
-            cap = big_plan_caps.get((key[0], key[1], "ALL"))
-        if cap is None or total <= cap:
+            cap = big_plan_caps.get((key[0], cap_flow, "ALL"))
+        if cap is None:
+            continue
+        if total <= cap:
             capped_rows.extend(items)
             continue
         scaled = largest_remainder_scale([item.planned_boxes for item in items], total, cap)
@@ -2208,7 +2362,7 @@ def read_doc_by_port_size(input_guandong: InputAdapterGd, voyage_id: str) -> Cou
     work = pd.DataFrame(
         {
             "flow": frame.get("IYC_STS_CSTATUSCD", pd.Series(index=frame.index, dtype=object)).map(
-                lambda value: normalize_flow(value, default="OF")
+                lambda value: normalize_medium_small_flow(value, default="OF")
             ),
             "size": frame.get("IYC_CSZ_CSIZECD", pd.Series(index=frame.index, dtype=object)).map(normalize_size_small),
             "port": frame.get("IYC_POT_UNLDPORT", pd.Series(index=frame.index, dtype=object)).map(
@@ -2294,7 +2448,7 @@ def read_big_plan(large_plan: pd.DataFrame) -> list[BigPlanRow]:
         date_field = _first_existing(fieldnames, ["plan_date", "date", "work_date", "planning_date", "day"])
         flow_field = _first_existing(fieldnames, ["flow", "cntr_type", "status"])
         for row in reader:
-            flow = normalize_flow(row.get(flow_field), default="OF") if flow_field else "OF"
+            flow = normalize_medium_small_flow(row.get(flow_field), default="OF") if flow_field else "OF"
             voyage_id = normalize_voyage(row.get("voyage_id"))
             area_no = normalize_code(row.get("area_no"))
             plan_date = date_key(normalize_text(row.get(date_field))) if date_field else ""
@@ -2311,7 +2465,7 @@ def read_big_plan(large_plan: pd.DataFrame) -> list[BigPlanRow]:
         date_field = _first_existing(fieldnames, ["plan_date", "date", "work_date", "planning_date", "day"])
         flow_field = _first_existing(fieldnames, ["flow", "cntr_type", "status"])
         for row in reader:
-            flow = normalize_flow(row.get(flow_field), default="OF") if flow_field else "OF"
+            flow = normalize_medium_small_flow(row.get(flow_field), default="OF") if flow_field else "OF"
             boxes = int(round(float(row.get(qty_field, 0) or 0)))
             if boxes > 0:
                 counter[
@@ -2328,7 +2482,7 @@ def read_big_plan(large_plan: pd.DataFrame) -> list[BigPlanRow]:
         date_field = _first_existing(fieldnames, ["plan_date", "date", "work_date", "planning_date", "day"])
         flow_field = _first_existing(fieldnames, ["flow", "cntr_type", "status"])
         for row in reader:
-            flow = normalize_flow(row.get(flow_field), default="OF") if flow_field else "OF"
+            flow = normalize_medium_small_flow(row.get(flow_field), default="OF") if flow_field else "OF"
             boxes = int(round(float(row["planned_boxes"])))
             if boxes > 0:
                 counter[
@@ -2363,42 +2517,122 @@ def load_port_demand_groups(
     groups: list[BoxGroup] = []
     group_index: defaultdict[str, int] = defaultdict(int)
     counters: defaultdict[str, Counter[tuple]] = defaultdict(Counter)
+    yard_ids, yard_numbers = current_yard_container_keys(input_guandong, planning_time)
+    doc_frames: dict[str, pd.DataFrame] = {}
+    for voyage_id in voyage_ids:
+        frame = input_guandong.vessel_containers.get(voyage_id, {}).get("doc_cntrs", None)
+        if not isinstance(frame, pd.DataFrame) or frame.empty:
+            continue
+        if yard_ids or yard_numbers:
+            cntr_ids = frame.get("IYC_CNTRID", pd.Series(index=frame.index, dtype=object)).map(normalize_code)
+            cntr_numbers = frame.get("IYC_CNTRNO", pd.Series(index=frame.index, dtype=object)).map(normalize_code)
+            frame = frame.loc[~(cntr_ids.isin(yard_ids) | cntr_numbers.isin(yard_numbers))].copy()
+        if not frame.empty:
+            doc_frames[voyage_id] = frame
+
+    import_counters: Counter[tuple] = Counter()
+    for voyage_id, frame in doc_frames.items():
+        for record in frame.to_dict("records"):
+            flow = normalize_medium_small_flow(record.get("IYC_STS_CSTATUSCD"), default="OF")
+            if flow == "OF":
+                continue
+            size = normalize_size_small(record.get("IYC_CSZ_CSIZECD"))
+            port = normalize_text(record.get("IYC_POT_UNLDPORT"), "UNK")
+            normalized_record = normalized_doc_record(record, flow, size, port)
+            group_attrs, values, port_label = import_base_group_attributes(normalized_record, size, port)
+            core = (flow, size, port_label)
+            key = tuple(values.get(attr, "MIXED") for attr in group_attrs)
+            import_counters[(voyage_id, flow, "40" if size == "45" else size, core, group_attrs, key)] += 1
+
+    import_by_cap_key: defaultdict[tuple[str, str, str], list[tuple[tuple, int]]] = defaultdict(list)
+    for full_key, qty in import_counters.items():
+        voyage_id, flow, big_size, _core, _group_attrs, _key = full_key
+        import_by_cap_key[(voyage_id, medium_small_area_flow(flow), big_size)].append((full_key, int(qty)))
+    for cap_key, items in import_by_cap_key.items():
+        total = sum(qty for _key, qty in items)
+        cap = None
+        if big_plan_caps:
+            cap = big_plan_caps.get(cap_key)
+            if cap is None:
+                cap = big_plan_caps.get((cap_key[0], cap_key[1], "ALL"))
+            if cap is None:
+                continue
+        target_total = min(total, int(cap)) if cap is not None else total
+        if target_total <= 0:
+            continue
+        scaled = largest_remainder_scale([qty for _key, qty in items], total, target_total)
+        for (full_key, _qty), planned_qty in zip(items, scaled):
+            if planned_qty <= 0:
+                continue
+            voyage_id, _flow, _big_size, core, group_attrs, key = full_key
+            counters[voyage_id][(core, group_attrs, key)] += int(planned_qty)
+
     for row in demand_rows:
-        attrs = {
+        if row.flow != "OF":
+            continue
+        base_attrs = {
             "status": row.flow,
+            "flow": row.flow,
             "size": row.size_mode,
+            "size_mode": row.size_mode,
             "port": row.port,
             "height": "UNK",
             "weight_class": "UNK",
+            "weight": "UNK",
             "special_stow_code": "",
             "pre_stow": False,
         }
         group_attrs = medium_groupby_attributes(attribute_rules, row.voyage_id)
-        key = tuple(attrs.get(attr, "MIXED") for attr in group_attrs)
-        counters[row.voyage_id][(group_attrs, key)] += int(row.planned_boxes)
+        frame = doc_frames.get(row.voyage_id)
+        matching = pd.DataFrame()
+        if frame is not None and not frame.empty:
+            status = frame.get("IYC_STS_CSTATUSCD", pd.Series(index=frame.index, dtype=object)).map(
+                lambda value: normalize_medium_small_flow(value, default="OF")
+            )
+            size = frame.get("IYC_CSZ_CSIZECD", pd.Series(index=frame.index, dtype=object)).map(normalize_size_small)
+            port = frame.get("IYC_POT_UNLDPORT", pd.Series(index=frame.index, dtype=object)).map(lambda value: normalize_text(value, "UNK"))
+            matching = frame.loc[status.eq(row.flow) & size.eq(row.size_mode) & port.eq(row.port)].copy()
+        core = (row.flow, row.size_mode, row.port)
+        if not matching.empty:
+            weights: Counter[tuple] = Counter()
+            levels = attribute_rules.weight_levels_for(row.voyage_id)
+            for record in matching.to_dict("records"):
+                values = dynamic_attributes_from_row(record, group_attrs, levels=levels)
+                weights[tuple(values.get(attr, "MIXED") for attr in group_attrs)] += 1
+            items = sorted(weights.items())
+            scaled = largest_remainder_scale([count for _, count in items], sum(weights.values()), int(row.planned_boxes))
+            for (key, _count), qty in zip(items, scaled):
+                if qty > 0:
+                    counters[row.voyage_id][(core, group_attrs, key)] += int(qty)
+        else:
+            values = dynamic_attributes_from_row(base_attrs, group_attrs, levels=attribute_rules.weight_levels_for(row.voyage_id))
+            key = tuple(values.get(attr, "MIXED") for attr in group_attrs)
+            counters[row.voyage_id][(core, group_attrs, key)] += int(row.planned_boxes)
     for voyage_id in sorted(counters):
-        for (group_attrs, key), demand in sorted(counters[voyage_id].items(), key=lambda item: item[0][1]):
+        for (core, group_attrs, key), demand in sorted(counters[voyage_id].items(), key=lambda item: (item[0][0], item[0][2])):
+            core_status, core_size, core_port = core
             values = dict(zip(group_attrs, key))
             group_index[voyage_id] += 1
-            status = str(values.get("status", "OF"))
-            size = str(values.get("size", "40"))
-            port = str(values.get("port", "MIXED"))
+            status = str(core_status)
+            size = str(core_size)
+            port = str(core_port)
             groups.append(
                 BoxGroup(
                     group_id=f"{voyage_id}_P{group_index[voyage_id]:03d}",
                     voyage_id=voyage_id,
                     size=size,
-                    height=str(values.get("height", "UNK")),
+                    height=str(values.get("IYC_CHEIGHTCD", "UNK")),
                     status=status,
                     port=port,
                     operator="UNK",
                     ctype="UNK",
-                    weight_class=str(values.get("weight_class", "UNK")),
+                    weight_class=str(values.get("IYC_CWEIGHT", "UNK")),
                     reefer=False,
                     dangerous=False,
                     over_limit=False,
                     special_codes=(),
                     demand=demand,
+                    attributes={str(k): str(v) for k, v in values.items()},
                 )
             )
     return groups, demand_rows
@@ -2417,9 +2651,17 @@ def current_yard_container_keys(input_guandong: InputAdapterGd, planning_time: d
     ids = set()
     numbers = set()
     if "IYC_CNTRID" in occupied.columns:
-        ids = {normalize_code(value) for value in occupied["IYC_CNTRID"] if normalize_code(value)}
+        ids = {
+            key
+            for key in (normalize_code(value) for value in occupied["IYC_CNTRID"])
+            if key and key not in {"-1", "0"}
+        }
     if "IYC_CNTRNO" in occupied.columns:
-        numbers = {normalize_code(value) for value in occupied["IYC_CNTRNO"] if normalize_code(value)}
+        numbers = {
+            key
+            for key in (normalize_code(value) for value in occupied["IYC_CNTRNO"])
+            if key and key not in {"-1", "0"}
+        }
     return ids, numbers
 
 
@@ -2428,9 +2670,11 @@ def load_small_doc_groups(
     voyage_ids: list[str],
     attribute_rules: AttributeRules,
     planning_time: datetime | None = None,
+    big_plan_caps: dict[tuple[str, str, str], int] | None = None,
 ) -> list[SmallBoxGroup]:
+    planning_time = planning_time or parse_datetime(DEFAULT_PLANNING_TIME) or datetime(2026, 5, 19, 9, 30)
     yard_ids, yard_numbers = (
-        current_yard_container_keys(input_guandong, planning_time) if planning_time is not None else (set(), set())
+        current_yard_container_keys(input_guandong, planning_time)
     )
     groups: list[SmallBoxGroup] = []
     for voyage_id in voyage_ids:
@@ -2445,44 +2689,75 @@ def load_small_doc_groups(
             if frame.empty:
                 continue
         levels = attribute_rules.weight_levels_for(voyage_id)
-        work = pd.DataFrame(
-            {
-                "status": frame.get("IYC_STS_CSTATUSCD", pd.Series(index=frame.index, dtype=object)).map(
-                    lambda value: normalize_flow(value, default="OF")
-                ),
-                "size": frame.get("IYC_CSZ_CSIZECD", pd.Series(index=frame.index, dtype=object)).map(normalize_size_small),
-                "port": frame.get("IYC_POT_UNLDPORT", pd.Series(index=frame.index, dtype=object)).map(
-                    lambda value: normalize_text(value, "UNK")
-                ),
-                "height": frame.get("IYC_CHEIGHTCD", pd.Series(index=frame.index, dtype=object)).map(
-                    lambda value: normalize_text(value, "UNK")
-                ),
-                "weight": frame.get("IYC_CWEIGHT", pd.Series(index=frame.index, dtype=object)).map(
-                    lambda value: weight_class(value, levels)
-                ),
-                "special_code": frame.apply(explicit_special_stow_code, axis=1),
-                "pre_stow": False,
-            }
-        )
-        group_columns = small_groupby_columns(attribute_rules, voyage_id)
+        group_by_weight = getattr(attribute_rules, "weight_group_enabled_for", lambda _voyage_id: False)(voyage_id)
         counter: Counter[tuple] = Counter()
-        for row in work.to_dict("records"):
-            counter[tuple(row.get(column, "") for column in group_columns)] += 1
-        for index, (key, demand) in enumerate(sorted(counter.items()), start=1):
-            values = dict(zip(group_columns, key))
+        for row in frame.to_dict("records"):
+            flow = normalize_medium_small_flow(row.get("IYC_STS_CSTATUSCD"), default="OF")
+            size = normalize_size_small(row.get("IYC_CSZ_CSIZECD"))
+            port = normalize_text(row.get("IYC_POT_UNLDPORT"), "UNK")
+            normalized_record = normalized_doc_record(row, flow, size, port)
+            if flow == "OF":
+                group_columns = small_groupby_columns(attribute_rules, voyage_id)
+                port_label = port
+            else:
+                group_columns = import_small_groupby_columns(attribute_rules, voyage_id, normalized_record, size, port)
+                _base_attrs, _base_values, port_label = import_base_group_attributes(normalized_record, size, port)
+            row_weight_class = weight_class(row.get("IYC_CWEIGHT"), levels) if group_by_weight else "MIXED"
+            core = (
+                flow,
+                size,
+                port_label,
+                normalize_text(row.get("IYC_CHEIGHTCD"), "UNK"),
+                row_weight_class,
+                explicit_special_stow_code(row),
+                "0",
+            )
+            values = dynamic_attributes_from_row(normalized_record, group_columns, levels=levels)
+            counter[(core, group_columns, tuple(values.get(column, "") for column in group_columns))] += 1
+        planned_counter: Counter[tuple] = Counter()
+        import_by_cap_key: defaultdict[tuple[str, str, str], list[tuple[tuple, int]]] = defaultdict(list)
+        for key, qty in counter.items():
+            core, _group_columns, _dynamic_key = key
+            flow, size, _port, _height, _weight, _special_code, _pre_stow_value = core
+            if flow == "OF":
+                planned_counter[key] += int(qty)
+                continue
+            import_by_cap_key[(voyage_id, medium_small_area_flow(flow), "40" if size == "45" else size)].append((key, int(qty)))
+        for cap_key, items in import_by_cap_key.items():
+            total = sum(qty for _key, qty in items)
+            cap = None
+            if big_plan_caps:
+                cap = big_plan_caps.get(cap_key)
+                if cap is None:
+                    cap = big_plan_caps.get((cap_key[0], cap_key[1], "ALL"))
+                if cap is None:
+                    continue
+            target_total = min(total, int(cap)) if cap is not None else total
+            if target_total <= 0:
+                continue
+            scaled = largest_remainder_scale([qty for _key, qty in items], total, target_total)
+            for (key, _qty), planned_qty in zip(items, scaled):
+                if planned_qty > 0:
+                    planned_counter[key] += int(planned_qty)
+
+        for index, (key, demand) in enumerate(sorted(planned_counter.items()), start=1):
+            core, group_columns, dynamic_key = key
+            status, size, port, height, weight, special_code, pre_stow_value = core
+            values = dict(zip(group_columns, dynamic_key))
             groups.append(
                 SmallBoxGroup(
                     group_id=f"{voyage_id}_S{index:03d}",
                     voyage_id=voyage_id,
-                    status=str(values.get("status", "MIXED")),
-                    port=str(values.get("port", "MIXED")),
-                    size=str(values.get("size", "40")),
-                    height=str(values.get("height", "MIXED")),
-                    weight_class=str(values.get("weight", "MIXED")),
+                    status=str(status),
+                    port=str(port),
+                    size=str(size),
+                    height=str(height),
+                    weight_class=str(weight),
                     demand=demand,
-                    pre_stow=bool(values.get("pre_stow", False)),
-                    special_stow=bool(values.get("special_code", "")),
-                    special_stow_code=str(values.get("special_code", "")),
+                    pre_stow=str(pre_stow_value) == "1",
+                    special_stow=bool(special_code),
+                    special_stow_code=str(special_code),
+                    attributes={str(k): str(v) for k, v in values.items()},
                 )
             )
     return groups
@@ -2497,6 +2772,7 @@ def build_bays(
     target_voyages: set[str],
     area_functions: dict[str, set[str]],
     misplaced_bay_exclusion_ratio: float,
+    attribute_rules: AttributeRules | None = None,
 ) -> tuple[dict[str, Bay], int, int, int]:
     frame = input_guandong.bay_slots_detail.copy()
     frame["YAA_AREANO"] = frame["YAA_AREANO"].map(normalize_code)
@@ -2523,7 +2799,7 @@ def build_bays(
     physical_cap = physical_capacity_by_bay(available)
     row_cap_by_size = capacity_by_bay_row_size(available)
     row_physical_cap = physical_capacity_by_bay_row(available)
-    existing_attrs = existing_bay_attributes(frame, vessel_schedules, planning_time)
+    existing_attrs = existing_bay_attributes(frame, vessel_schedules, planning_time, attribute_rules)
     bays: dict[str, Bay] = {}
     by_area: defaultdict[str, list[str]] = defaultdict(list)
     large_bay_partner: dict[tuple[str, str], str] = {}
@@ -2580,6 +2856,11 @@ def build_bays(
             existing_heights=set(attrs.get("heights", set())),
             existing_special_signatures=set(attrs.get("specials", set())),
             existing_ports=set(attrs.get("ports", set())),
+            existing_attrs={str(k): set(v) for k, v in attrs.get("attributes", {}).items()},
+            existing_attrs_by_row={
+                str(row_no): {str(k): set(v) for k, v in row_attrs.items()}
+                for row_no, row_attrs in attrs.get("attributes_by_row", {}).items()
+            },
         )
     return bays, len(reserved_slots), len(closed_bays), len(excluded_bays)
 
@@ -2790,12 +3071,35 @@ def existing_bay_attributes(
     frame: pd.DataFrame,
     vessel_schedules: dict[str, VoyageSchedule],
     planning_time: datetime,
+    attribute_rules: AttributeRules | None = None,
 ) -> dict[tuple[str, str], dict[str, set[str]]]:
     occupied = active_occupied(frame, vessel_schedules, planning_time)
     out: dict[tuple[str, str], dict[str, set[str]]] = {}
+    dynamic_attrs: list[str] = []
+    if attribute_rules is not None:
+        for attrs in (
+            attribute_rules.bay_no_mix_attributes,
+            attribute_rules.row_no_mix_attributes,
+            *(attribute_rules.bay_no_mix_attributes_by_voyage.values()),
+            *(attribute_rules.row_no_mix_attributes_by_voyage.values()),
+        ):
+            for attr in attrs:
+                name = attribute_output_name(attr)
+                if name and name not in dynamic_attrs:
+                    dynamic_attrs.append(name)
     for row in occupied.to_dict("records"):
         key = (row["YAA_AREANO"], row["YBY_BAYNO"])
-        attrs = out.setdefault(key, {"sizes": set(), "heights": set(), "specials": set(), "ports": set()})
+        attrs = out.setdefault(
+            key,
+            {
+                "sizes": set(),
+                "heights": set(),
+                "specials": set(),
+                "ports": set(),
+                "attributes": {},
+                "attributes_by_row": {},
+            },
+        )
         attrs["sizes"].add(normalize_size_small(row.get("IYC_CSZ_CSIZECD")))
         attrs["heights"].add(normalize_text(row.get("IYC_CHEIGHTCD"), "UNK"))
         special = special_stow_code(row) or "NORMAL"
@@ -2803,6 +3107,14 @@ def existing_bay_attributes(
         port = normalize_text(row.get("IYC_POT_UNLDPORT"))
         if port:
             attrs["ports"].add(port)
+        row_no = normalize_row(row.get("YST_ROWNO"))
+        row_attrs = attrs["attributes_by_row"].setdefault(row_no, {}) if row_no else {}
+        for attr in dynamic_attrs:
+            value = dynamic_attribute_value(row, attr)
+            if value:
+                attrs["attributes"].setdefault(attr, set()).add(value)
+                if row_attrs is not None:
+                    row_attrs.setdefault(attr, set()).add(value)
     return out
 
 
@@ -2889,13 +3201,17 @@ def build_problem(
             continue
         if row.area_no in closed:
             raise ValueError(f"big plan uses closed area {row.area_no} for voyage {row.voyage_id}")
-        if row.flow not in area_functions.get(row.area_no, set()):
+        plan_flow = medium_small_area_flow(row.flow)
+        functions = area_functions.get(row.area_no, set())
+        if plan_flow != "OF" and "E" in functions:
+            pass
+        elif plan_flow not in functions:
             continue
         cleaned_plan.append(row)
         assigned_areas[(row.voyage_id, row.flow)].add(row.area_no)
     if not cleaned_plan:
         raise ValueError("no big-plan rows remain after target-voyage, flow, date, and closed-area filtering")
-    target_big_plan_flows = {normalize_flow(flow, default="OF") for flow in DEFAULT_TARGET_BIG_PLAN_FLOWS}
+    target_big_plan_flows = {medium_small_area_flow(flow) for flow in DEFAULT_TARGET_BIG_PLAN_FLOWS}
     big_plan_caps = medium_demand_caps_from_big_plan(
         cleaned_plan,
         target_voyages,
@@ -2909,7 +3225,13 @@ def build_problem(
         attribute_rules,
         big_plan_caps=big_plan_caps,
     )
-    small_groups = load_small_doc_groups(input_guandong, target_voyages, attribute_rules, planning_time)
+    small_groups = load_small_doc_groups(
+        input_guandong,
+        target_voyages,
+        attribute_rules,
+        planning_time,
+        big_plan_caps=big_plan_caps,
+    )
     demand_by_voyage_size: Counter[tuple[str, str, str]] = Counter()
     for group in groups:
         demand_by_voyage_size[(group.voyage_id, group.status, group.big_plan_size_mode)] += group.demand
@@ -2917,15 +3239,17 @@ def build_problem(
     raw_area_size_quota: Counter[tuple[str, str, str, str]] = Counter()
     raw_all_size_area_quota: Counter[tuple[str, str, str]] = Counter()
     for row in cleaned_plan:
-        raw_area_quota[(row.voyage_id, row.flow, row.area_no)] += row.planned_boxes
+        plan_flow = medium_small_area_flow(row.flow)
+        raw_area_quota[(row.voyage_id, plan_flow, row.area_no)] += row.planned_boxes
         if row.size_mode == "ALL":
-            raw_all_size_area_quota[(row.voyage_id, row.flow, row.area_no)] += row.planned_boxes
+            raw_all_size_area_quota[(row.voyage_id, plan_flow, row.area_no)] += row.planned_boxes
         else:
-            raw_area_size_quota[(row.voyage_id, row.flow, row.area_no, row.size_mode)] += row.planned_boxes
+            raw_area_size_quota[(row.voyage_id, plan_flow, row.area_no, row.size_mode)] += row.planned_boxes
     for voyage_id in target_voyages:
         flows = sorted({flow for (v, flow, _size), qty in demand_by_voyage_size.items() if v == voyage_id and qty > 0})
         for flow in flows:
-            compatible_plan_flows = target_big_plan_flows if flow in target_big_plan_flows else {flow}
+            source_flow = medium_small_area_flow(flow)
+            compatible_plan_flows = {source_flow}
             for size_mode in SIZE_MODES:
                 target_qty = demand_by_voyage_size[(voyage_id, flow, size_mode)]
                 if target_qty <= 0:
@@ -2945,7 +3269,7 @@ def build_problem(
                     #         f"demand={target_qty}, big_plan_upper={sum(exact_upper.values())}"
                     #     )
                     for area_no, qty in exact_upper.items():
-                        area_quota[(voyage_id, flow, area_no)] = raw_area_quota[(voyage_id, flow, area_no)]
+                        area_quota[(voyage_id, flow, area_no)] = raw_area_quota[(voyage_id, source_flow, area_no)]
                         area_size_quota[(voyage_id, flow, area_no, size_mode)] = qty
                         assigned_areas[(voyage_id, flow)].add(area_no)
                     continue
@@ -2963,7 +3287,7 @@ def build_problem(
                 for area_no, qty in allocations.items():
                     if qty <= 0:
                         continue
-                    area_quota[(voyage_id, flow, area_no)] = raw_area_quota[(voyage_id, flow, area_no)]
+                    area_quota[(voyage_id, flow, area_no)] = raw_area_quota[(voyage_id, source_flow, area_no)]
                     area_size_quota[(voyage_id, flow, area_no, size_mode)] = qty
                     assigned_areas[(voyage_id, flow)].add(area_no)
     voyage_windows = {
@@ -2983,6 +3307,7 @@ def build_problem(
         set(target_voyages),
         area_functions,
         misplaced_bay_exclusion_ratio,
+        attribute_rules,
     )
     bay_requirements, bay_blocklist, bay_adjust_rules, bay_constraint_summary = build_medium_small_bay_controls(
         input_guandong,
@@ -3060,7 +3385,7 @@ def load_medium_small_inputs(
         big_plan_rows,
         list(voyages),
         planning_time,
-        {normalize_flow(flow, default="OF") for flow in DEFAULT_TARGET_BIG_PLAN_FLOWS},
+        {medium_small_area_flow(flow) for flow in DEFAULT_TARGET_BIG_PLAN_FLOWS},
     )
     demand_rows = calculate_medium_demands(
         input_guandong,
@@ -3101,11 +3426,11 @@ def weight_class(value: object, levels: Sequence[int] = DEFAULT_WEIGHT_LEVEL) ->
     ordered = sorted({int(level) for level in levels})
     if not ordered:
         ordered = list(DEFAULT_WEIGHT_LEVEL)
-    for lo, hi in zip(ordered, ordered[1:]):
+    for index, (lo, hi) in enumerate(zip(ordered, ordered[1:]), start=1):
         if lo <= tons < hi:
-            return f"{lo}_{hi}"
+            return str(index)
     if tons >= ordered[-1]:
-        return f"GT{ordered[-1]}"
+        return str(len(ordered))
     return "UNK"
 
 

@@ -27,44 +27,8 @@ DEFAULT_PLANNING_TIME = datetime(2026, 5, 19, 9, 30)
 SIZE_MODES = ("20", "40", "45")
 DEFAULT_MISPLACED_BAY_EXCLUSION_RATIO = 2.0 / 3.0
 DEFAULT_TARGET_BIG_PLAN_FLOWS = frozenset({"OF"})
-ATTRIBUTE_ALIASES = {
-    "voyage": "voyage_id",
-    "voyage_id": "voyage_id",
-    "flow": "status",
-    "status": "status",
-    "iyc_sts_cstatuscd": "status",
-    "port": "port",
-    "discharge_port": "port",
-    "pod": "port",
-    "iyc_pot_unldport": "port",
-    "size": "size",
-    "size_mode": "size",
-    "iyc_csz_csizecd": "size",
-    "height": "height",
-    "iyc_cheightcd": "height",
-    "iyc_csz_cheightd": "height",
-    "weight": "weight_class",
-    "weight_class": "weight_class",
-    "iyc_cweight": "weight_class",
-    "special": "special_stow_code",
-    "special_code": "special_stow_code",
-    "special_stow_code": "special_stow_code",
-    "pre_stow": "pre_stow",
-    "operator": "operator",
-    "ctype": "ctype",
-    "container_type": "ctype",
-}
-SMALL_GROUP_COLUMN_BY_ATTR = {
-    "status": "status",
-    "port": "port",
-    "size": "size",
-    "height": "height",
-    "weight_class": "weight",
-    "special_stow_code": "special_code",
-    "pre_stow": "pre_stow",
-}
-DEFAULT_FINE_GROUP_COLUMNS = ("status", "size", "port", "height", "weight", "special_code", "pre_stow")
-DEFAULT_MEDIUM_GROUP_COLUMNS = ("status", "size")
+DEFAULT_FINE_GROUP_COLUMNS: tuple[str, ...] = ()
+DEFAULT_MEDIUM_GROUP_COLUMNS: tuple[str, ...] = ()
 
 
 def _read_csv_compat(path: str | Path, **kwargs) -> pd.DataFrame:
@@ -606,40 +570,83 @@ def load_port_demand_groups(
     groups: list[BoxGroup] = []
     group_index: defaultdict[str, int] = defaultdict(int)
     counters: defaultdict[str, Counter[tuple[tuple[str, ...], tuple[object, ...]]]] = defaultdict(Counter)
+    data_path = Path(data_dir)
+    yard_ids, yard_numbers = _current_yard_container_keys(data_path, planning_time)
+    doc_frames: dict[str, pd.DataFrame] = {}
+    for voyage_id in voyage_ids:
+        if has_input_json(data_path):
+            frame = vessel_doc_frame(data_path, voyage_id)
+        else:
+            path = data_path / f"container_info_{voyage_id}.parquet"
+            frame = pd.read_parquet(path) if path.exists() else pd.DataFrame()
+        if frame.empty:
+            continue
+        if yard_ids or yard_numbers:
+            cntr_ids = frame.get("IYC_CNTRID", pd.Series(index=frame.index, dtype=object)).map(_norm)
+            cntr_numbers = frame.get("IYC_CNTRNO", pd.Series(index=frame.index, dtype=object)).map(_norm)
+            frame = frame.loc[~(cntr_ids.isin(yard_ids) | cntr_numbers.isin(yard_numbers))].copy()
+        if not frame.empty:
+            doc_frames[voyage_id] = frame
     for row in demand_rows:
-        attrs = {
+        base_attrs = {
             "status": row.flow,
+            "flow": row.flow,
             "size": row.size_mode,
+            "size_mode": row.size_mode,
             "port": row.port,
             "height": "UNK",
             "weight_class": "UNK",
+            "weight": "UNK",
             "special_code": "",
             "special_stow_code": "",
             "pre_stow": False,
         }
         group_columns = _medium_groupby_columns(attribute_rules, row.voyage_id)
-        key = tuple(attrs.get(column, "MIXED") for column in group_columns)
-        counters[row.voyage_id][(group_columns, key)] += int(row.planned_boxes)
+        frame = doc_frames.get(row.voyage_id)
+        matching = pd.DataFrame()
+        if frame is not None and not frame.empty:
+            status = frame.get("IYC_STS_CSTATUSCD", pd.Series(index=frame.index, dtype=object)).map(_flow)
+            size = frame.get("IYC_CSZ_CSIZECD", pd.Series(index=frame.index, dtype=object)).map(_size_mode)
+            port = frame.get("IYC_POT_UNLDPORT", pd.Series(index=frame.index, dtype=object)).map(lambda value: _norm(value, "UNK"))
+            matching = frame.loc[status.eq(row.flow) & size.eq(row.size_mode) & port.eq(row.port)].copy()
+        levels = attribute_rules.weight_levels_for(row.voyage_id) if attribute_rules is not None else (0, 10, 15, 20, 25, 30)
+        core = (row.flow, row.size_mode, row.port)
+        if not matching.empty:
+            weights: Counter[tuple] = Counter()
+            for record in matching.to_dict("records"):
+                values = _row_attributes(record, group_columns, levels=levels)
+                weights[tuple(values.get(column, "MIXED") for column in group_columns)] += 1
+            items = sorted(weights.items())
+            scaled = _largest_remainder_scale([count for _, count in items], sum(weights.values()), int(row.planned_boxes))
+            for (key, _count), qty in zip(items, scaled):
+                if qty > 0:
+                    counters[row.voyage_id][(core, group_columns, key)] += int(qty)
+        else:
+            values = _row_attributes(base_attrs, group_columns, levels=levels)
+            key = tuple(values.get(column, "MIXED") for column in group_columns)
+            counters[row.voyage_id][(core, group_columns, key)] += int(row.planned_boxes)
     for voyage_id in sorted(counters):
-        for (group_columns, key), demand in sorted(counters[voyage_id].items(), key=lambda item: item[0][1]):
+        for (core, group_columns, key), demand in sorted(counters[voyage_id].items(), key=lambda item: (item[0][0], item[0][2])):
+            core_status, core_size, core_port = core
             values = dict(zip(group_columns, key))
             group_index[voyage_id] += 1
             groups.append(
                 BoxGroup(
                     group_id=f"{voyage_id}_P{group_index[voyage_id]:03d}",
                     voyage_id=voyage_id,
-                    size=str(values.get("size", "40")),
-                    height=str(values.get("height", "UNK")),
-                    status=str(values.get("status", "OF")),
-                    port=str(values.get("port", "MIXED")),
+                    size=str(core_size),
+                    height=str(values.get("IYC_CHEIGHTCD", "UNK")),
+                    status=str(core_status),
+                    port=str(core_port),
                     operator="UNK",
                     ctype="UNK",
-                    weight_class=str(values.get("weight_class", "UNK")),
+                    weight_class=str(values.get("IYC_CWEIGHT", "UNK")),
                     reefer=False,
                     dangerous=False,
                     over_limit=False,
                     special_codes=(),
                     demand=int(demand),
+                    attributes={str(k): str(v) for k, v in values.items()},
                 )
             )
     return groups, demand_rows
@@ -671,41 +678,30 @@ def load_small_doc_groups(
             frame = frame.loc[~in_yard].copy()
             if frame.empty:
                 continue
-        work = pd.DataFrame(
-            {
-                "status": frame.get("IYC_STS_CSTATUSCD", pd.Series(index=frame.index, dtype=object)).map(_flow),
-                "size": frame.get("IYC_CSZ_CSIZECD", pd.Series(index=frame.index, dtype=object)).map(_size_mode),
-                "port": frame.get("IYC_POT_UNLDPORT", pd.Series(index=frame.index, dtype=object)).map(lambda value: _norm(value, "UNK")),
-                "height": frame.get("IYC_CHEIGHTCD", pd.Series(index=frame.index, dtype=object)).map(lambda value: _norm(value, "UNK")),
-                "weight": frame.get("IYC_CWEIGHT", pd.Series(index=frame.index, dtype=object)).map(
-                    lambda value: _weight_class(
-                        value,
-                        attribute_rules.weight_levels_for(voyage_id)
-                        if attribute_rules is not None and hasattr(attribute_rules, "weight_levels_for")
-                        else (0, 10, 15, 20, 25, 30),
-                    )
-                ),
-                "special_code": "",
-                "pre_stow": False,
-            }
+        levels = (
+            attribute_rules.weight_levels_for(voyage_id)
+            if attribute_rules is not None and hasattr(attribute_rules, "weight_levels_for")
+            else (0, 10, 15, 20, 25, 30)
         )
         group_columns = _small_groupby_columns(attribute_rules, voyage_id)
-        counts = work.groupby(list(group_columns), sort=True).size()
         counter: Counter[tuple] = Counter()
-        for key, count in counts.items():
-            if len(group_columns) == 1:
-                key = (key,)
-            values = dict(zip(group_columns, key))
-            counter[tuple(values.get(column, "") for column in group_columns)] = int(count)
+        for row in frame.to_dict("records"):
+            core = (
+                _flow(row.get("IYC_STS_CSTATUSCD")),
+                _size_mode(row.get("IYC_CSZ_CSIZECD")),
+                _norm(row.get("IYC_POT_UNLDPORT"), "UNK"),
+                _norm(row.get("IYC_CHEIGHTCD"), "UNK"),
+                _weight_class(row.get("IYC_CWEIGHT"), levels),
+                _explicit_special_stow_code(row),
+                "0",
+            )
+            values = _row_attributes(row, group_columns, levels=levels)
+            counter[(core, tuple(values.get(column, "") for column in group_columns))] += 1
         for index, (key, demand) in enumerate(sorted(counter.items()), start=1):
-            values = dict(zip(group_columns, key))
-            status = str(values.get("status", "MIXED"))
-            size = str(values.get("size", "40"))
-            port = str(values.get("port", "MIXED"))
-            height = str(values.get("height", "MIXED"))
-            weight = str(values.get("weight", "MIXED"))
-            special_code = str(values.get("special_code", ""))
-            pre_stow = bool(values.get("pre_stow", False))
+            core, dynamic_key = key
+            status, size, port, height, weight, special_code, pre_stow_value = core
+            values = dict(zip(group_columns, dynamic_key))
+            pre_stow = str(pre_stow_value) == "1"
             groups.append(
                 SmallBoxGroup(
                     group_id=f"{voyage_id}_S{index:03d}",
@@ -719,6 +715,7 @@ def load_small_doc_groups(
                     pre_stow=pre_stow,
                     special_stow=bool(special_code),
                     special_stow_code=special_code,
+                    attributes={str(k): str(v) for k, v in values.items()},
                 )
             )
     return groups
@@ -779,6 +776,13 @@ def enforce_medium_groups_cover_small_groups(
                 over_limit=False,
                 special_codes=(),
                 demand=qty,
+                attributes={
+                    "status": flow,
+                    "flow": flow,
+                    "port": port,
+                    "size": size,
+                    "size_mode": size,
+                },
             )
             group_indices_by_key[key].append(len(updated))
             updated.append(group)
@@ -937,8 +941,50 @@ def read_user_area_constraints(
 
 
 def _canonical_attribute_name(value: object) -> str:
-    text = str(value or "").strip().lower().replace("-", "_")
-    return ATTRIBUTE_ALIASES.get(text, text)
+    return str(value or "").strip()
+
+
+def _is_weight_attribute(value: object) -> bool:
+    text = str(value or "").strip().lower()
+    return text in {"weight", "weight_class", "iyc_cweight"}
+
+
+def _raw_attribute_text(value: object, default: str = "MIXED") -> str:
+    if value is None:
+        return default
+    try:
+        if pd.isna(value):
+            return default
+    except (TypeError, ValueError):
+        pass
+    return str(value).strip()
+
+
+def _row_attribute_value(
+    row: dict,
+    attr: object,
+    *,
+    levels: tuple[int, ...] = (0, 10, 15, 20, 25, 30),
+    default: str = "MIXED",
+) -> str:
+    name = _canonical_attribute_name(attr)
+    if _is_weight_attribute(name):
+        return _weight_class(row.get(name), levels)
+    return _raw_attribute_text(row.get(name), default)
+
+
+def _row_attributes(
+    row: dict,
+    attrs: tuple[str, ...],
+    *,
+    levels: tuple[int, ...] = (0, 10, 15, 20, 25, 30),
+    default: str = "MIXED",
+) -> dict[str, str]:
+    return {
+        name: _row_attribute_value(row, name, levels=levels, default=default)
+        for name in (_canonical_attribute_name(attr) for attr in attrs)
+        if name
+    }
 
 
 def _canonical_attribute_tuple(raw: object, default: tuple[str, ...]) -> tuple[str, ...]:
@@ -985,7 +1031,14 @@ def _canonical_weight_levels(raw: object, default: tuple[int, ...]) -> tuple[int
     return tuple(sorted(set(levels))) if levels else default
 
 
-def _voyage_rule_map(raw: object, voyages: list[str], default: tuple, canonicalizer) -> dict[str, tuple]:
+def _voyage_rule_map(
+    raw: object,
+    voyages: list[str],
+    default: tuple,
+    canonicalizer,
+    *,
+    fill_missing: bool = True,
+) -> dict[str, tuple]:
     if isinstance(raw, dict):
         out = {
             _voyage(voyage): canonicalizer(value, default)
@@ -997,10 +1050,11 @@ def _voyage_rule_map(raw: object, voyages: list[str], default: tuple, canonicali
     else:
         shared = canonicalizer(raw, default)
         out = {_voyage(voyage): shared for voyage in voyages if _voyage(voyage)}
-    for voyage in voyages:
-        normalized = _voyage(voyage)
-        if normalized:
-            out.setdefault(normalized, canonicalizer(None, default))
+    if fill_missing:
+        for voyage in voyages:
+            normalized = _voyage(voyage)
+            if normalized:
+                out.setdefault(normalized, canonicalizer(None, default))
     return out
 
 
@@ -1095,22 +1149,17 @@ def _canonical_adjust_attributes(raw: object) -> dict[str, str]:
 
 def _group_matches_adjust_attributes(group: object, attr_filter: dict[str, str]) -> bool:
     for attr, expected in attr_filter.items():
-        actual = _normalize_adjust_attr_value(attr, getattr(group, attr, ""))
+        attrs = getattr(group, "attributes", {}) or {}
+        actual = _normalize_adjust_attr_value(attr, attrs.get(attr, ""))
         if actual != expected:
             return False
     return True
 
 
 def _normalize_adjust_attr_value(attr: str, value: object) -> str:
-    if attr in {"voyage", "voyage_id"}:
-        return _voyage(value)
-    if attr in {"size", "size_mode"}:
-        return _size_mode(value)
-    if attr in {"status", "flow"}:
-        return _flow(value)
-    if attr == "pre_stow":
-        return "1" if bool(value) and str(value).strip().lower() not in {"0", "false", "no", ""} else "0"
-    return _norm(value)
+    if _is_weight_attribute(attr):
+        return _weight_class(value)
+    return _raw_attribute_text(value, "")
 
 
 def _canonical_adjust_bays(raw: object, bays: dict[str, Bay]) -> tuple[set[str], list[str]]:
@@ -1179,17 +1228,29 @@ def read_attribute_rules(data_dir: str | Path) -> AttributeRules:
         ),
         bay_no_mix_attributes=_canonical_attribute_tuple(
             _raw_attribute_value(raw, "bay_no_mix_attributes", "no_mix_bay_attributes", "bay_attributes") or bay_rules,
-            defaults.bay_no_mix_attributes,
+            (),
         ),
         row_no_mix_attributes=_canonical_attribute_tuple(
             _raw_attribute_value(raw, "row_no_mix_attributes", "stack_no_mix_attributes", "no_mix_row_attributes", "no_mix_stack_attributes", "row_attributes") or row_rules,
-            defaults.row_no_mix_attributes,
+            (),
         ),
         weight_levels=_canonical_weight_levels(weight_level, defaults.weight_levels),
         coarse_group_attributes_by_voyage=_voyage_rule_map(rough_attr, voyages, defaults.coarse_group_attributes, _canonical_attribute_tuple),
         fine_group_attributes_by_voyage=_voyage_rule_map(detail_attr, voyages, defaults.fine_group_attributes, _canonical_attribute_tuple),
-        bay_no_mix_attributes_by_voyage=_voyage_rule_map(bay_rules, voyages, defaults.bay_no_mix_attributes, _canonical_attribute_tuple),
-        row_no_mix_attributes_by_voyage=_voyage_rule_map(row_rules, voyages, defaults.row_no_mix_attributes, _canonical_attribute_tuple),
+        bay_no_mix_attributes_by_voyage=_voyage_rule_map(
+            bay_rules,
+            voyages,
+            (),
+            _canonical_attribute_tuple,
+            fill_missing=False,
+        ),
+        row_no_mix_attributes_by_voyage=_voyage_rule_map(
+            row_rules,
+            voyages,
+            (),
+            _canonical_attribute_tuple,
+            fill_missing=False,
+        ),
         weight_levels_by_voyage=_voyage_rule_map(weight_level, voyages, defaults.weight_levels, _canonical_weight_levels),
     )
 
@@ -1200,9 +1261,9 @@ def _small_groupby_columns(attribute_rules: AttributeRules | None, voyage_id: ob
     attrs = list(attribute_rules.fine_for(voyage_id) if voyage_id is not None and hasattr(attribute_rules, "fine_for") else attribute_rules.fine_group_attributes)
     attrs.extend(attribute_rules.bay_no_mix_for(voyage_id) if voyage_id is not None and hasattr(attribute_rules, "bay_no_mix_for") else attribute_rules.bay_no_mix_attributes)
     attrs.extend(attribute_rules.row_no_mix_for(voyage_id) if voyage_id is not None and hasattr(attribute_rules, "row_no_mix_for") else attribute_rules.row_no_mix_attributes)
-    columns = ["status", "size", "port"]
+    columns: list[str] = []
     for attr in attrs:
-        column = SMALL_GROUP_COLUMN_BY_ATTR.get(attr)
+        column = _canonical_attribute_name(attr)
         if column and column not in columns:
             columns.append(column)
     return tuple(columns)
@@ -1216,11 +1277,9 @@ def _medium_groupby_columns(attribute_rules: AttributeRules | None, voyage_id: o
         if voyage_id is not None and hasattr(attribute_rules, "coarse_for")
         else attribute_rules.coarse_group_attributes
     )
-    columns = ["status", "size"]
+    columns: list[str] = []
     for attr in attrs:
-        column = SMALL_GROUP_COLUMN_BY_ATTR.get(attr)
-        if column == "weight":
-            column = "weight_class"
+        column = _canonical_attribute_name(attr)
         if column and column not in columns:
             columns.append(column)
     return tuple(columns)
@@ -1287,11 +1346,11 @@ def _weight_class(value: object, levels: tuple[int, ...] = (0, 10, 15, 20, 25, 3
         return "UNK"
     ordered = sorted(set(int(level) for level in levels)) or [0, 10, 15, 20, 25, 30]
     bands = list(zip(ordered, ordered[1:]))
-    for lower, upper in bands:
+    for index, (lower, upper) in enumerate(bands, start=1):
         if lower <= tons < upper:
-            return f"{lower}_{upper}"
+            return str(index)
     if tons >= ordered[-1]:
-        return f"GT{ordered[-1]}"
+        return str(len(ordered))
     return "UNK"
 
 
@@ -1394,6 +1453,18 @@ def _append_scaled_groups(
                 over_limit=over_limit,
                 special_codes=special_codes,
                 demand=demand,
+                attributes={
+                    "status": status,
+                    "flow": status,
+                    "port": port,
+                    "size": size,
+                    "size_mode": size,
+                    "height": height,
+                    "weight_class": weight_class,
+                    "weight": weight_class,
+                    "ctype": ctype,
+                    "operator": operator,
+                },
             )
         )
         group_index += 1
@@ -1409,6 +1480,7 @@ def build_bays(
     target_voyages: set[str] | None = None,
     area_functions: dict[str, set[str]] | None = None,
     misplaced_bay_exclusion_ratio: float = DEFAULT_MISPLACED_BAY_EXCLUSION_RATIO,
+    attribute_rules: AttributeRules | None = None,
 ) -> dict[str, Bay]:
     data_path = Path(data_dir)
     base = input_dataframe(data_path, "bay_slots_detail") if has_input_json(data_path) else pd.read_parquet(data_path / "bay_slots_detail.parquet")
@@ -1505,7 +1577,7 @@ def build_bays(
     build_bays.last_tops_closed_bay_count = getattr(apply_tops_reservations, "last_reserved_bay_count", 0)
     build_bays.last_misplaced_excluded_bay_count = len(excluded_bays)
 
-    _populate_existing_bay_attributes(base, bays, vessel_schedules, planning_time)
+    _populate_existing_bay_attributes(base, bays, vessel_schedules, planning_time, attribute_rules)
 
     return bays
 
@@ -1554,6 +1626,7 @@ def _populate_existing_bay_attributes(
     bays: dict[str, Bay],
     vessel_schedules: dict[str, VoyageSchedule],
     planning_time: datetime,
+    attribute_rules: AttributeRules | None = None,
 ) -> None:
     columns = [
         "YAA_AREANO",
@@ -1567,6 +1640,17 @@ def _populate_existing_bay_attributes(
         "IYC_CTYPECD",
         "IYC_SETTMPT",
     ]
+    if attribute_rules is not None:
+        for attrs in (
+            attribute_rules.bay_no_mix_attributes,
+            attribute_rules.row_no_mix_attributes,
+            *(attribute_rules.bay_no_mix_attributes_by_voyage.values()),
+            *(attribute_rules.row_no_mix_attributes_by_voyage.values()),
+        ):
+            for attr in attrs:
+                name = _canonical_attribute_name(attr)
+                if name in base.columns and name not in columns:
+                    columns.append(name)
     occupied = base.loc[base["HAS_CONTAINER"] == 1, columns].copy()
     if occupied.empty:
         return
@@ -1599,6 +1683,18 @@ def _populate_existing_bay_attributes(
     occupied["_port"] = _norm_series(occupied["IYC_POT_UNLDPORT"])
     occupied["_status"] = _norm_series(occupied["IYC_STS_CSTATUSCD"])
     occupied["_ctype"] = _norm_series(occupied["IYC_CTYPECD"])
+    dynamic_attrs: list[str] = []
+    if attribute_rules is not None:
+        for attrs in (
+            attribute_rules.bay_no_mix_attributes,
+            attribute_rules.row_no_mix_attributes,
+            *(attribute_rules.bay_no_mix_attributes_by_voyage.values()),
+            *(attribute_rules.row_no_mix_attributes_by_voyage.values()),
+        ):
+            for attr in attrs:
+                name = _canonical_attribute_name(attr)
+                if name and name not in dynamic_attrs:
+                    dynamic_attrs.append(name)
 
     for bay_key, values in occupied.groupby("_bay_key", sort=False):
         bay = bays.get(str(bay_key))
@@ -1618,6 +1714,14 @@ def _populate_existing_bay_attributes(
             attr_values = {str(item) for item in values[column].dropna().unique() if str(item)}
             if attr_values:
                 bay.existing_attrs.setdefault(attr, set()).update(attr_values)
+        for attr in dynamic_attrs:
+            attr_values = {
+                _row_attribute_value(row, attr)
+                for row in values.to_dict("records")
+                if _row_attribute_value(row, attr)
+            }
+            if attr_values:
+                bay.existing_attrs.setdefault(attr, set()).update(attr_values)
         for row_no, row_values in values.groupby("_row", sort=False):
             row_key = str(row_no)
             if not row_key:
@@ -1634,6 +1738,14 @@ def _populate_existing_bay_attributes(
                 "ctype": "_ctype",
             }.items():
                 attr_values = {str(item) for item in row_values[column].dropna().unique() if str(item)}
+                if attr_values:
+                    bay.existing_attrs_by_row.setdefault(row_key, {}).setdefault(attr, set()).update(attr_values)
+            for attr in dynamic_attrs:
+                attr_values = {
+                    _row_attribute_value(row, attr)
+                    for row in row_values.to_dict("records")
+                    if _row_attribute_value(row, attr)
+                }
                 if attr_values:
                     bay.existing_attrs_by_row.setdefault(row_key, {}).setdefault(attr, set()).update(attr_values)
 
@@ -2257,6 +2369,7 @@ def build_problem(
         target_voyages=set(target_voyages),
         area_functions=area_functions,
         misplaced_bay_exclusion_ratio=misplaced_bay_exclusion_ratio,
+        attribute_rules=attribute_rules,
     )
     bay_requirements, bay_blocklist, bay_adjust_rules, bay_constraint_summary = read_medium_small_bay_controls(
         data_dir,

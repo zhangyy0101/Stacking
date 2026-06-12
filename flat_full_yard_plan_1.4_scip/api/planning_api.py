@@ -21,6 +21,7 @@ from large_plan.solver import solve_daily_rolling_yard_plan
 from medium_small.bridge import (
     big_plan_rows_from_allocation_records,
     infer_target_voyages_from_big_plan,
+    make_config as make_medium_small_config,
 )
 from medium_small.column_generation_planner import ColumnGenerationConfig, ColumnGenerationPlanner
 from medium_small.small_plan_from_medium import (
@@ -43,6 +44,31 @@ class YardPlanAlgorithmConfig:
     large_mip_gap: float = 0.001
     large_verbose: bool = True
     disable_default_flow_aliases: bool = False
+
+    @classmethod
+    def from_cli_args(cls, args: Any) -> "YardPlanAlgorithmConfig":
+        horizon_hours = getattr(args, "horizon_hours", 24.0)
+        misplaced_ratio = getattr(
+            args,
+            "misplaced_bay_exclusion_ratio",
+            DEFAULT_MISPLACED_BAY_EXCLUSION_RATIO,
+        )
+        large_time_limit = getattr(args, "large_time_limit", 120.0)
+        large_mip_gap = getattr(args, "large_mip_gap", 0.001)
+        return cls(
+            large=LargePlanningConfig(),
+            medium_small=make_medium_small_config(args) if hasattr(args, "max_iterations") else ColumnGenerationConfig(),
+            planning_time=getattr(args, "planning_time", None),
+            medium_voyages=getattr(args, "medium_voyages", None),
+            horizon_hours=float(24.0 if horizon_hours is None else horizon_hours),
+            misplaced_bay_exclusion_ratio=float(
+                DEFAULT_MISPLACED_BAY_EXCLUSION_RATIO if misplaced_ratio is None else misplaced_ratio
+            ),
+            large_time_limit=float(120.0 if large_time_limit is None else large_time_limit),
+            large_mip_gap=float(0.001 if large_mip_gap is None else large_mip_gap),
+            large_verbose=not bool(getattr(args, "large_quiet", False)),
+            disable_default_flow_aliases=bool(getattr(args, "disable_default_flow_aliases", False)),
+        )
 
 
 def solve_large_plan_df(

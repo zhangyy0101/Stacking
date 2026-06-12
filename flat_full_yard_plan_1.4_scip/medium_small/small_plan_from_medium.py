@@ -140,6 +140,7 @@ def configure_small_plan_from_medium(config: ColumnGenerationConfig, plan: Exter
     config.demand_mode = "doc-only"
     config.medium_plan_quota = dict(plan.coarse_area_quota)
     config.medium_plan_bay_quota = dict(plan.coarse_bay_quota) if plan.coarse_bay_quota else None
+    config.repair_can_exceed_medium_plan_quota = True
     return config
 
 

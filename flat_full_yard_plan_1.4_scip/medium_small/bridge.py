@@ -42,17 +42,22 @@ from medium_small.small_plan_from_medium import (  # noqa: E402
 )
 
 
-DEFAULT_TARGET_BIG_PLAN_FLOWS = {"OF"}
+DEFAULT_TARGET_BIG_PLAN_FLOWS = {"OF", "IF", "IZ", "T", "OZ"}
 
 
 def add_column_generation_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-iterations", type=int, default=30)
     parser.add_argument("--columns-per-iteration", type=int, default=2500)
     parser.add_argument("--stalled-pricing-columns", type=int, default=500)
+    parser.add_argument("--min-pricing-iterations", type=int, default=3)
+    parser.add_argument("--pricing-early-stop-new-columns", type=int, default=500)
+    parser.add_argument("--disable-feasibility-early-stop", action="store_true")
+    parser.add_argument("--feasibility-early-stop-min-iteration", type=int, default=1)
+    parser.add_argument("--stage0-closure-max-extra-columns", type=int, default=1500)
     parser.add_argument("--primal-expansion-columns", type=int, default=800)
     parser.add_argument("--max-primal-expansion-rounds", type=int, default=3)
     parser.add_argument("--primal-expansion-reduced-cost-limit", type=float, default=1_000_000.0)
-    parser.add_argument("--initial-columns-per-group", type=int, default=16)
+    parser.add_argument("--initial-columns-per-group", type=int, default=8)
     parser.add_argument("--max-candidate-bays-per-group", type=int, default=500)
     parser.add_argument("--mip-time-limit", type=float, default=120.0)
     parser.add_argument("--mip-gap", type=float, default=0.01)
@@ -64,14 +69,15 @@ def add_column_generation_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--diving-improvement-time-limit", type=float, default=6.0)
     parser.add_argument("--diving-improvement-max-groups", type=int, default=14)
     parser.add_argument("--diving-improvement-max-no-improve-rounds", type=int, default=2)
-    parser.add_argument("--repair-lns-rounds", type=int, default=2)
-    parser.add_argument("--repair-lns-time-limit", type=float, default=3.0)
-    parser.add_argument("--repair-lns-max-groups", type=int, default=16)
-    parser.add_argument("--repair-lns-max-no-improve-rounds", type=int, default=2)
+    parser.add_argument("--repair-lns-rounds", type=int, default=24)
+    parser.add_argument("--repair-lns-time-limit", type=float, default=4.0)
+    parser.add_argument("--repair-lns-max-groups", type=int, default=24)
+    parser.add_argument("--repair-lns-max-no-improve-rounds", type=int, default=4)
     parser.add_argument("--coarse-compaction-lns-rounds", type=int, default=0)
     parser.add_argument("--coarse-compaction-lns-time-limit", type=float, default=4.0)
     parser.add_argument("--coarse-compaction-lns-max-groups", type=int, default=16)
     parser.add_argument("--coarse-compaction-lns-max-no-improve-rounds", type=int, default=1)
+    parser.add_argument("--enable-diving", action="store_true")
     parser.add_argument("--diving-price-columns", action="store_true")
     parser.add_argument("--diving-stop-on-lp-unplaced", action="store_true", default=True)
     parser.add_argument("--diving-continue-on-lp-unplaced", action="store_false", dest="diving_stop_on_lp_unplaced")
@@ -106,6 +112,11 @@ def make_config(args: argparse.Namespace) -> ColumnGenerationConfig:
         max_iterations=args.max_iterations,
         columns_per_iteration=args.columns_per_iteration,
         stalled_pricing_columns=args.stalled_pricing_columns,
+        min_pricing_iterations=args.min_pricing_iterations,
+        pricing_early_stop_new_columns=args.pricing_early_stop_new_columns,
+        feasibility_early_stop_enabled=not args.disable_feasibility_early_stop,
+        feasibility_early_stop_min_iteration=args.feasibility_early_stop_min_iteration,
+        stage0_closure_max_extra_columns=args.stage0_closure_max_extra_columns,
         primal_expansion_columns=args.primal_expansion_columns,
         max_primal_expansion_rounds=args.max_primal_expansion_rounds,
         primal_expansion_reduced_cost_limit=args.primal_expansion_reduced_cost_limit,
@@ -129,6 +140,7 @@ def make_config(args: argparse.Namespace) -> ColumnGenerationConfig:
         coarse_compaction_lns_time_limit=args.coarse_compaction_lns_time_limit,
         coarse_compaction_lns_max_groups=args.coarse_compaction_lns_max_groups,
         coarse_compaction_lns_max_no_improve_rounds=args.coarse_compaction_lns_max_no_improve_rounds,
+        enable_diving=args.enable_diving,
         diving_price_columns=args.diving_price_columns,
         diving_stop_on_lp_unplaced=args.diving_stop_on_lp_unplaced,
         full_column_pool=args.full_column_pool,
@@ -552,8 +564,7 @@ def _norm(value: object) -> str:
 
 
 def _flow(value: object) -> str:
-    text = _norm(value).upper()
-    return text or "OF"
+    return adapter_data_io.medium_small_area_flow(_norm(value).upper())
 
 
 def _date_key(value: str) -> str:

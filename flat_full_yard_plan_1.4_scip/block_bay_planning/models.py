@@ -4,10 +4,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 
-DEFAULT_COARSE_GROUP_ATTRIBUTES = ("voyage_id", "status", "port", "size")
-DEFAULT_FINE_GROUP_ATTRIBUTES = ("voyage_id", "status", "port", "size", "height", "weight_class", "special_stow_code", "pre_stow")
-DEFAULT_BAY_NO_MIX_ATTRIBUTES = ("size", "height")
-DEFAULT_ROW_NO_MIX_ATTRIBUTES = ("port",)
+DEFAULT_COARSE_GROUP_ATTRIBUTES = ("IYC_CSZ_CSIZECD", "IYC_POT_UNLDPORT")
+DEFAULT_FINE_GROUP_ATTRIBUTES = ("IYC_CSZ_CSIZECD", "IYC_POT_UNLDPORT", "IYC_CHEIGHTCD")
+DEFAULT_BAY_NO_MIX_ATTRIBUTES = ("IYC_CHEIGHTCD",)
+DEFAULT_ROW_NO_MIX_ATTRIBUTES = ("IYC_POT_UNLDPORT",)
 DEFAULT_WEIGHT_LEVELS = (0, 10, 15, 20, 25, 30)
 
 
@@ -23,6 +23,7 @@ class AttributeRules:
     bay_no_mix_attributes_by_voyage: dict[str, tuple[str, ...]] = field(default_factory=dict)
     row_no_mix_attributes_by_voyage: dict[str, tuple[str, ...]] = field(default_factory=dict)
     weight_levels_by_voyage: dict[str, tuple[int, ...]] = field(default_factory=dict)
+    weight_group_voyages: frozenset[str] = frozenset()
 
     def as_dict(self) -> dict[str, list[str]]:
         return {
@@ -46,6 +47,7 @@ class AttributeRules:
             "weight_levels_by_voyage": {
                 voyage: list(values) for voyage, values in sorted(self.weight_levels_by_voyage.items())
             },
+            "weight_group_voyages": sorted(self.weight_group_voyages),
         }
 
     def coarse_for(self, voyage_id: object) -> tuple[str, ...]:
@@ -62,6 +64,9 @@ class AttributeRules:
 
     def weight_levels_for(self, voyage_id: object) -> tuple[int, ...]:
         return self.weight_levels_by_voyage.get(_voyage_key(voyage_id), self.weight_levels)
+
+    def weight_group_enabled_for(self, voyage_id: object) -> bool:
+        return _voyage_key(voyage_id) in self.weight_group_voyages
 
 
 def _voyage_key(value: object) -> str:
@@ -96,6 +101,7 @@ class BoxGroup:
     over_limit: bool
     special_codes: tuple[str, ...]
     demand: int
+    attributes: dict[str, str] = field(default_factory=dict)
 
     @property
     def size_mode(self) -> str:
@@ -209,6 +215,7 @@ class SmallBoxGroup:
     pre_stow: bool = False
     special_stow: bool = False
     special_stow_code: str = ""
+    attributes: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
