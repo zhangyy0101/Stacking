@@ -46,75 +46,113 @@ DEFAULT_TARGET_BIG_PLAN_FLOWS = {"OF", "IF", "IZ", "T", "OZ"}
 
 
 def add_column_generation_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--max-iterations", type=int, default=30)
-    parser.add_argument("--columns-per-iteration", type=int, default=2500)
-    parser.add_argument("--stalled-pricing-columns", type=int, default=500)
-    parser.add_argument("--min-pricing-iterations", type=int, default=3)
-    parser.add_argument("--pricing-early-stop-new-columns", type=int, default=500)
+    defaults = ColumnGenerationConfig()
+    parser.add_argument("--max-iterations", type=int, default=defaults.max_iterations)
+    parser.add_argument("--columns-per-iteration", type=int, default=defaults.columns_per_iteration)
+    parser.add_argument("--stalled-pricing-columns", type=int, default=defaults.stalled_pricing_columns)
+    parser.add_argument("--min-pricing-iterations", type=int, default=defaults.min_pricing_iterations)
+    parser.add_argument("--pricing-early-stop-new-columns", type=int, default=defaults.pricing_early_stop_new_columns)
+    parser.add_argument("--pricing-max-no-improve-iterations", type=int, default=defaults.pricing_max_no_improve_iterations)
+    parser.add_argument("--pricing-min-lp-improvement", type=float, default=defaults.pricing_min_lp_improvement)
+    parser.add_argument("--pricing-min-lp-improvement-relative", type=float, default=defaults.pricing_min_lp_improvement_relative)
+    parser.add_argument("--pricing-min-lp-improvement-per-group", type=float, default=defaults.pricing_min_lp_improvement_per_group)
+    parser.add_argument(
+        "--pricing-min-lp-improvement-per-1000-columns",
+        type=float,
+        default=defaults.pricing_min_lp_improvement_per_1000_columns,
+    )
+    parser.add_argument(
+        "--enable-feasibility-early-stop",
+        action="store_true",
+        default=defaults.feasibility_early_stop_enabled,
+    )
     parser.add_argument("--disable-feasibility-early-stop", action="store_true")
-    parser.add_argument("--feasibility-early-stop-min-iteration", type=int, default=1)
-    parser.add_argument("--stage0-closure-max-extra-columns", type=int, default=1500)
-    parser.add_argument("--primal-expansion-columns", type=int, default=800)
-    parser.add_argument("--max-primal-expansion-rounds", type=int, default=3)
-    parser.add_argument("--primal-expansion-reduced-cost-limit", type=float, default=1_000_000.0)
-    parser.add_argument("--initial-columns-per-group", type=int, default=8)
-    parser.add_argument("--max-candidate-bays-per-group", type=int, default=500)
-    parser.add_argument("--mip-time-limit", type=float, default=120.0)
-    parser.add_argument("--mip-gap", type=float, default=0.01)
-    parser.add_argument("--diving-max-steps", type=int, default=200)
-    parser.add_argument("--diving-fractional-tolerance", type=float, default=1e-5)
-    parser.add_argument("--diving-fix-batch-size", type=int, default=8)
-    parser.add_argument("--diving-max-no-improve-steps", type=int, default=5)
-    parser.add_argument("--diving-improvement-rounds", type=int, default=6)
-    parser.add_argument("--diving-improvement-time-limit", type=float, default=6.0)
-    parser.add_argument("--diving-improvement-max-groups", type=int, default=14)
-    parser.add_argument("--diving-improvement-max-no-improve-rounds", type=int, default=2)
-    parser.add_argument("--repair-lns-rounds", type=int, default=24)
-    parser.add_argument("--repair-lns-time-limit", type=float, default=4.0)
-    parser.add_argument("--repair-lns-max-groups", type=int, default=24)
-    parser.add_argument("--repair-lns-max-no-improve-rounds", type=int, default=4)
-    parser.add_argument("--coarse-compaction-lns-rounds", type=int, default=0)
-    parser.add_argument("--coarse-compaction-lns-time-limit", type=float, default=4.0)
-    parser.add_argument("--coarse-compaction-lns-max-groups", type=int, default=16)
-    parser.add_argument("--coarse-compaction-lns-max-no-improve-rounds", type=int, default=1)
-    parser.add_argument("--enable-diving", action="store_true")
-    parser.add_argument("--diving-price-columns", action="store_true")
-    parser.add_argument("--diving-stop-on-lp-unplaced", action="store_true", default=True)
-    parser.add_argument("--diving-continue-on-lp-unplaced", action="store_false", dest="diving_stop_on_lp_unplaced")
-    parser.add_argument("--full-column-pool", action="store_true")
+    parser.add_argument("--feasibility-early-stop-min-iteration", type=int, default=defaults.feasibility_early_stop_min_iteration)
+    parser.add_argument("--stage0-closure-max-extra-columns", type=int, default=defaults.stage0_closure_max_extra_columns)
+    parser.add_argument("--primal-expansion-columns", type=int, default=defaults.primal_expansion_columns)
+    parser.add_argument("--max-primal-expansion-rounds", type=int, default=defaults.max_primal_expansion_rounds)
+    parser.add_argument("--primal-expansion-reduced-cost-limit", type=float, default=defaults.primal_expansion_reduced_cost_limit)
+    parser.add_argument("--initial-columns-per-group", type=int, default=defaults.initial_columns_per_group)
+    parser.add_argument("--max-candidate-bays-per-group", type=int, default=defaults.max_candidate_bays_per_group)
+    parser.add_argument(
+        "--disable-adaptive-pricing",
+        action="store_true",
+        default=not defaults.adaptive_pricing_enabled,
+    )
+    parser.add_argument("--pricing-candidate-bays-initial", type=int, default=defaults.pricing_candidate_bays_initial)
+    parser.add_argument("--pricing-candidate-bays-growth-per-iteration", type=int, default=defaults.pricing_candidate_bays_growth_per_iteration)
+    parser.add_argument("--pricing-candidate-bays-high-dual", type=int, default=defaults.pricing_candidate_bays_high_dual)
+    parser.add_argument("--pricing-candidate-bays-unplaced", type=int, default=defaults.pricing_candidate_bays_unplaced)
+    parser.add_argument(
+        "--total-time-limit",
+        type=float,
+        default=defaults.total_time_limit,
+        help="Overall medium/small column-generation budget in seconds; use 0 to disable.",
+    )
+    parser.add_argument("--pricing-min-lp-time-limit", type=float, default=defaults.pricing_min_lp_time_limit)
+    parser.add_argument("--pricing-iteration-setup-reserve", type=float, default=defaults.pricing_iteration_setup_reserve)
+    parser.add_argument("--staged-repair-reserve-fraction", type=float, default=defaults.staged_repair_reserve_fraction)
+    parser.add_argument("--staged-repair-reserve-min", type=float, default=defaults.staged_repair_reserve_min)
+    parser.add_argument("--staged-repair-reserve-max", type=float, default=defaults.staged_repair_reserve_max)
+    parser.add_argument("--staged-repair-secondary-order-min-remaining", type=float, default=defaults.staged_repair_secondary_order_min_remaining)
+    parser.add_argument("--staged-repair-rebuild-first-unplaced-threshold", type=int, default=defaults.staged_repair_rebuild_first_unplaced_threshold)
+    parser.add_argument("--mip-time-limit", type=float, default=defaults.mip_time_limit)
+    parser.add_argument("--mip-gap", type=float, default=defaults.mip_gap)
+    parser.add_argument("--full-column-pool", action="store_true", default=defaults.full_column_pool)
     parser.add_argument(
         "--demand-mode",
         choices=["original", "medium", "medium-with-doc-floor", "doc-only"],
-        default="original",
+        default=defaults.demand_mode,
     )
-    parser.add_argument("--fine-group-area-penalty", type=float, default=80.0)
-    parser.add_argument("--fine-group-block-penalty", type=float, default=35.0)
-    parser.add_argument("--fine-group-bay-penalty", type=float, default=8.0)
-    parser.add_argument("--coarse-area-block-penalty", type=float, default=24.0)
-    parser.add_argument("--coarse-area-bay-penalty", type=float, default=2.5)
-    parser.add_argument("--medium-concentrated-group-threshold", type=int, default=26)
-    parser.add_argument("--medium-small-group-area-split-penalty", type=float, default=2400.0)
-    parser.add_argument("--medium-small-group-fragment-penalty", type=float, default=90.0)
-    parser.add_argument("--medium-large-group-min-area-boxes", type=int, default=10)
-    parser.add_argument("--medium-large-group-small-area-penalty", type=float, default=900.0)
-    parser.add_argument("--medium-large-group-area-open-penalty", type=float, default=0.0)
-    parser.add_argument("--medium-large-group-target-area-boxes", type=int, default=60)
-    parser.add_argument("--unplaced-penalty", type=float, default=100_000.0)
-    parser.add_argument("--required-area-reward", type=float, default=1_000.0)
-    parser.add_argument("--big-plan-area-deviation-penalty", type=float, default=3.0)
-    parser.add_argument("--big-plan-fallback-tier-penalty", type=float, default=20.0)
+    parser.add_argument("--fine-group-area-penalty", type=float, default=defaults.small_plan_group_area_split_penalty)
+    parser.add_argument("--fine-group-block-penalty", type=float, default=defaults.small_plan_group_block_split_penalty)
+    parser.add_argument("--fine-group-bay-penalty", type=float, default=defaults.small_plan_group_bay_split_penalty)
+    parser.add_argument("--coarse-area-block-penalty", type=float, default=defaults.small_plan_coarse_area_block_split_penalty)
+    parser.add_argument("--coarse-area-bay-penalty", type=float, default=defaults.small_plan_coarse_area_bay_split_penalty)
+    parser.add_argument("--medium-concentrated-group-threshold", type=int, default=defaults.medium_concentrated_group_threshold)
+    parser.add_argument("--medium-small-group-area-split-penalty", type=float, default=defaults.medium_small_group_area_split_penalty)
+    parser.add_argument("--medium-small-group-fragment-penalty", type=float, default=defaults.medium_small_group_fragment_penalty)
+    parser.add_argument("--medium-large-group-min-area-boxes", type=int, default=defaults.medium_large_group_min_area_boxes)
+    parser.add_argument("--medium-large-group-small-area-penalty", type=float, default=defaults.medium_large_group_small_area_penalty)
+    parser.add_argument("--medium-large-group-area-open-penalty", type=float, default=defaults.medium_large_group_area_open_penalty)
+    parser.add_argument("--medium-large-group-target-area-boxes", type=int, default=defaults.medium_large_group_target_area_boxes)
+    parser.add_argument("--unplaced-penalty", type=float, default=defaults.unplaced_penalty)
+    parser.add_argument("--required-area-reward", type=float, default=defaults.required_area_reward)
+    parser.add_argument("--big-plan-area-deviation-penalty", type=float, default=defaults.big_plan_area_deviation_penalty)
+    parser.add_argument("--big-plan-fallback-tier-penalty", type=float, default=defaults.big_plan_fallback_tier_penalty)
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--no-scip", action="store_true")
 
 
 def make_config(args: argparse.Namespace) -> ColumnGenerationConfig:
+    defaults = ColumnGenerationConfig()
     return ColumnGenerationConfig(
         max_iterations=args.max_iterations,
         columns_per_iteration=args.columns_per_iteration,
         stalled_pricing_columns=args.stalled_pricing_columns,
         min_pricing_iterations=args.min_pricing_iterations,
         pricing_early_stop_new_columns=args.pricing_early_stop_new_columns,
-        feasibility_early_stop_enabled=not args.disable_feasibility_early_stop,
+        pricing_max_no_improve_iterations=getattr(args, "pricing_max_no_improve_iterations", defaults.pricing_max_no_improve_iterations),
+        pricing_min_lp_improvement=getattr(args, "pricing_min_lp_improvement", defaults.pricing_min_lp_improvement),
+        pricing_min_lp_improvement_relative=getattr(
+            args,
+            "pricing_min_lp_improvement_relative",
+            defaults.pricing_min_lp_improvement_relative,
+        ),
+        pricing_min_lp_improvement_per_group=getattr(
+            args,
+            "pricing_min_lp_improvement_per_group",
+            defaults.pricing_min_lp_improvement_per_group,
+        ),
+        pricing_min_lp_improvement_per_1000_columns=getattr(
+            args,
+            "pricing_min_lp_improvement_per_1000_columns",
+            defaults.pricing_min_lp_improvement_per_1000_columns,
+        ),
+        feasibility_early_stop_enabled=bool(
+            getattr(args, "enable_feasibility_early_stop", defaults.feasibility_early_stop_enabled)
+            and not getattr(args, "disable_feasibility_early_stop", False)
+        ),
         feasibility_early_stop_min_iteration=args.feasibility_early_stop_min_iteration,
         stage0_closure_max_extra_columns=args.stage0_closure_max_extra_columns,
         primal_expansion_columns=args.primal_expansion_columns,
@@ -122,27 +160,29 @@ def make_config(args: argparse.Namespace) -> ColumnGenerationConfig:
         primal_expansion_reduced_cost_limit=args.primal_expansion_reduced_cost_limit,
         initial_columns_per_group=args.initial_columns_per_group,
         max_candidate_bays_per_group=args.max_candidate_bays_per_group,
+        adaptive_pricing_enabled=not getattr(args, "disable_adaptive_pricing", not defaults.adaptive_pricing_enabled),
+        pricing_candidate_bays_initial=getattr(args, "pricing_candidate_bays_initial", defaults.pricing_candidate_bays_initial),
+        pricing_candidate_bays_growth_per_iteration=getattr(args, "pricing_candidate_bays_growth_per_iteration", defaults.pricing_candidate_bays_growth_per_iteration),
+        pricing_candidate_bays_high_dual=getattr(args, "pricing_candidate_bays_high_dual", defaults.pricing_candidate_bays_high_dual),
+        pricing_candidate_bays_unplaced=getattr(args, "pricing_candidate_bays_unplaced", defaults.pricing_candidate_bays_unplaced),
+        total_time_limit=getattr(args, "total_time_limit", defaults.total_time_limit),
+        pricing_min_lp_time_limit=getattr(args, "pricing_min_lp_time_limit", defaults.pricing_min_lp_time_limit),
+        pricing_iteration_setup_reserve=getattr(args, "pricing_iteration_setup_reserve", defaults.pricing_iteration_setup_reserve),
+        staged_repair_reserve_fraction=getattr(args, "staged_repair_reserve_fraction", defaults.staged_repair_reserve_fraction),
+        staged_repair_reserve_min=getattr(args, "staged_repair_reserve_min", defaults.staged_repair_reserve_min),
+        staged_repair_reserve_max=getattr(args, "staged_repair_reserve_max", defaults.staged_repair_reserve_max),
+        staged_repair_secondary_order_min_remaining=getattr(
+            args,
+            "staged_repair_secondary_order_min_remaining",
+            defaults.staged_repair_secondary_order_min_remaining,
+        ),
+        staged_repair_rebuild_first_unplaced_threshold=getattr(
+            args,
+            "staged_repair_rebuild_first_unplaced_threshold",
+            defaults.staged_repair_rebuild_first_unplaced_threshold,
+        ),
         mip_time_limit=args.mip_time_limit,
         mip_gap=args.mip_gap,
-        diving_max_steps=args.diving_max_steps,
-        diving_fractional_tolerance=args.diving_fractional_tolerance,
-        diving_fix_batch_size=args.diving_fix_batch_size,
-        diving_max_no_improve_steps=args.diving_max_no_improve_steps,
-        diving_improvement_rounds=args.diving_improvement_rounds,
-        diving_improvement_time_limit=args.diving_improvement_time_limit,
-        diving_improvement_max_groups=args.diving_improvement_max_groups,
-        diving_improvement_max_no_improve_rounds=args.diving_improvement_max_no_improve_rounds,
-        repair_lns_rounds=args.repair_lns_rounds,
-        repair_lns_time_limit=args.repair_lns_time_limit,
-        repair_lns_max_groups=args.repair_lns_max_groups,
-        repair_lns_max_no_improve_rounds=args.repair_lns_max_no_improve_rounds,
-        coarse_compaction_lns_rounds=args.coarse_compaction_lns_rounds,
-        coarse_compaction_lns_time_limit=args.coarse_compaction_lns_time_limit,
-        coarse_compaction_lns_max_groups=args.coarse_compaction_lns_max_groups,
-        coarse_compaction_lns_max_no_improve_rounds=args.coarse_compaction_lns_max_no_improve_rounds,
-        enable_diving=args.enable_diving,
-        diving_price_columns=args.diving_price_columns,
-        diving_stop_on_lp_unplaced=args.diving_stop_on_lp_unplaced,
         full_column_pool=args.full_column_pool,
         demand_mode=args.demand_mode,
         small_plan_group_area_split_penalty=args.fine_group_area_penalty,
@@ -389,14 +429,31 @@ def solve_medium_small_problem(
     output_path.mkdir(parents=True, exist_ok=True)
     started_at = perf_counter()
 
+    planner_init_start = perf_counter()
     planner = ColumnGenerationPlanner(problem, config)
+    planner_init_seconds = perf_counter() - planner_init_start
+    planner_solve_start = perf_counter()
     result = planner.solve()
+    planner_solve_seconds = perf_counter() - planner_solve_start
 
+    output_write_timings: dict[str, float] = {}
+    output_write_start = perf_counter()
+    step_start = perf_counter()
     write_rows(output_path / "small_plan.csv", result.small_rows)
+    output_write_timings["write_small_plan_seconds"] = round(perf_counter() - step_start, 3)
+    step_start = perf_counter()
     write_rows(output_path / "medium_plan.csv", result.medium_rows)
+    output_write_timings["write_medium_plan_seconds"] = round(perf_counter() - step_start, 3)
+    step_start = perf_counter()
     write_rows(output_path / "small_plan_six_bay_blocks.csv", make_six_bay_block_rows(result.small_rows))
+    output_write_timings["write_small_plan_six_bay_blocks_seconds"] = round(perf_counter() - step_start, 3)
+    step_start = perf_counter()
     write_rows(output_path / "big_plan_used.csv", [row.__dict__ for row in problem.big_plan])
+    output_write_timings["write_big_plan_used_seconds"] = round(perf_counter() - step_start, 3)
+    step_start = perf_counter()
     write_columns(output_path / "generated_columns.csv", result.columns)
+    output_write_timings["write_generated_columns_seconds"] = round(perf_counter() - step_start, 3)
+    output_write_seconds = perf_counter() - output_write_start
 
     elapsed_seconds = perf_counter() - started_at
     diagnostics = dict(result.diagnostics)
@@ -404,6 +461,10 @@ def solve_medium_small_problem(
         {
             "output_dir": str(output_path),
             "created_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
+            "planner_init_seconds": round(planner_init_seconds, 3),
+            "planner_solve_seconds": round(planner_solve_seconds, 3),
+            "output_write_seconds": round(output_write_seconds, 3),
+            **output_write_timings,
             "elapsed_seconds": round(elapsed_seconds, 3),
             "elapsed_time": format_duration(elapsed_seconds),
         }
@@ -444,15 +505,34 @@ def solve_small_plan_from_medium_adapter(
     problem = apply_external_medium_plan(problem, external_plan)
 
     started_at = perf_counter()
+    planner_init_start = perf_counter()
     planner = ColumnGenerationPlanner(problem, configure_small_plan_from_medium(config, external_plan))
+    planner_init_seconds = perf_counter() - planner_init_start
+    planner_solve_start = perf_counter()
     result = planner.solve()
+    planner_solve_seconds = perf_counter() - planner_solve_start
 
+    output_write_timings: dict[str, float] = {}
+    output_write_start = perf_counter()
+    step_start = perf_counter()
     write_rows(output_path / "small_plan.csv", result.small_rows)
+    output_write_timings["write_small_plan_seconds"] = round(perf_counter() - step_start, 3)
+    step_start = perf_counter()
     write_rows(output_path / "small_plan_six_bay_blocks.csv", make_six_bay_block_rows(result.small_rows))
+    output_write_timings["write_small_plan_six_bay_blocks_seconds"] = round(perf_counter() - step_start, 3)
+    step_start = perf_counter()
     write_rows(output_path / "small_plan_medium_summary.csv", result.medium_rows)
+    output_write_timings["write_small_plan_medium_summary_seconds"] = round(perf_counter() - step_start, 3)
+    step_start = perf_counter()
     write_rows(output_path / "external_medium_plan_used.csv", external_plan.rows)
+    output_write_timings["write_external_medium_plan_used_seconds"] = round(perf_counter() - step_start, 3)
+    step_start = perf_counter()
     write_rows(output_path / "medium_plan_big_quota.csv", [row.__dict__ for row in external_plan.big_plan_rows])
+    output_write_timings["write_medium_plan_big_quota_seconds"] = round(perf_counter() - step_start, 3)
+    step_start = perf_counter()
     write_columns(output_path / "generated_columns.csv", result.columns)
+    output_write_timings["write_generated_columns_seconds"] = round(perf_counter() - step_start, 3)
+    output_write_seconds = perf_counter() - output_write_start
 
     elapsed_seconds = perf_counter() - started_at
     diagnostics = dict(result.diagnostics)
@@ -468,6 +548,10 @@ def solve_small_plan_from_medium_adapter(
             "planning_time": planning_time.isoformat(sep=" "),
             "output_dir": str(output_path),
             "created_at": datetime.now().isoformat(sep=" ", timespec="seconds"),
+            "planner_init_seconds": round(planner_init_seconds, 3),
+            "planner_solve_seconds": round(planner_solve_seconds, 3),
+            "output_write_seconds": round(output_write_seconds, 3),
+            **output_write_timings,
             "elapsed_seconds": round(elapsed_seconds, 3),
             "elapsed_time": format_duration(elapsed_seconds),
         }
@@ -517,8 +601,6 @@ def print_diagnostics_summary(diagnostics: dict[str, Any]) -> None:
         "planned_medium_boxes": diagnostics.get("planned_medium_boxes"),
         "planned_small_boxes": diagnostics.get("planned_small_boxes"),
         "unplaced_boxes": diagnostics.get("unplaced_boxes"),
-        "stage0_unplaced_cap": diagnostics.get("stage0_unplaced_cap"),
-        "stage0_unplaced_cap_source": diagnostics.get("stage0_unplaced_cap_source"),
         "inheritance_ratio": inheritance.get("inheritance_ratio"),
         "tiny_area_rows": fragmentation.get("tiny_area_rows"),
         "large_coarse_tiny_area_rows": fragmentation.get("large_coarse_tiny_area_rows"),

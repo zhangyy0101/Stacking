@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import heapq
 import json
 import math
 from collections import Counter, defaultdict
@@ -15,6 +16,16 @@ from block_bay_planning.models import Bay, ProblemData, SmallBoxGroup
 
 SIZE_ORDER = {"45": 0, "20": 1, "40": 2}
 EXPORT_FLOWS = frozenset({"OF"})
+
+
+class _ReverseSortKey:
+    __slots__ = ("value",)
+
+    def __init__(self, value):
+        self.value = value
+
+    def __lt__(self, other: "_ReverseSortKey") -> bool:
+        return other.value < self.value
 
 
 def _area_flow(flow: object) -> str:
@@ -59,41 +70,38 @@ class ColumnGenerationConfig:
     columns_per_iteration: int = 2500
     stalled_pricing_columns: int = 500
     min_pricing_iterations: int = 3
-    pricing_early_stop_new_columns: int = 500
-    feasibility_early_stop_enabled: bool = True
+    pricing_early_stop_new_columns: int = 0
+    pricing_max_no_improve_iterations: int = 3
+    pricing_min_lp_improvement: float = 10_000.0
+    pricing_min_lp_improvement_relative: float = 2e-5
+    pricing_min_lp_improvement_per_group: float = 5.0
+    pricing_min_lp_improvement_per_1000_columns: float = 100.0
+    feasibility_early_stop_enabled: bool = False
     feasibility_early_stop_min_iteration: int = 1
     primal_expansion_columns: int = 800
     max_primal_expansion_rounds: int = 3
     primal_expansion_reduced_cost_limit: float = 1_000_000.0
     stage0_closure_enabled: bool = True
     stage0_closure_max_extra_columns: int = 1500
-    stage0_min_unplaced_time_limit: float = 12.0
     initial_columns_per_group: int = 8
     max_candidate_bays_per_group: int = 500
+    adaptive_pricing_enabled: bool = True
+    pricing_candidate_bays_initial: int = 160
+    pricing_candidate_bays_growth_per_iteration: int = 40
+    pricing_candidate_bays_high_dual: int = 260
+    pricing_candidate_bays_unplaced: int = 500
+    total_time_limit: float = 240.0
+    pricing_min_lp_time_limit: float = 12.0
+    pricing_iteration_setup_reserve: float = 8.0
+    staged_repair_reserve_fraction: float = 0.33
+    staged_repair_reserve_min: float = 60.0
+    staged_repair_reserve_max: float = 90.0
+    staged_repair_secondary_order_min_remaining: float = 20.0
+    staged_repair_rebuild_first_unplaced_threshold: int = 500
     mip_time_limit: float = 120.0
     mip_gap: float = 0.01
-    diving_max_steps: int = 200
-    diving_fractional_tolerance: float = 1e-5
-    diving_fix_batch_size: int = 8
-    diving_max_no_improve_steps: int = 5
-    diving_improvement_rounds: int = 6
-    diving_improvement_time_limit: float = 6.0
-    diving_improvement_max_groups: int = 14
-    diving_improvement_max_no_improve_rounds: int = 2
-    repair_lns_rounds: int = 24
-    repair_lns_time_limit: float = 4.0
-    repair_lns_max_groups: int = 24
-    repair_lns_max_no_improve_rounds: int = 4
-    coarse_compaction_lns_rounds: int = 0
-    coarse_compaction_lns_time_limit: float = 4.0
-    coarse_compaction_lns_max_groups: int = 16
-    coarse_compaction_lns_max_no_improve_rounds: int = 1
     post_repair_area_relayout_enabled: bool = True
     post_repair_area_relayout_max_patterns: int = 1
-    enable_diving: bool = False
-    diving_price_columns: bool = False
-    diving_stop_on_lp_unplaced: bool = True
-    diving_skip_when_lp_unplaced: bool = True
     verbose: bool = True
     use_scip: bool = True
     full_column_pool: bool = False
@@ -166,7 +174,9 @@ class ColumnGenerationPlanner:
         self.coarse_demand: Counter[tuple[str, str, str, str]] = Counter()
         self.voyage_flow_size_demand: Counter[tuple[str, str, str]] = Counter()
         self._columns: list[PlacementColumn] = []
-        self._column_keys: set[tuple[str, str, int]] = set()
+        self._column_keys: set[tuple[str, str, int, tuple[tuple[str, str, int], ...]]] = set()
+        self._default_column_triplets: set[tuple[str, str, int]] = set()
+        self._column_indices_by_triplet: defaultdict[tuple[str, str, int], list[int]] = defaultdict(list)
         self._candidate_cache: dict[tuple[str, str], list[tuple[str, int, float]]] = {}
         self._candidate_scope = "stage0"
         self._master_seed_selected: Counter[int] = Counter()
@@ -611,10 +621,12 @@ class ColumnGenerationPlanner:
                 "pre_repair_unplaced_boxes": sum(unplaced.values()),
                 "post_repair_unplaced_boxes": sum(unplaced.values()),
                 "used_unplaced_repair": False,
-                "unplaced_repair_method": "not_run_after_diving",
+                "unplaced_repair_method": "not_run_after_column_generation",
             }
         )
+        relayout_start = perf_counter()
         selected, relayout_stats = self._post_repair_area_relayout(selected, unplaced)
+        relayout_stats["post_repair_area_relayout_elapsed_seconds"] = round(perf_counter() - relayout_start, 3)
         diagnostics.update(relayout_stats)
 
         if self._uses_original_output_scope():
@@ -675,21 +687,6 @@ class ColumnGenerationPlanner:
             candidates,
             key=lambda item: self._solution_rank(item[1], item[2]),
         )
-        lns_selected, lns_unplaced, lns_stats = self._run_repair_lns_rounds(
-            best_selected,
-            best_unplaced,
-            unplaced,
-        )
-        if self._solution_rank(lns_selected, lns_unplaced) < self._solution_rank(best_selected, best_unplaced):
-            method = "staged_fallback_repair_lns"
-            best_selected = lns_selected
-            best_unplaced = lns_unplaced
-        compaction_stats = {
-            "coarse_compaction_lns_rounds_requested": 0,
-            "coarse_compaction_lns_rounds_run": 0,
-            "coarse_compaction_lns_improvements": 0,
-            "coarse_compaction_lns_stop_reason": "disabled_by_flow",
-        }
         stats.update(
             {
                 "used_unplaced_repair": method != "master_incumbent",
@@ -699,8 +696,6 @@ class ColumnGenerationPlanner:
                 "staged_repair_candidates": stage_stats.get("candidates", []),
                 "staged_repair_selected_candidate": stage_stats.get("selected_candidate", ""),
                 "post_repair_unplaced_boxes": sum(best_unplaced.values()),
-                **lns_stats,
-                **compaction_stats,
             }
         )
         return best_selected, best_unplaced, stats
@@ -715,12 +710,11 @@ class ColumnGenerationPlanner:
             "post_repair_area_relayout_used": False,
             "post_repair_area_relayout_accepted": False,
             "post_repair_area_relayout_skip_reason": "",
+            "post_repair_area_relayout_unplaced_boxes": sum(unplaced.values()),
+            "post_repair_area_relayout_partial_solution": sum(unplaced.values()) > 0,
         }
         if not stats["post_repair_area_relayout_enabled"]:
             stats["post_repair_area_relayout_skip_reason"] = "disabled"
-            return selected, stats
-        if sum(unplaced.values()) > 0:
-            stats["post_repair_area_relayout_skip_reason"] = "has_unplaced_boxes"
             return selected, stats
         if self.config.medium_plan_bay_quota is not None:
             stats["post_repair_area_relayout_skip_reason"] = "fixed_medium_bay_quota"
@@ -972,13 +966,10 @@ class ColumnGenerationPlanner:
         row_allocation: tuple[tuple[str, str, int], ...],
     ) -> int | None:
         signature = self._row_allocation_signature(row_allocation)
-        for idx, col in enumerate(self._columns):
-            if (
-                col.group_id == group.group_id
-                and col.bay_key == bay_key
-                and int(col.quantity) == int(quantity)
-                and col.row_allocation == signature
-            ):
+        triplet = (group.group_id, bay_key, int(quantity))
+        for idx in self._column_indices_by_triplet.get(triplet, ()):
+            col = self._columns[idx]
+            if col.row_allocation == signature:
                 return idx
         before = len(self._columns)
         self._add_column(group, bay_key, int(quantity), base_cost, row_allocation=signature)
@@ -1295,16 +1286,97 @@ class ColumnGenerationPlanner:
     def _solve_by_column_generation(self) -> tuple[Counter[int], Counter[str], dict]:
         from pyscipopt import Model, quicksum
 
+        solve_start = perf_counter()
+        total_time_limit = max(0.0, float(getattr(self.config, "total_time_limit", 0.0) or 0.0))
+        reserve_fraction = max(
+            0.0,
+            float(getattr(self.config, "staged_repair_reserve_fraction", 0.33) or 0.0),
+        )
+        reserve_min = max(
+            0.0,
+            float(getattr(self.config, "staged_repair_reserve_min", 60.0) or 0.0),
+        )
+        reserve_max = max(
+            reserve_min,
+            float(getattr(self.config, "staged_repair_reserve_max", 90.0) or reserve_min),
+        )
+        staged_repair_reserve = 0.0
+        if total_time_limit > 0:
+            staged_repair_reserve = min(
+                total_time_limit * 0.8,
+                min(reserve_max, max(reserve_min, total_time_limit * reserve_fraction)),
+            )
+        pricing_min_lp_time_limit = max(
+            1.0,
+            float(getattr(self.config, "pricing_min_lp_time_limit", 12.0) or 1.0),
+        )
+        pricing_iteration_setup_reserve = max(
+            0.0,
+            float(getattr(self.config, "pricing_iteration_setup_reserve", 8.0) or 0.0),
+        )
+        pricing_start_min_remaining = (
+            staged_repair_reserve + pricing_min_lp_time_limit + pricing_iteration_setup_reserve
+            if total_time_limit > 0
+            else 0.0
+        )
+
+        def remaining_total_time() -> float | None:
+            if total_time_limit <= 0:
+                return None
+            return total_time_limit - (perf_counter() - solve_start)
+
+        def total_time_low(min_remaining_seconds: float = 0.0) -> bool:
+            remaining = remaining_total_time()
+            return remaining is not None and remaining <= min_remaining_seconds
+
+        final_lp_bound = None
+        best_start_source = "greedy_seed"
+        best_start_selected = Counter(self._master_seed_selected)
+        best_start_unplaced = Counter(self._master_seed_unplaced)
+        last_lp_unplaced: Counter[str] = Counter(self._master_seed_unplaced)
+        best_lp_objective: float | None = None
+        no_improve_iterations = 0
+
         stats = {
             "scip_available": True,
             "pricing_iterations": [],
             "pricing_stop_reason": "",
             "pricing_iterations_run": 0,
+            "total_time_limit": total_time_limit,
+            "staged_repair_reserved_seconds": staged_repair_reserve,
+            "staged_repair_reserve_fraction": reserve_fraction,
+            "staged_repair_reserve_min_seconds": reserve_min,
+            "staged_repair_reserve_max_seconds": reserve_max,
+            "pricing_start_min_remaining_seconds": pricing_start_min_remaining,
+            "pricing_min_lp_time_limit": pricing_min_lp_time_limit,
+            "pricing_iteration_setup_reserve_seconds": pricing_iteration_setup_reserve,
             "pricing_min_iterations": max(0, int(getattr(self.config, "min_pricing_iterations", 0) or 0)),
             "pricing_early_stop_new_columns": max(
                 0,
                 int(getattr(self.config, "pricing_early_stop_new_columns", 0) or 0),
             ),
+            "pricing_max_no_improve_iterations": max(
+                0,
+                int(getattr(self.config, "pricing_max_no_improve_iterations", 0) or 0),
+            ),
+            "pricing_min_lp_improvement": max(
+                0.0,
+                float(getattr(self.config, "pricing_min_lp_improvement", 0.0) or 0.0),
+            ),
+            "pricing_min_lp_improvement_mode": "adaptive",
+            "pricing_min_lp_improvement_relative": max(
+                0.0,
+                float(getattr(self.config, "pricing_min_lp_improvement_relative", 0.0) or 0.0),
+            ),
+            "pricing_min_lp_improvement_per_group": max(
+                0.0,
+                float(getattr(self.config, "pricing_min_lp_improvement_per_group", 0.0) or 0.0),
+            ),
+            "pricing_min_lp_improvement_per_1000_columns": max(
+                0.0,
+                float(getattr(self.config, "pricing_min_lp_improvement_per_1000_columns", 0.0) or 0.0),
+            ),
+            "pricing_no_improve_iterations": 0,
             "feasibility_early_stop_enabled": bool(
                 getattr(self.config, "feasibility_early_stop_enabled", False)
             ),
@@ -1313,14 +1385,19 @@ class ColumnGenerationPlanner:
                 int(getattr(self.config, "feasibility_early_stop_min_iteration", 0) or 0),
             ),
             "feasibility_early_stop_checks": [],
+            "pricing_light_repair_checks": [],
+            "pricing_light_repair_best_source": best_start_source,
+            "pricing_light_repair_best_unplaced_boxes": sum(best_start_unplaced.values()),
+            "pricing_light_repair_best_objective": round(
+                self._selected_solution_energy(best_start_selected, best_start_unplaced),
+                6,
+            ),
         }
-        final_lp_bound = None
-        best_start_source = "greedy_seed"
-        best_start_selected = Counter(self._master_seed_selected)
-        best_start_unplaced = Counter(self._master_seed_unplaced)
-        last_lp_unplaced: Counter[str] = Counter(self._master_seed_unplaced)
         pricing_iterations = 0 if self.config.full_column_pool else self.config.max_iterations
         for iteration in range(pricing_iterations):
+            if total_time_low(pricing_start_min_remaining):
+                stats["pricing_stop_reason"] = "total_time_limit"
+                break
             iteration_start = perf_counter()
             if self.config.verbose:
                 print(
@@ -1328,20 +1405,40 @@ class ColumnGenerationPlanner:
                     flush=True,
                 )
             lp_model, lp_vars, lp_constraints = self._build_restricted_master(Model, quicksum, relax=True)
-            self._set_scip_param(lp_model, "limits/time", float(self.config.mip_time_limit))
+            lp_time_limit = float(self.config.mip_time_limit)
+            remaining = remaining_total_time()
+            if remaining is not None:
+                available_lp_time = remaining - staged_repair_reserve
+                if available_lp_time < pricing_min_lp_time_limit:
+                    stats["pricing_stop_reason"] = "total_time_limit"
+                    stats["pricing_skipped_lp_iteration"] = iteration
+                    stats["pricing_skipped_lp_available_seconds"] = round(max(0.0, available_lp_time), 3)
+                    self._free_scip_model(lp_model)
+                    break
+                lp_time_limit = min(lp_time_limit, available_lp_time)
+            self._set_scip_param(lp_model, "limits/time", lp_time_limit)
             if self.config.verbose:
-                print(f"[column-generation-scip] solving LP iter={iteration}", flush=True)
+                print(f"[column-generation-scip] solving LP iter={iteration} time_limit={lp_time_limit:.1f}s", flush=True)
             lp_model.optimize()
             lp_status = self._scip_status_name(lp_model)
             if lp_status not in {"optimal"}:
-                raise RuntimeError(f"restricted master LP status={lp_status}")
+                stats["pricing_stop_reason"] = "lp_" + lp_status.replace(" ", "_")
+                stats["pricing_interrupted_iteration"] = iteration
+                stats["pricing_interrupted_lp_status"] = lp_status
+                self._free_scip_model(lp_model)
+                break
             lp_objective = self._scip_objective_value(lp_model)
+            final_lp_bound = lp_objective
             lp_unplaced = self._scip_unplaced_values(lp_model, lp_vars)
             last_lp_unplaced = Counter(lp_unplaced)
             lp_column_values = self._scip_column_values(lp_model, lp_vars)
             lp_repair_selected, lp_repair_unplaced = self._repair_from_column_priority(
                 lp_column_values
             )
+            lp_repair_objective = self._selected_solution_energy(lp_repair_selected, lp_repair_unplaced)
+            incumbent_rank_before_light_repair = self._solution_rank(best_start_selected, best_start_unplaced)
+            light_repair_rank = self._solution_rank(lp_repair_selected, lp_repair_unplaced)
+            light_repair_accepted = light_repair_rank < incumbent_rank_before_light_repair
             if self._solution_rank(lp_repair_selected, lp_repair_unplaced) < self._solution_rank(
                 best_start_selected,
                 best_start_unplaced,
@@ -1349,6 +1446,51 @@ class ColumnGenerationPlanner:
                 best_start_source = f"lp_guided_iter_{iteration}"
                 best_start_selected = lp_repair_selected
                 best_start_unplaced = lp_repair_unplaced
+            effective_min_lp_improvement = self._effective_pricing_min_lp_improvement(
+                lp_objective if best_lp_objective is None else best_lp_objective,
+                len(self._columns),
+            )
+            lp_objective_improvement = (
+                None
+                if best_lp_objective is None
+                else best_lp_objective - lp_objective
+            )
+            lp_improved = best_lp_objective is None or (
+                lp_objective_improvement is not None
+                and lp_objective_improvement > effective_min_lp_improvement
+            )
+            if lp_improved:
+                best_lp_objective = lp_objective
+            if lp_improved or light_repair_accepted:
+                no_improve_iterations = 0
+            else:
+                no_improve_iterations += 1
+            stats["pricing_no_improve_iterations"] = no_improve_iterations
+            light_repair_record = {
+                "iteration": iteration,
+                "accepted": light_repair_accepted,
+                "unplaced_boxes": sum(lp_repair_unplaced.values()),
+                "objective": round(lp_repair_objective, 6),
+                "selected_columns": sum(1 for qty in lp_repair_selected.values() if qty > 0),
+                "best_source_after_check": best_start_source,
+                "best_unplaced_boxes_after_check": sum(best_start_unplaced.values()),
+                "best_objective_after_check": round(
+                    self._selected_solution_energy(best_start_selected, best_start_unplaced),
+                    6,
+                ),
+                "lp_objective_improvement": (
+                    round(lp_objective_improvement, 6)
+                    if lp_objective_improvement is not None
+                    else None
+                ),
+                "effective_min_lp_improvement": round(effective_min_lp_improvement, 6),
+                "lp_objective_improved": lp_improved,
+                "pricing_no_improve_iterations": no_improve_iterations,
+            }
+            stats["pricing_light_repair_checks"].append(light_repair_record)
+            stats["pricing_light_repair_best_source"] = best_start_source
+            stats["pricing_light_repair_best_unplaced_boxes"] = sum(best_start_unplaced.values())
+            stats["pricing_light_repair_best_objective"] = light_repair_record["best_objective_after_check"]
             pricing_stats = self._price_columns(lp_model, lp_constraints, iteration, lp_unplaced, lp_column_values)
             new_count = int(pricing_stats.get("new_columns", 0) or 0)
             stats["pricing_iterations"].append(
@@ -1358,7 +1500,17 @@ class ColumnGenerationPlanner:
                     "lp_objective": lp_objective,
                     "lp_unplaced_boxes": sum(lp_unplaced.values()),
                     "lp_guided_repair_unplaced_boxes": sum(lp_repair_unplaced.values()),
+                    "lp_guided_repair_objective": round(lp_repair_objective, 6),
+                    "lp_guided_repair_accepted": light_repair_accepted,
                     "lp_guided_repair_columns": sum(1 for qty in lp_repair_selected.values() if qty > 0),
+                    "lp_objective_improvement": (
+                        round(lp_objective_improvement, 6)
+                        if lp_objective_improvement is not None
+                        else None
+                    ),
+                    "effective_min_lp_improvement": round(effective_min_lp_improvement, 6),
+                    "lp_objective_improved": lp_improved,
+                    "pricing_no_improve_iterations": no_improve_iterations,
                     **pricing_stats,
                 }
             )
@@ -1370,16 +1522,41 @@ class ColumnGenerationPlanner:
                 )
             self._free_scip_model(lp_model)
             stats["pricing_iterations_run"] = iteration + 1
+            if total_time_low(max(5.0, staged_repair_reserve)):
+                stats["pricing_stop_reason"] = "total_time_limit"
+                break
             if (
                 stats["feasibility_early_stop_enabled"]
                 and iteration + 1 >= int(stats["feasibility_early_stop_min_iteration"])
             ):
+                if total_time_low(max(10.0, staged_repair_reserve)):
+                    stats["pricing_stop_reason"] = "total_time_limit"
+                    stats["feasibility_early_stop_checks"].append(
+                        {
+                            "iteration": iteration,
+                            "skipped_reason": "total_time_limit",
+                            "remaining_seconds": round(max(0.0, remaining_total_time() or 0.0), 3),
+                        }
+                    )
+                    stats["pricing_iterations"][-1].update(
+                        {
+                            "feasibility_early_stop_skipped_reason": "total_time_limit",
+                        }
+                    )
+                    break
                 check_start = perf_counter()
                 early_source_unplaced = Counter(best_start_unplaced)
                 for group_id, qty in lp_unplaced.items():
                     early_source_unplaced[group_id] = max(
                         int(early_source_unplaced.get(group_id, 0)),
                         int(qty),
+                    )
+                if self.config.verbose:
+                    print(
+                        "[column-generation-scip] feasibility check "
+                        f"iter={iteration} source_unplaced={sum(qty for qty in early_source_unplaced.values() if qty > 0)} "
+                        f"columns={len(self._columns)}",
+                        flush=True,
                     )
                 early_closure_stats = self._stage0_unplaced_column_closure(early_source_unplaced)
                 early_repaired_selected, _early_repaired_unplaced = self._repair_selected_solution(best_start_selected)
@@ -1405,6 +1582,14 @@ class ColumnGenerationPlanner:
                         "feasibility_early_stop_added_columns": early_record["closure_added_columns"],
                     }
                 )
+                if self.config.verbose:
+                    print(
+                        "[column-generation-scip] feasibility check "
+                        f"iter={iteration} unplaced={early_unplaced_boxes} "
+                        f"added={early_record['closure_added_columns']} "
+                        f"elapsed={early_record['staged_repair_seconds']:.1f}s",
+                        flush=True,
+                    )
                 if self._solution_rank(early_selected, early_unplaced) < self._solution_rank(
                     best_start_selected,
                     best_start_unplaced,
@@ -1427,402 +1612,201 @@ class ColumnGenerationPlanner:
             ):
                 stats["pricing_stop_reason"] = "few_new_columns"
                 break
+            max_no_improve = int(stats["pricing_max_no_improve_iterations"])
+            if (
+                max_no_improve > 0
+                and iteration + 1 >= min_iterations
+                and no_improve_iterations >= max_no_improve
+            ):
+                stats["pricing_stop_reason"] = "no_lp_or_integer_improvement"
+                break
         if not stats["pricing_stop_reason"]:
             stats["pricing_stop_reason"] = "max_iterations"
+        stats["column_generation_pricing_elapsed_seconds"] = round(perf_counter() - solve_start, 3)
 
-        closure_source_unplaced = Counter()
-        if sum(best_start_unplaced.values()) > 0:
-            closure_source_unplaced = Counter(best_start_unplaced)
-            for group_id, qty in last_lp_unplaced.items():
-                closure_source_unplaced[group_id] = max(int(closure_source_unplaced.get(group_id, 0)), int(qty))
+        post_pricing_repair_start = perf_counter()
+        repair_start_source = best_start_source
+        repair_start_selected = Counter(best_start_selected)
+        repair_start_unplaced = Counter(best_start_unplaced)
+        closure_source_unplaced = Counter(repair_start_unplaced)
+        for group_id, qty in last_lp_unplaced.items():
+            closure_source_unplaced[group_id] = max(
+                int(closure_source_unplaced.get(group_id, 0)),
+                int(qty),
+            )
         closure_stats = self._stage0_unplaced_column_closure(closure_source_unplaced)
         stats.update(closure_stats)
-        if sum(best_start_unplaced.values()) > 0:
-            augmented_selected, augmented_unplaced = self._repair_selected_solution(best_start_selected)
-            augmented_stats = self._stage0_repaired_candidate_stats(
-                "stage0_augmented_repair",
-                best_start_selected,
-                best_start_unplaced,
-                augmented_selected,
-                augmented_unplaced,
+
+        if self.config.verbose:
+            print(
+                "[column-generation-scip] final staged repair "
+                f"source={repair_start_source} "
+                f"input_unplaced={sum(repair_start_unplaced.values())} "
+                f"columns={len(self._columns)}",
+                flush=True,
             )
-            stats.update(augmented_stats)
-            if augmented_stats.get("stage0_augmented_repair_accepted"):
-                best_start_source = "stage0_augmented_repair"
-                best_start_selected, best_start_unplaced, _ = self._staged_repair_selected_solution(
-                    augmented_selected,
+        repair_columns_before = len(self._columns)
+        greedy_selected, greedy_unplaced = self._repair_selected_solution(
+            repair_start_selected,
+            allow_new_columns=True,
+        )
+        repair_deadline = solve_start + total_time_limit if total_time_limit > 0 else None
+        secondary_order_min_remaining = max(
+            0.0,
+            float(getattr(self.config, "staged_repair_secondary_order_min_remaining", 20.0) or 0.0),
+        )
+        rebuild_first_threshold = max(
+            0,
+            int(getattr(self.config, "staged_repair_rebuild_first_unplaced_threshold", 500) or 0),
+        )
+        repair_start_unplaced_boxes = sum(repair_start_unplaced.values())
+        staged_stats = {"iterations": [], "candidates": [], "skipped_candidates": [], "stop_reason": "not_run"}
+        rebuild_stats = {"iterations": [], "candidates": [], "skipped_candidates": [], "stop_reason": "not_run"}
+        staged_selected: Counter[int] | None = None
+        staged_unplaced: Counter[str] | None = None
+        rebuild_selected: Counter[int] | None = None
+        rebuild_unplaced: Counter[str] | None = None
+        repair_candidates = [
+            ("pricing_incumbent", repair_start_selected, repair_start_unplaced),
+            ("greedy_completion", greedy_selected, greedy_unplaced),
+        ]
+        repair_candidate_order = (
+            ["staged_rebuild", "staged_insert"]
+            if repair_start_unplaced_boxes >= rebuild_first_threshold
+            else ["staged_insert", "staged_rebuild"]
+        )
+        skipped_repair_candidates: list[dict] = []
+
+        def zero_unplaced_candidate_exists() -> bool:
+            return any(sum(candidate_unplaced.values()) <= 0 for _label, _selected, candidate_unplaced in repair_candidates)
+
+        def run_staged_candidate(label: str) -> None:
+            nonlocal staged_selected, staged_unplaced, staged_stats, rebuild_selected, rebuild_unplaced, rebuild_stats
+            candidate_start = perf_counter()
+            if label == "staged_rebuild":
+                selected, unplaced, candidate_stats = self._staged_repair_selected_solution(
+                    Counter(),
                     allow_new_columns=True,
+                    stop_after_zero=True,
+                    deadline=repair_deadline,
+                    min_remaining_for_secondary=secondary_order_min_remaining,
                 )
-        else:
-            stats.update(
-                {
-                    "stage0_augmented_repair_pre_unplaced_boxes": 0,
-                    "stage0_augmented_repair_final_unplaced_boxes": 0,
-                    "stage0_augmented_repair_final_objective": round(
-                        self._selected_solution_energy(best_start_selected, best_start_unplaced),
-                        6,
-                    ),
-                    "stage0_augmented_repair_incumbent_final_unplaced_boxes": 0,
-                    "stage0_augmented_repair_incumbent_final_objective": round(
-                        self._selected_solution_energy(best_start_selected, best_start_unplaced),
-                        6,
-                    ),
-                    "stage0_augmented_repair_accepted": False,
-                    "stage0_augmented_repair_comparison_added_columns": 0,
-                    "stage0_augmented_repair_skipped_reason": "zero_unplaced_start",
-                }
-            )
-
-        if sum(best_start_unplaced.values()) <= 0:
-            min_stage0_selected = Counter(best_start_selected)
-            min_stage0_unplaced = Counter(best_start_unplaced)
-            min_stage0_stats = {
-                "stage0_min_unplaced_has_solution": False,
-                "stage0_min_unplaced_status": "skipped_zero_unplaced_start",
-                "stage0_min_unplaced_boxes": 0,
-                "stage0_min_unplaced_columns": sum(1 for qty in min_stage0_selected.values() if qty > 0),
-                "stage0_min_unplaced_seconds": 0.0,
-                "stage0_min_unplaced_gap": None,
-                "stage0_min_unplaced_objective": None,
-            }
-        else:
-            min_stage0_selected, min_stage0_unplaced, min_stage0_stats = self._solve_stage0_min_unplaced_master(Model, quicksum)
-        stats.update(min_stage0_stats)
-        stage0_min_proven = (
-            bool(min_stage0_stats.get("stage0_min_unplaced_has_solution"))
-            and str(min_stage0_stats.get("stage0_min_unplaced_status", "")).lower() == "optimal"
-        )
-        if stage0_min_proven:
-            stage0_unplaced_cap = sum(min_stage0_unplaced.values())
-            stage0_unplaced_cap_source = "stage0_min_unplaced_optimal"
-        elif sum(best_start_unplaced.values()) <= 0:
-            stage0_unplaced_cap = 0
-            stage0_unplaced_cap_source = "zero_unplaced_incumbent"
-        else:
-            stage0_unplaced_cap = None
-            stage0_unplaced_cap_source = ""
-        if stage0_min_proven and self._solution_rank(
-            min_stage0_selected,
-            min_stage0_unplaced,
-        ) < self._solution_rank(best_start_selected, best_start_unplaced):
-            best_start_source = "stage0_min_unplaced_master"
-            best_start_selected = min_stage0_selected
-            best_start_unplaced = min_stage0_unplaced
-        elif min_stage0_stats.get("stage0_min_unplaced_has_solution"):
-            candidate_stats = self._stage0_repaired_candidate_stats(
-                "stage0_min_unplaced_candidate",
-                best_start_selected,
-                best_start_unplaced,
-                min_stage0_selected,
-                min_stage0_unplaced,
-            )
-            stats.update(candidate_stats)
-            if candidate_stats.get("stage0_min_unplaced_candidate_accepted"):
-                best_start_source = "stage0_min_unplaced_candidate"
-                best_start_selected, best_start_unplaced, _ = self._staged_repair_selected_solution(
-                    min_stage0_selected,
+                candidate_stats["elapsed_seconds"] = round(perf_counter() - candidate_start, 3)
+                rebuild_selected = selected
+                rebuild_unplaced = unplaced
+                rebuild_stats = candidate_stats
+            else:
+                selected, unplaced, candidate_stats = self._staged_repair_selected_solution(
+                    greedy_selected,
                     allow_new_columns=True,
+                    stop_after_zero=True,
+                    deadline=repair_deadline,
+                    min_remaining_for_secondary=secondary_order_min_remaining,
                 )
+                candidate_stats["elapsed_seconds"] = round(perf_counter() - candidate_start, 3)
+                staged_selected = selected
+                staged_unplaced = unplaced
+                staged_stats = candidate_stats
+            repair_candidates.append((label, selected, unplaced))
 
-        if sum(best_start_unplaced.values()) > 0:
-            pre_diving_selected, pre_diving_unplaced, pre_diving_repair_stats = self._staged_repair_selected_solution(
-                best_start_selected,
-                allow_new_columns=True,
-            )
-            stats.update(
-                {
-                    "pre_diving_staged_repair_selected_candidate": pre_diving_repair_stats.get("selected_candidate", ""),
-                    "pre_diving_staged_repair_unplaced_boxes": sum(pre_diving_unplaced.values()),
-                    "pre_diving_staged_repair_candidates": pre_diving_repair_stats.get("candidates", []),
-                    "pre_diving_staged_repair_iterations": pre_diving_repair_stats.get("iterations", []),
-                }
-            )
-            if self._solution_rank(pre_diving_selected, pre_diving_unplaced) < self._solution_rank(
-                best_start_selected,
-                best_start_unplaced,
-            ):
-                best_start_source = f"{best_start_source}_pre_diving_staged_repair"
-                best_start_selected = pre_diving_selected
-                best_start_unplaced = pre_diving_unplaced
-        else:
-            stats.update(
-                {
-                    "pre_diving_staged_repair_selected_candidate": "skipped_zero_unplaced",
-                    "pre_diving_staged_repair_unplaced_boxes": 0,
-                    "pre_diving_staged_repair_candidates": [],
-                    "pre_diving_staged_repair_iterations": [],
-                }
-            )
+        for candidate_label in repair_candidate_order:
+            if zero_unplaced_candidate_exists():
+                skipped_repair_candidates.append(
+                    {
+                        "candidate": candidate_label,
+                        "skipped_reason": "zero_unplaced_candidate_already_found",
+                    }
+                )
+                continue
+            run_staged_candidate(candidate_label)
 
-        feasibility_lns_selected, feasibility_lns_unplaced, feasibility_lns_stats = self._run_repair_lns_rounds(
-            best_start_selected,
-            best_start_unplaced,
-            best_start_unplaced,
+        selected_method, best_start_selected, best_start_unplaced = min(
+            repair_candidates,
+            key=lambda item: self._solution_rank(item[1], item[2]),
         )
-        stats.update({f"feasibility_{key}": value for key, value in feasibility_lns_stats.items()})
-        if self._solution_rank(feasibility_lns_selected, feasibility_lns_unplaced) < self._solution_rank(
-            best_start_selected,
-            best_start_unplaced,
-        ):
-            best_start_source = f"{best_start_source}_feasibility_lns"
-            best_start_selected = feasibility_lns_selected
-            best_start_unplaced = feasibility_lns_unplaced
+        if selected_method != "pricing_incumbent":
+            best_start_source = f"{repair_start_source}_{selected_method}"
 
-        if sum(best_start_unplaced.values()) > 0:
-            post_lns_selected, post_lns_unplaced, post_lns_repair_stats = self._staged_repair_selected_solution(
-                best_start_selected,
-                allow_new_columns=True,
-            )
-            stats.update(
-                {
-                    "post_lns_staged_repair_selected_candidate": post_lns_repair_stats.get("selected_candidate", ""),
-                    "post_lns_staged_repair_unplaced_boxes": sum(post_lns_unplaced.values()),
-                    "post_lns_staged_repair_candidates": post_lns_repair_stats.get("candidates", []),
-                    "post_lns_staged_repair_iterations": post_lns_repair_stats.get("iterations", []),
-                }
-            )
-            if self._solution_rank(post_lns_selected, post_lns_unplaced) < self._solution_rank(
-                best_start_selected,
-                best_start_unplaced,
-            ):
-                best_start_source = f"{best_start_source}_post_lns_staged_repair"
-                best_start_selected = post_lns_selected
-                best_start_unplaced = post_lns_unplaced
-        else:
-            stats.update(
-                {
-                    "post_lns_staged_repair_selected_candidate": "skipped_zero_unplaced",
-                    "post_lns_staged_repair_unplaced_boxes": 0,
-                    "post_lns_staged_repair_candidates": [],
-                    "post_lns_staged_repair_iterations": [],
-                }
-            )
-
-        feasibility_unplaced_boxes = sum(best_start_unplaced.values())
-        stats.update(
-            {
-                "feasibility_repair_source": best_start_source,
-                "feasibility_repair_unplaced_boxes": feasibility_unplaced_boxes,
-                "feasibility_repair_columns": sum(1 for qty in best_start_selected.values() if qty > 0),
-            }
+        final_unplaced_boxes = sum(best_start_unplaced.values())
+        objective = self._selected_solution_energy(best_start_selected, best_start_unplaced)
+        final_status = (
+            "staged_repair_zero_unplaced"
+            if final_unplaced_boxes <= 0
+            else "staged_repair_unproven_unplaced"
         )
-        if feasibility_unplaced_boxes > 0:
-            objective = self._selected_solution_energy(best_start_selected, best_start_unplaced)
-            self._master_start_selected = best_start_selected
-            self._master_start_unplaced = best_start_unplaced
-            stats.update(
-                {
-                    "master_algorithm": "column_generation_feasibility_repair",
-                    "master_status": "feasibility_repair_unplaced",
-                    "master_objective": objective,
-                    "master_primal_bound": objective,
-                    "master_dual_bound": None,
-                    "master_mip_gap": None,
-                    "master_mip_gap_is_reliable": False,
-                    "restricted_master_lp_bound": None,
-                    "master_mip_start_source": best_start_source,
-                    "master_mip_start_repaired_columns": sum(1 for qty in best_start_selected.values() if qty > 0),
-                    "master_mip_start_repaired_unplaced_boxes": feasibility_unplaced_boxes,
-                    "stage0_min_unplaced_cap_enforced": False,
-                    "stage0_unplaced_cap": stage0_unplaced_cap,
-                    "diving_unplaced_cap": None,
-                    "stage0_unplaced_cap_source": stage0_unplaced_cap_source,
-                    "diving_skipped_reason": "feasibility_repair_unplaced",
-                }
-            )
-            return best_start_selected, best_start_unplaced, stats
-
-        if not bool(getattr(self.config, "enable_diving", False)):
-            objective = self._selected_solution_energy(best_start_selected, best_start_unplaced)
-            self._master_start_selected = best_start_selected
-            self._master_start_unplaced = best_start_unplaced
-            stats.update(
-                {
-                    "master_algorithm": "column_generation_feasibility_repair",
-                    "master_status": "diving_disabled",
-                    "master_objective": objective,
-                    "master_primal_bound": objective,
-                    "master_dual_bound": None,
-                    "master_mip_gap": None,
-                    "master_mip_gap_is_reliable": False,
-                    "master_mip_start_source": best_start_source,
-                    "master_mip_start_repaired_columns": sum(1 for qty in best_start_selected.values() if qty > 0),
-                    "master_mip_start_repaired_unplaced_boxes": sum(best_start_unplaced.values()),
-                    "stage0_min_unplaced_cap_enforced": False,
-                    "stage0_unplaced_cap": stage0_unplaced_cap,
-                    "diving_unplaced_cap": None,
-                    "stage0_unplaced_cap_source": stage0_unplaced_cap_source,
-                    "restricted_master_lp_bound": None,
-                    "restricted_master_lp_unplaced_boxes": None,
-                    "restricted_master_lp_fractional_column_count": None,
-                    "restricted_master_lp_solve_seconds": 0.0,
-                    "master_solve_seconds": 0.0,
-                    "diving_enabled": False,
-                    "diving_skipped_reason": "disabled_by_config",
-                    "diving_step_count": 0,
-                    "diving_iterations": [],
-                    "diving_improvement_rounds_requested": 0,
-                    "diving_improvement_time_limit": 0.0,
-                    "diving_improvement_max_groups": 0,
-                    "diving_improvement_max_no_improve_rounds": 0,
-                    "diving_improvement_rounds_run": 0,
-                    "diving_improvement_improvements": 0,
-                    "diving_improvement_incumbent_source": "",
-                    "diving_improvement_iterations": [],
-                    "diving_improvement_stop_reason": "disabled_by_config",
-                }
-            )
-            return best_start_selected, best_start_unplaced, stats
-
-        diving_unplaced_cap = None
-        final_lp_unplaced_boxes: int | None = None
-        final_lp_fractional_column_count: int | None = None
-        final_lp_model, final_lp_vars, _final_lp_constraints = self._build_restricted_master(
-            Model,
-            quicksum,
-            relax=True,
-            unplaced_cap=diving_unplaced_cap,
-        )
-        self._set_scip_param(final_lp_model, "limits/time", min(float(self.config.mip_time_limit), 30.0))
-        final_lp_solve_start = perf_counter()
-        final_lp_model.optimize()
-        final_lp_solve_seconds = round(perf_counter() - final_lp_solve_start, 3)
-        if self._scip_status_name(final_lp_model) == "optimal":
-            final_lp_bound = self._scip_objective_value(final_lp_model)
-            final_lp_unplaced_float = self._scip_unplaced_float_values(final_lp_model, final_lp_vars)
-            final_lp_unplaced_boxes = sum(
-                int(round(value))
-                for value in final_lp_unplaced_float.values()
-                if value > 1e-6
-            )
-            final_lp_column_values = self._scip_column_values(final_lp_model, final_lp_vars)
-            final_lp_fractional_column_count = len(
-                self._fractional_column_values(final_lp_column_values, {}, 1e-6)
-            )
-        self._free_scip_model(final_lp_model)
-
         self._master_start_selected = best_start_selected
         self._master_start_unplaced = best_start_unplaced
         stats.update(
             {
+                "final_staged_repair_enabled": True,
+                "final_staged_repair_input_source": repair_start_source,
+                "final_staged_repair_input_unplaced_boxes": repair_start_unplaced_boxes,
+                "final_staged_repair_added_columns": len(self._columns) - repair_columns_before,
+                "final_staged_repair_selected_candidate": selected_method,
+                "final_staged_repair_unplaced_boxes": final_unplaced_boxes,
+                "final_staged_repair_status": final_status,
+                "final_staged_repair_candidate_order": repair_candidate_order,
+                "final_staged_repair_skipped_candidates": skipped_repair_candidates,
+                "final_staged_repair_secondary_order_min_remaining_seconds": secondary_order_min_remaining,
+                "final_staged_repair_rebuild_first_unplaced_threshold": rebuild_first_threshold,
+                "final_staged_repair_iterations": (
+                    rebuild_stats.get("iterations", [])
+                    if selected_method == "staged_rebuild"
+                    else staged_stats.get("iterations", [])
+                ),
+                "final_staged_repair_order_candidates": (
+                    rebuild_stats.get("candidates", [])
+                    if selected_method == "staged_rebuild"
+                    else staged_stats.get("candidates", [])
+                ),
+                "final_staged_insert_iterations": staged_stats.get("iterations", []),
+                "final_staged_insert_order_candidates": staged_stats.get("candidates", []),
+                "final_staged_insert_skipped_order_candidates": staged_stats.get("skipped_candidates", []),
+                "final_staged_insert_stop_reason": staged_stats.get("stop_reason", ""),
+                "final_staged_insert_elapsed_seconds": staged_stats.get("elapsed_seconds", 0.0),
+                "final_staged_rebuild_iterations": rebuild_stats.get("iterations", []),
+                "final_staged_rebuild_order_candidates": rebuild_stats.get("candidates", []),
+                "final_staged_rebuild_skipped_order_candidates": rebuild_stats.get("skipped_candidates", []),
+                "final_staged_rebuild_stop_reason": rebuild_stats.get("stop_reason", ""),
+                "final_staged_rebuild_elapsed_seconds": rebuild_stats.get("elapsed_seconds", 0.0),
+                "final_staged_repair_candidates": [
+                    {
+                        "candidate": label,
+                        "unplaced_boxes": sum(candidate_unplaced.values()),
+                        "objective": round(self._selected_solution_energy(candidate_selected, candidate_unplaced), 6),
+                        "selected_columns": sum(1 for qty in candidate_selected.values() if qty > 0),
+                    }
+                    for label, candidate_selected, candidate_unplaced in repair_candidates
+                ],
+                "feasibility_repair_source": best_start_source,
+                "feasibility_repair_unplaced_boxes": final_unplaced_boxes,
+                "feasibility_repair_columns": sum(1 for qty in best_start_selected.values() if qty > 0),
+                "master_algorithm": "column_generation_staged_repair",
+                "master_status": final_status,
+                "master_objective": objective,
+                "master_primal_bound": objective,
+                "master_dual_bound": final_lp_bound,
+                "master_mip_gap": self._relative_gap(objective, final_lp_bound),
+                "master_mip_gap_is_reliable": False,
+                "restricted_master_lp_bound": final_lp_bound,
+                "restricted_master_lp_unplaced_boxes": sum(last_lp_unplaced.values()),
+                "restricted_master_lp_fractional_column_count": None,
+                "restricted_master_lp_solve_seconds": 0.0,
                 "master_mip_start_source": best_start_source,
                 "master_mip_start_repaired_columns": sum(1 for qty in best_start_selected.values() if qty > 0),
-                "master_mip_start_repaired_unplaced_boxes": sum(best_start_unplaced.values()),
-                "stage0_min_unplaced_cap_enforced": diving_unplaced_cap is not None,
-                "stage0_unplaced_cap": stage0_unplaced_cap,
-                "diving_unplaced_cap": diving_unplaced_cap,
-                "stage0_unplaced_cap_source": stage0_unplaced_cap_source,
-                "restricted_master_lp_bound": final_lp_bound,
-                "restricted_master_lp_unplaced_boxes": final_lp_unplaced_boxes,
-                "restricted_master_lp_fractional_column_count": final_lp_fractional_column_count,
-                "restricted_master_lp_solve_seconds": final_lp_solve_seconds,
+                "master_mip_start_repaired_unplaced_boxes": final_unplaced_boxes,
+                "master_solve_seconds": round(perf_counter() - solve_start, 3),
+                "post_pricing_repair_elapsed_seconds": round(perf_counter() - post_pricing_repair_start, 3),
             }
         )
-        if final_lp_unplaced_boxes and final_lp_unplaced_boxes > 0:
-            objective = self._selected_solution_energy(best_start_selected, best_start_unplaced)
-            stats.update(
-                {
-                    "master_algorithm": "column_generation_diving",
-                    "master_status": "diving_lp_unplaced_stop",
-                    "master_objective": objective,
-                    "master_primal_bound": objective,
-                    "master_dual_bound": final_lp_bound,
-                    "master_mip_gap": None,
-                    "master_mip_gap_is_reliable": False,
-                    "master_solve_seconds": final_lp_solve_seconds,
-                    "diving_step_count": 0,
-                    "diving_iterations": [],
-                    "diving_skipped_reason": "restricted_master_lp_unplaced_without_fixed_columns",
-                    "diving_lp_unplaced_boxes": final_lp_unplaced_boxes,
-                    "diving_best_source": best_start_source,
-                }
+        if self.config.verbose:
+            print(
+                "[column-generation-scip] final staged repair "
+                f"status={final_status} unplaced={final_unplaced_boxes} "
+                f"elapsed={stats['post_pricing_repair_elapsed_seconds']:.1f}s",
+                flush=True,
             )
-            return best_start_selected, best_start_unplaced, stats
-
-        selected, unplaced, diving_stats = self._solve_master_by_diving(
-            Model,
-            quicksum,
-            final_lp_bound,
-            best_start_source,
-            best_start_selected,
-            best_start_unplaced,
-            diving_unplaced_cap,
-        )
-        stats.update(diving_stats)
-        return selected, unplaced, stats
-
-    def _stage0_repaired_candidate_stats(
-        self,
-        label: str,
-        incumbent_selected: Counter[int],
-        incumbent_unplaced: Counter[str],
-        candidate_selected: Counter[int],
-        candidate_unplaced: Counter[str],
-    ) -> dict:
-        before_columns = len(self._columns)
-        incumbent_final_selected, incumbent_final_unplaced, _incumbent_stage_stats = self._staged_repair_selected_solution(
-            incumbent_selected,
-            allow_new_columns=True,
-        )
-        candidate_final_selected, candidate_final_unplaced, _candidate_stage_stats = self._staged_repair_selected_solution(
-            candidate_selected,
-            allow_new_columns=True,
-        )
-        incumbent_rank = self._solution_rank(incumbent_final_selected, incumbent_final_unplaced)
-        candidate_rank = self._solution_rank(candidate_final_selected, candidate_final_unplaced)
-        accepted = candidate_rank < incumbent_rank
-        return {
-            f"{label}_pre_unplaced_boxes": sum(candidate_unplaced.values()),
-            f"{label}_final_unplaced_boxes": sum(candidate_final_unplaced.values()),
-            f"{label}_final_objective": round(self._selected_solution_energy(candidate_final_selected, candidate_final_unplaced), 6),
-            f"{label}_incumbent_final_unplaced_boxes": sum(incumbent_final_unplaced.values()),
-            f"{label}_incumbent_final_objective": round(self._selected_solution_energy(incumbent_final_selected, incumbent_final_unplaced), 6),
-            f"{label}_accepted": accepted,
-            f"{label}_comparison_added_columns": len(self._columns) - before_columns,
-        }
-
-    def _solve_stage0_min_unplaced_master(self, Model, quicksum) -> tuple[Counter[int], Counter[str], dict]:
-        stats = {
-            "stage0_min_unplaced_has_solution": False,
-            "stage0_min_unplaced_status": "",
-            "stage0_min_unplaced_boxes": None,
-            "stage0_min_unplaced_columns": 0,
-            "stage0_min_unplaced_seconds": 0.0,
-            "stage0_min_unplaced_gap": None,
-            "stage0_min_unplaced_objective": None,
-        }
-        start = perf_counter()
-        model, vars_by_name, _constraints = self._build_restricted_master(
-            Model,
-            quicksum,
-            relax=False,
-            objective_mode="min_unplaced",
-        )
-        time_limit = float(getattr(self.config, "stage0_min_unplaced_time_limit", 0.0) or 0.0)
-        if time_limit > 0:
-            self._set_scip_param(model, "limits/time", time_limit)
-        self._set_scip_param(model, "limits/gap", 0.0)
-        self._add_scip_mip_start(model, vars_by_name)
-        model.optimize()
-        status = self._scip_status_name(model)
-        has_solution = self._scip_solution_count(model) > 0
-        selected = Counter(self._master_seed_selected)
-        unplaced = Counter(self._master_seed_unplaced)
-        if has_solution:
-            selected, unplaced = self._solution_from_scip_vars(model, vars_by_name)
-        stats.update(
-            {
-                "stage0_min_unplaced_has_solution": has_solution,
-                "stage0_min_unplaced_status": status,
-                "stage0_min_unplaced_boxes": sum(unplaced.values()) if has_solution else None,
-                "stage0_min_unplaced_columns": sum(1 for qty in selected.values() if qty > 0) if has_solution else 0,
-                "stage0_min_unplaced_seconds": round(perf_counter() - start, 3),
-                "stage0_min_unplaced_gap": self._scip_gap(model) if has_solution else None,
-                "stage0_min_unplaced_objective": self._scip_objective_value(model) if has_solution else None,
-            }
-        )
-        self._free_scip_model(model)
-        return selected, unplaced, stats
+        return best_start_selected, best_start_unplaced, stats
 
     def _stage0_unplaced_column_closure(self, unplaced: Counter[str]) -> dict:
         stats = {
@@ -1883,642 +1867,6 @@ class ColumnGenerationPlanner:
             values.update(qty for qty in range(15, max_qty + 1, 5))
         return sorted(qty for qty in values if 0 < qty <= max_qty)
 
-    def _solve_master_by_diving(
-        self,
-        Model,
-        quicksum,
-        final_lp_bound: float | None,
-        best_start_source: str,
-        best_start_selected: Counter[int],
-        best_start_unplaced: Counter[str],
-        stage0_unplaced_cap: int | None = None,
-    ) -> tuple[Counter[int], Counter[str], dict]:
-        solve_start = perf_counter()
-        max_steps = max(1, int(getattr(self.config, "diving_max_steps", 200) or 200))
-        tolerance = max(1e-9, float(getattr(self.config, "diving_fractional_tolerance", 1e-5) or 1e-5))
-        fix_batch_size = max(1, int(getattr(self.config, "diving_fix_batch_size", 8) or 8))
-        max_no_improve_steps = max(0, int(getattr(self.config, "diving_max_no_improve_steps", 0) or 0))
-        current_fix_batch_size = fix_batch_size
-        price_during_diving = bool(getattr(self.config, "diving_price_columns", False))
-        stop_on_lp_unplaced = bool(getattr(self.config, "diving_stop_on_lp_unplaced", False))
-        fixed_columns: dict[int, int] = {}
-        last_zero_unplaced_fixed_columns: dict[int, int] = {}
-        rollback_fixed_columns: dict[int, int] | None = None
-        best_source = best_start_source
-        best_selected = Counter(best_start_selected)
-        best_unplaced = Counter(best_start_unplaced)
-        diving_iterations: list[dict] = []
-        last_improvement_step = -1
-        last_lp_objective: float | None = None
-        status = "diving_step_limit"
-        min_lp_time = 2.0
-        if (
-            bool(getattr(self.config, "diving_skip_when_lp_unplaced", False))
-            and stage0_unplaced_cap is None
-            and sum(best_start_unplaced.values()) > 0
-        ):
-            objective = self._selected_solution_energy(best_selected, best_unplaced)
-            return best_selected, best_unplaced, {
-                "master_algorithm": "column_generation_diving",
-                "master_status": "diving_skipped_lp_unplaced",
-                "master_objective": objective,
-                "master_primal_bound": objective,
-                "master_dual_bound": final_lp_bound,
-                "master_mip_gap": self._relative_gap(objective, final_lp_bound),
-                "master_mip_gap_is_reliable": False,
-                "restricted_master_lp_gap": self._relative_gap(objective, final_lp_bound),
-                "master_solve_seconds": round(perf_counter() - solve_start, 3),
-                "master_mip_start_added": False,
-                "master_mip_start_columns": sum(1 for qty in self._master_start_selected.values() if qty > 0),
-                "master_mip_start_unplaced_boxes": sum(self._master_start_unplaced.values()),
-                "master_stage0_unplaced_cap": stage0_unplaced_cap,
-                "diving_incumbent_source": best_source,
-                "diving_max_steps": max_steps,
-                "diving_fractional_tolerance": tolerance,
-                "diving_fix_batch_size": fix_batch_size,
-                "diving_max_no_improve_steps": max_no_improve_steps,
-                "diving_final_fix_batch_size": current_fix_batch_size,
-                "diving_price_columns": price_during_diving,
-                "diving_stop_on_lp_unplaced": stop_on_lp_unplaced,
-                "diving_skip_when_lp_unplaced": True,
-                "diving_step_count": 0,
-                "diving_fixed_one_columns": 0,
-                "diving_fixed_zero_columns": 0,
-                "diving_final_repair_added_columns": 0,
-                "diving_final_repair_total_added_columns": 0,
-                "diving_final_repair_unplaced_boxes": 0,
-                "diving_chosen_final_repair_unplaced_boxes": 0,
-                "diving_final_repair_candidates": [],
-                "diving_improvement_rounds_requested": 0,
-                "diving_improvement_time_limit": 0.0,
-                "diving_improvement_max_groups": 0,
-                "diving_improvement_max_no_improve_rounds": 0,
-                "diving_improvement_rounds_run": 0,
-                "diving_improvement_improvements": 0,
-                "diving_improvement_incumbent_source": "",
-                "diving_improvement_iterations": [],
-                "diving_improvement_stop_reason": "skipped_lp_unplaced",
-                "diving_iterations": [],
-            }
-
-        for step in range(max_steps):
-            elapsed = perf_counter() - solve_start
-            remaining_time = float(self.config.mip_time_limit) - elapsed
-            if self.config.mip_time_limit > 0 and remaining_time <= min_lp_time:
-                status = "diving_time_limit"
-                break
-
-            if self.config.verbose:
-                print(
-                    "[column-generation-scip] diving LP "
-                    f"step={step} columns={len(self._columns)} "
-                    f"fixed1={sum(1 for value in fixed_columns.values() if value == 1)} "
-                    f"fixed0={sum(1 for value in fixed_columns.values() if value == 0)}",
-                    flush=True,
-                )
-            lp_model, lp_vars, lp_constraints = self._build_restricted_master(
-                Model,
-                quicksum,
-                relax=True,
-                fixed_column_values=fixed_columns,
-                unplaced_cap=stage0_unplaced_cap,
-            )
-            if self.config.mip_time_limit > 0:
-                self._set_scip_param(lp_model, "limits/time", max(1.0, min(30.0, remaining_time)))
-            lp_model.optimize()
-            lp_status = self._scip_status_name(lp_model)
-            if lp_status != "optimal":
-                self._free_scip_model(lp_model)
-                status = f"diving_lp_{lp_status}"
-                break
-
-            lp_objective = self._scip_objective_value(lp_model)
-            last_lp_objective = lp_objective
-            lp_unplaced_float = self._scip_unplaced_float_values(lp_model, lp_vars)
-            lp_unplaced = Counter(
-                {
-                    group_id: int(round(value))
-                    for group_id, value in lp_unplaced_float.items()
-                    if value > tolerance
-                }
-            )
-            lp_unplaced_boxes = sum(lp_unplaced.values())
-            lp_column_values = self._scip_column_values(lp_model, lp_vars)
-            fractional_values = self._fractional_column_values(lp_column_values, fixed_columns, tolerance)
-            before_repair_columns = len(self._columns)
-            lp_repair_selected, lp_repair_unplaced = self._repair_from_column_priority(
-                lp_column_values,
-                allow_new_columns=False,
-            )
-            repair_added_columns = len(self._columns) - before_repair_columns
-            if self._solution_rank(lp_repair_selected, lp_repair_unplaced) < self._solution_rank(
-                best_selected,
-                best_unplaced,
-            ):
-                best_source = f"diving_lp_repair_step_{step}"
-                best_selected = lp_repair_selected
-                best_unplaced = lp_repair_unplaced
-                last_improvement_step = step
-
-            pricing_stats: dict = {}
-            new_count = 0
-            if price_during_diving and not self.config.full_column_pool:
-                pricing_stats = self._price_columns(
-                    lp_model,
-                    lp_constraints,
-                    self.config.max_iterations + step,
-                    lp_unplaced,
-                    lp_column_values,
-                )
-                new_count = int(pricing_stats.get("new_columns", 0) or 0)
-            else:
-                pricing_stats = {
-                    "new_columns": 0,
-                    "pricing_mode": "diving_pricing_disabled",
-                }
-
-            record = {
-                "step": step,
-                "columns": len(self._columns),
-                "lp_objective": lp_objective,
-                "lp_unplaced_boxes": lp_unplaced_boxes,
-                "fixed_one_columns": sum(1 for value in fixed_columns.values() if value == 1),
-                "fixed_zero_columns": sum(1 for value in fixed_columns.values() if value == 0),
-                "fractional_column_count": len(fractional_values),
-                "largest_fractional_column_value": round(max(fractional_values.values()), 6) if fractional_values else None,
-                "lp_guided_repair_unplaced_boxes": sum(lp_repair_unplaced.values()),
-                "lp_guided_repair_added_columns": repair_added_columns,
-                **pricing_stats,
-            }
-            self._free_scip_model(lp_model)
-
-            if lp_unplaced_boxes > 0:
-                rollback_fixed_columns = dict(last_zero_unplaced_fixed_columns)
-                record["lp_unplaced_policy"] = "stop_or_reduce" if stop_on_lp_unplaced else "continue"
-                record["rollback_fixed_one_columns"] = sum(1 for value in rollback_fixed_columns.values() if value == 1)
-                record["rollback_fixed_zero_columns"] = sum(1 for value in rollback_fixed_columns.values() if value == 0)
-                if stop_on_lp_unplaced:
-                    record["decision"] = "stop_on_lp_unplaced"
-                    record["previous_fix_batch_size"] = current_fix_batch_size
-                    fixed_columns = dict(rollback_fixed_columns)
-                    if not fixed_columns:
-                        record["decision"] = "stop_on_lp_unplaced_no_fixed_columns"
-                        diving_iterations.append(record)
-                        status = "diving_lp_unplaced_stop"
-                        break
-                    if current_fix_batch_size > 1:
-                        current_fix_batch_size = max(1, current_fix_batch_size // 2)
-                        record["decision"] = "rollback_reduce_batch_after_lp_unplaced"
-                        record["next_fix_batch_size"] = current_fix_batch_size
-                        diving_iterations.append(record)
-                        status = "diving_batch_reduced_after_lp_unplaced"
-                        continue
-                    diving_iterations.append(record)
-                    status = "diving_lp_unplaced_stop"
-                    break
-            else:
-                last_zero_unplaced_fixed_columns = dict(fixed_columns)
-
-            if new_count > 0:
-                record["decision"] = "reprice_after_new_columns"
-                diving_iterations.append(record)
-                if self.config.verbose:
-                    print(
-                        f"[column-generation-scip] diving step={step} lp={lp_objective:.3f} "
-                        f"new={new_count}",
-                        flush=True,
-                    )
-                continue
-
-            if self._lp_solution_is_integral(lp_column_values, lp_unplaced_float, tolerance):
-                lp_selected = Counter(
-                    {
-                        idx: 1
-                        for idx, value in lp_column_values.items()
-                        if value >= 1.0 - tolerance
-                    }
-                )
-                for idx, value in fixed_columns.items():
-                    if value == 1:
-                        lp_selected[idx] = 1
-                integral_selected, integral_unplaced = self._repair_selected_solution(lp_selected)
-                if self._solution_rank(integral_selected, integral_unplaced) < self._solution_rank(
-                    best_selected,
-                    best_unplaced,
-                ):
-                    best_source = f"diving_integral_lp_step_{step}"
-                    best_selected = integral_selected
-                    best_unplaced = integral_unplaced
-                    last_improvement_step = step
-                record["decision"] = "integral_lp_solution"
-                diving_iterations.append(record)
-                status = "diving_integral_lp"
-                break
-
-            decisions = self._choose_diving_fixes(fractional_values, fixed_columns, current_fix_batch_size)
-            if not decisions:
-                record["decision"] = "no_fractional_column"
-                diving_iterations.append(record)
-                status = "diving_no_fractional_column"
-                break
-            for idx, fixed_value, _reason in decisions:
-                fixed_columns[idx] = fixed_value
-            first_idx, first_fixed_value, first_reason = decisions[0]
-            record.update(
-                {
-                    "decision": "fix_columns_batch",
-                    "decision_count": len(decisions),
-                    "decision_fix_batch_size": current_fix_batch_size,
-                    "decision_column": first_idx,
-                    "decision_value": first_fixed_value,
-                    "decision_reason": first_reason,
-                    "decision_lp_value": round(float(lp_column_values.get(first_idx, 0.0)), 6),
-                    "decision_reason_counts": dict(Counter(reason for _idx, _fixed_value, reason in decisions)),
-                    "decision_fixed_one_count": sum(1 for _idx, fixed_value, _reason in decisions if fixed_value == 1),
-                    "decision_fixed_zero_count": sum(1 for _idx, fixed_value, _reason in decisions if fixed_value == 0),
-                }
-            )
-            diving_iterations.append(record)
-            if max_no_improve_steps > 0 and step - last_improvement_step >= max_no_improve_steps:
-                record["early_stop_reason"] = "no_incumbent_improvement"
-                record["diving_steps_since_improvement"] = step - last_improvement_step
-                status = "diving_no_incumbent_improvement"
-                break
-            if self.config.verbose:
-                print(
-                    f"[column-generation-scip] diving step={step} lp={lp_objective:.3f} "
-                    f"fix_count={len(decisions)} first_col={first_idx} "
-                    f"value={first_fixed_value} reason={first_reason}",
-                    flush=True,
-                )
-
-        final_repair_added_columns = 0
-        final_repair_unplaced_boxes: int | None = None
-        chosen_final_repair_added_columns = 0
-        chosen_final_repair_unplaced_boxes: int | None = None
-        final_repair_candidate_stats: list[dict] = []
-        final_repair_candidates = [("diving_fixed_column_repair", fixed_columns)]
-        if rollback_fixed_columns is not None and rollback_fixed_columns != fixed_columns:
-            final_repair_candidates.append(("diving_rollback_fixed_column_repair", rollback_fixed_columns))
-        for source, candidate_fixed_columns in final_repair_candidates:
-            fixed_selected = Counter({idx: 1 for idx, value in candidate_fixed_columns.items() if value == 1})
-            before_final_repair_columns = len(self._columns)
-            fixed_repair_selected, fixed_repair_unplaced = self._repair_selected_solution(fixed_selected)
-            added_columns = len(self._columns) - before_final_repair_columns
-            candidate_unplaced_boxes = sum(fixed_repair_unplaced.values())
-            final_repair_added_columns += added_columns
-            final_repair_unplaced_boxes = (
-                candidate_unplaced_boxes
-                if final_repair_unplaced_boxes is None
-                else min(final_repair_unplaced_boxes, candidate_unplaced_boxes)
-            )
-            candidate_objective = self._selected_solution_energy(fixed_repair_selected, fixed_repair_unplaced)
-            final_repair_candidate_stats.append(
-                {
-                    "source": source,
-                    "fixed_one_columns": sum(1 for value in candidate_fixed_columns.values() if value == 1),
-                    "fixed_zero_columns": sum(1 for value in candidate_fixed_columns.values() if value == 0),
-                    "added_columns": added_columns,
-                    "selected_columns": sum(1 for qty in fixed_repair_selected.values() if qty > 0),
-                    "unplaced_boxes": candidate_unplaced_boxes,
-                    "objective": candidate_objective,
-                }
-            )
-            if self._solution_rank(fixed_repair_selected, fixed_repair_unplaced) < self._solution_rank(
-                best_selected,
-                best_unplaced,
-            ):
-                best_source = source
-                best_selected = fixed_repair_selected
-                best_unplaced = fixed_repair_unplaced
-                chosen_final_repair_added_columns = added_columns
-                chosen_final_repair_unplaced_boxes = candidate_unplaced_boxes
-
-        improvement_selected, improvement_unplaced, improvement_stats = self._run_diving_improvement_rounds(
-            Model,
-            quicksum,
-            best_selected,
-            best_unplaced,
-            solve_start,
-            stage0_unplaced_cap,
-        )
-        if self._solution_rank(improvement_selected, improvement_unplaced) < self._solution_rank(
-            best_selected,
-            best_unplaced,
-        ):
-            best_source = str(improvement_stats.get("diving_improvement_incumbent_source", best_source))
-            best_selected = improvement_selected
-            best_unplaced = improvement_unplaced
-            if status in {"diving_no_incumbent_improvement", "diving_step_limit", "diving_time_limit"}:
-                status = "diving_improvement_found"
-
-        objective = self._selected_solution_energy(best_selected, best_unplaced)
-        dual_bound = final_lp_bound if final_lp_bound is not None else last_lp_objective
-        return best_selected, best_unplaced, {
-            "master_algorithm": "column_generation_diving",
-            "master_status": status,
-            "master_objective": objective,
-            "master_primal_bound": objective,
-            "master_dual_bound": dual_bound,
-            "master_mip_gap": self._relative_gap(objective, dual_bound),
-            "master_mip_gap_is_reliable": False,
-            "restricted_master_lp_gap": self._relative_gap(objective, final_lp_bound),
-            "master_solve_seconds": round(perf_counter() - solve_start, 3),
-            "master_mip_start_added": False,
-            "master_mip_start_columns": sum(1 for qty in self._master_start_selected.values() if qty > 0),
-            "master_mip_start_unplaced_boxes": sum(self._master_start_unplaced.values()),
-            "master_stage0_unplaced_cap": stage0_unplaced_cap,
-            "diving_incumbent_source": best_source,
-            "diving_max_steps": max_steps,
-            "diving_fractional_tolerance": tolerance,
-            "diving_fix_batch_size": fix_batch_size,
-            "diving_max_no_improve_steps": max_no_improve_steps,
-            "diving_final_fix_batch_size": current_fix_batch_size,
-            "diving_price_columns": price_during_diving,
-            "diving_stop_on_lp_unplaced": stop_on_lp_unplaced,
-            "diving_skip_when_lp_unplaced": bool(getattr(self.config, "diving_skip_when_lp_unplaced", False)),
-            "diving_step_count": len(diving_iterations),
-            "diving_fixed_one_columns": sum(1 for value in fixed_columns.values() if value == 1),
-            "diving_fixed_zero_columns": sum(1 for value in fixed_columns.values() if value == 0),
-            "diving_final_repair_added_columns": chosen_final_repair_added_columns,
-            "diving_final_repair_total_added_columns": final_repair_added_columns,
-            "diving_final_repair_unplaced_boxes": final_repair_unplaced_boxes or 0,
-            "diving_chosen_final_repair_unplaced_boxes": chosen_final_repair_unplaced_boxes or 0,
-            "diving_final_repair_candidates": final_repair_candidate_stats,
-            **improvement_stats,
-            "diving_iterations": diving_iterations,
-        }
-
-    def _run_diving_improvement_rounds(
-        self,
-        Model,
-        quicksum,
-        incumbent_selected: Counter[int],
-        incumbent_unplaced: Counter[str],
-        solve_start: float,
-        stage0_unplaced_cap: int | None = None,
-    ) -> tuple[Counter[int], Counter[str], dict]:
-        max_rounds = max(0, int(getattr(self.config, "diving_improvement_rounds", 0) or 0))
-        per_round_time = max(0.0, float(getattr(self.config, "diving_improvement_time_limit", 0.0) or 0.0))
-        max_groups = max(1, int(getattr(self.config, "diving_improvement_max_groups", 1) or 1))
-        max_no_improve_rounds = max(
-            0,
-            int(getattr(self.config, "diving_improvement_max_no_improve_rounds", 0) or 0),
-        )
-        stats = {
-            "diving_improvement_rounds_requested": max_rounds,
-            "diving_improvement_time_limit": per_round_time,
-            "diving_improvement_max_groups": max_groups,
-            "diving_improvement_max_no_improve_rounds": max_no_improve_rounds,
-            "diving_improvement_rounds_run": 0,
-            "diving_improvement_improvements": 0,
-            "diving_improvement_incumbent_source": "",
-            "diving_improvement_iterations": [],
-        }
-        if max_rounds <= 0 or per_round_time <= 0:
-            return Counter(incumbent_selected), Counter(incumbent_unplaced), stats
-
-        best_selected = Counter(incumbent_selected)
-        best_unplaced = Counter(incumbent_unplaced)
-        best_rank = self._solution_rank(best_selected, best_unplaced)
-        neighborhoods = self._diving_improvement_neighborhoods(best_selected, max_rounds, max_groups)
-        stats["diving_improvement_candidate_neighborhoods"] = len(neighborhoods)
-        if not neighborhoods:
-            return best_selected, best_unplaced, stats
-
-        min_round_time = 1.0
-        no_improve_rounds = 0
-        for round_no, release_group_ids in enumerate(neighborhoods[:max_rounds]):
-            elapsed = perf_counter() - solve_start
-            remaining_total = float(self.config.mip_time_limit) - elapsed
-            if self.config.mip_time_limit > 0 and remaining_total <= min_round_time:
-                break
-            round_time = per_round_time
-            if self.config.mip_time_limit > 0:
-                round_time = max(min_round_time, min(per_round_time, remaining_total))
-            fixed_values = self._fixed_selected_columns_for_released_groups(best_selected, release_group_ids)
-            if len(fixed_values) >= len(self._columns):
-                continue
-
-            if self.config.verbose:
-                print(
-                    "[column-generation-scip] diving improvement "
-                    f"round={round_no} release_groups={len(release_group_ids)} "
-                    f"fixed={len(fixed_values)} time_limit={round_time:.1f}s",
-                    flush=True,
-                )
-            before_rank = best_rank
-            model, vars_by_name, _constraints = self._build_restricted_master(
-                Model,
-                quicksum,
-                relax=False,
-                fixed_column_values=fixed_values,
-                unplaced_cap=stage0_unplaced_cap,
-            )
-            self._set_scip_param(model, "limits/time", float(round_time))
-            self._set_scip_param(model, "limits/gap", float(self.config.mip_gap))
-            previous_start_selected = self._master_start_selected
-            previous_start_unplaced = self._master_start_unplaced
-            self._master_start_selected = best_selected
-            self._master_start_unplaced = best_unplaced
-            mip_start_added = self._add_scip_mip_start(model, vars_by_name)
-            self._master_start_selected = previous_start_selected
-            self._master_start_unplaced = previous_start_unplaced
-            model.optimize()
-            status = self._scip_status_name(model)
-            has_solution = self._scip_solution_count(model) > 0
-            candidate_selected = best_selected
-            candidate_unplaced = best_unplaced
-            candidate_objective = self._selected_solution_energy(candidate_selected, candidate_unplaced)
-            if has_solution:
-                candidate_selected, candidate_unplaced = self._solution_from_scip_vars(model, vars_by_name)
-                candidate_objective = self._selected_solution_energy(candidate_selected, candidate_unplaced)
-                candidate_rank = self._solution_rank(candidate_selected, candidate_unplaced)
-                if candidate_rank < best_rank:
-                    best_selected = candidate_selected
-                    best_unplaced = candidate_unplaced
-                    best_rank = candidate_rank
-                    stats["diving_improvement_improvements"] += 1
-                    stats["diving_improvement_incumbent_source"] = f"diving_improvement_round_{round_no}"
-                    no_improve_rounds = 0
-                else:
-                    no_improve_rounds += 1
-            else:
-                no_improve_rounds += 1
-            stats["diving_improvement_iterations"].append(
-                {
-                    "round": round_no,
-                    "status": status,
-                    "has_solution": has_solution,
-                    "mip_start_added": mip_start_added,
-                    "released_group_count": len(release_group_ids),
-                    "fixed_column_count": len(fixed_values),
-                    "objective": candidate_objective,
-                    "unplaced_boxes": sum(candidate_unplaced.values()),
-                    "improved": best_rank < before_rank,
-                }
-            )
-            stats["diving_improvement_rounds_run"] += 1
-            self._free_scip_model(model)
-            if max_no_improve_rounds > 0 and no_improve_rounds >= max_no_improve_rounds:
-                stats["diving_improvement_stop_reason"] = "no_incumbent_improvement"
-                break
-        return best_selected, best_unplaced, stats
-
-    def _fixed_columns_for_released_groups(
-        self,
-        selected: Counter[int],
-        release_group_ids: set[str],
-    ) -> dict[int, int]:
-        fixed: dict[int, int] = {}
-        for idx, col in enumerate(self._columns):
-            if col.group_id in release_group_ids:
-                continue
-            fixed[idx] = 1 if selected.get(idx, 0) > 0 else 0
-        return fixed
-
-    def _solution_from_scip_vars(self, model, vars_by_name) -> tuple[Counter[int], Counter[str]]:
-        selected = Counter(
-            {
-                idx: 1
-                for idx, var in vars_by_name["column"].items()
-                if self._scip_value(model, var) > 0.5
-            }
-        )
-        unplaced = Counter(
-            {
-                group_id: int(round(self._scip_value(model, var)))
-                for group_id, var in vars_by_name["unplaced"].items()
-                if self._scip_value(model, var) > 1e-6
-            }
-        )
-        return selected, unplaced
-
-    def _diving_improvement_neighborhoods(
-        self,
-        selected: Counter[int],
-        max_rounds: int,
-        max_groups: int,
-    ) -> list[set[str]]:
-        by_coarse: defaultdict[tuple[str, str, str, str], dict] = defaultdict(
-            lambda: {"groups": Counter(), "areas": Counter(), "bays": set(), "blocks": set()}
-        )
-        for idx, chosen in selected.items():
-            if chosen <= 0 or idx < 0 or idx >= len(self._columns):
-                continue
-            col = self._columns[idx]
-            qty = int(col.quantity) * int(chosen)
-            data = by_coarse[col.coarse_key]
-            data["groups"][col.group_id] += qty
-            data["areas"][col.area_no] += qty
-            data["bays"].add(col.bay_key)
-            if col.block_id:
-                data["blocks"].add(col.block_id)
-
-        ranked: list[tuple[float, tuple[str, str, str, str], set[str]]] = []
-        for coarse_key, data in by_coarse.items():
-            groups = data["groups"]
-            if not groups:
-                continue
-            area_count = sum(1 for qty in data["areas"].values() if qty > 0)
-            bay_count = len(data["bays"])
-            block_count = len(data["blocks"])
-            demand = max(1, int(self.coarse_demand.get(coarse_key, sum(groups.values()))))
-            if self._prefers_concentrated_coarse_key(coarse_key):
-                score = 1000.0 * max(0, area_count - 1) + 20.0 * max(0, bay_count - 1)
-            else:
-                tiny_area_boxes = sum(1 for qty in data["areas"].values() if 0 < qty < self.config.medium_large_group_min_area_boxes)
-                score = 600.0 * tiny_area_boxes + 10.0 * max(0, bay_count - max(1, demand // 20))
-            score += 40.0 * max(0, block_count - 1) + 0.01 * demand
-            release_groups = {
-                group_id
-                for group_id, _qty in groups.most_common(max_groups)
-            }
-            if release_groups:
-                ranked.append((score, coarse_key, release_groups))
-
-        neighborhoods: list[set[str]] = []
-        seen: set[tuple[str, ...]] = set()
-        for _score, _coarse_key, group_ids in sorted(ranked, reverse=True):
-            signature = tuple(sorted(group_ids))
-            if signature in seen:
-                continue
-            seen.add(signature)
-            neighborhoods.append(group_ids)
-            if len(neighborhoods) >= max_rounds:
-                break
-        return neighborhoods
-
-    def _choose_diving_fixes(
-        self,
-        fractional_column_values: dict[int, float],
-        fixed_columns: dict[int, int],
-        limit: int,
-    ) -> list[tuple[int, int, str]]:
-        fixed_selected = Counter({idx: 1 for idx, value in fixed_columns.items() if value == 1})
-        _repaired, state, placed = self._selection_state(fixed_selected)
-        candidates = []
-        for idx, value in fractional_column_values.items():
-            if idx in fixed_columns or idx < 0 or idx >= len(self._columns):
-                continue
-            col = self._columns[idx]
-            group = self.groups_by_id.get(col.group_id)
-            if group is None:
-                continue
-            remaining = int(self.group_demand.get(col.group_id, 0)) - int(placed.get(col.group_id, 0))
-            repair_score = float("inf")
-            if remaining > 0 and col.quantity <= remaining and float(value) > 0.5:
-                base_cost = col.intrinsic_cost
-                repair_score = self._repair_column_score(group, col.bay_key, col.quantity, base_cost, state)
-            candidates.append((0 if float(value) > 0.5 else 1, -float(value), repair_score, -int(col.quantity), idx))
-        decisions: list[tuple[int, int, str]] = []
-        for _tier, _neg_value, _repair_score, _neg_qty, idx in sorted(candidates):
-            if len(decisions) >= limit:
-                break
-            col = self._columns[idx]
-            remaining = int(self.group_demand.get(col.group_id, 0)) - int(placed.get(col.group_id, 0))
-            if remaining <= 0 or col.quantity > remaining:
-                decisions.append((idx, 0, "group_already_satisfied"))
-                continue
-            value = float(fractional_column_values.get(idx, 0.0))
-            if value <= 0.5:
-                decisions.append((idx, 0, "fractional_round_down"))
-                continue
-            if not self._column_fits_state(col, state, remaining):
-                decisions.append((idx, 0, "infeasible_with_fixed_columns"))
-                continue
-            decisions.append((idx, 1, "fractional_round_up"))
-            self._apply_column_to_state(col, state)
-            placed[col.group_id] += col.quantity
-        return decisions
-
-    @staticmethod
-    def _fractional_column_values(
-        column_values: dict[int, float],
-        fixed_columns: dict[int, int],
-        tolerance: float,
-    ) -> dict[int, float]:
-        return {
-            idx: float(value)
-            for idx, value in column_values.items()
-            if idx not in fixed_columns
-            and tolerance < float(value) < 1.0 - tolerance
-        }
-
-    @staticmethod
-    def _lp_solution_is_integral(
-        column_values: dict[int, float],
-        unplaced_values: dict[str, float],
-        tolerance: float,
-    ) -> bool:
-        for value in column_values.values():
-            if abs(float(value) - round(float(value))) > tolerance:
-                return False
-        for value in unplaced_values.values():
-            if abs(float(value) - round(float(value))) > tolerance:
-                return False
-        return True
-
     def _scip_unplaced_values(self, model, lp_vars) -> Counter[str]:
         return Counter(
             {
@@ -2528,46 +1876,12 @@ class ColumnGenerationPlanner:
             }
         )
 
-    def _scip_unplaced_float_values(self, model, lp_vars) -> dict[str, float]:
-        return {
-            group_id: self._scip_value(model, var)
-            for group_id, var in lp_vars["unplaced"].items()
-            if self._scip_value(model, var) > 1e-9
-        }
-
     def _scip_column_values(self, model, lp_vars) -> dict[int, float]:
         return {
             idx: self._scip_value(model, var)
             for idx, var in lp_vars["column"].items()
             if self._scip_value(model, var) > 1e-6
         }
-
-    def _add_scip_mip_start(self, model, mip_vars) -> bool:
-        if not self._master_start_selected and not self._master_start_unplaced:
-            return False
-        try:
-            creator = getattr(model, "createPartialSol", None) or getattr(model, "createSol")
-            sol = creator()
-            for idx, var in mip_vars["column"].items():
-                model.setSolVal(sol, var, 1.0 if self._master_start_selected.get(idx, 0) > 0 else 0.0)
-            for group_id, var in mip_vars["unplaced"].items():
-                model.setSolVal(sol, var, float(self._master_start_unplaced.get(group_id, 0)))
-            try:
-                return bool(model.addSol(sol, free=True))
-            except Exception:
-                return bool(
-                    model.trySol(
-                        sol,
-                        printreason=False,
-                        completely=False,
-                        checkbounds=True,
-                        checkintegrality=True,
-                        checklprows=True,
-                        free=True,
-                    )
-                )
-        except Exception:
-            return False
 
     def _configure_scip_output(self, model) -> None:
         if not self.config.verbose:
@@ -2686,13 +2000,39 @@ class ColumnGenerationPlanner:
             except Exception:
                 continue
 
+    def _effective_pricing_min_lp_improvement(
+        self,
+        lp_reference: float | None,
+        column_count: int,
+    ) -> float:
+        values = [
+            max(0.0, float(getattr(self.config, "pricing_min_lp_improvement", 0.0) or 0.0)),
+        ]
+        relative = max(
+            0.0,
+            float(getattr(self.config, "pricing_min_lp_improvement_relative", 0.0) or 0.0),
+        )
+        if lp_reference is not None and math.isfinite(float(lp_reference)):
+            values.append(abs(float(lp_reference)) * relative)
+        per_group = max(
+            0.0,
+            float(getattr(self.config, "pricing_min_lp_improvement_per_group", 0.0) or 0.0),
+        )
+        if per_group > 0:
+            values.append(len(self.groups) * per_group)
+        per_1000_columns = max(
+            0.0,
+            float(getattr(self.config, "pricing_min_lp_improvement_per_1000_columns", 0.0) or 0.0),
+        )
+        if per_1000_columns > 0:
+            values.append(max(0, int(column_count)) / 1000.0 * per_1000_columns)
+        return max(values)
+
     def _build_restricted_master(
         self,
         Model,
         quicksum,
         relax: bool,
-        fixed_column_values: dict[int, int] | None = None,
-        unplaced_cap: int | None = None,
         objective_mode: str = "full",
     ):
         model = Model("yard_small_plan_column_generation_scip")
@@ -2702,11 +2042,10 @@ class ColumnGenerationPlanner:
         except Exception:
             pass
         column_vtype = "C" if relax else "B"
-        fixed_column_values = fixed_column_values or {}
         columns = {
             idx: model.addVar(
-                lb=float(fixed_column_values[idx]) if idx in fixed_column_values else 0.0,
-                ub=float(fixed_column_values[idx]) if idx in fixed_column_values else 1.0,
+                lb=0.0,
+                ub=1.0,
                 vtype=column_vtype,
                 obj=0.0 if objective_mode == "min_unplaced" else col.intrinsic_cost + self.config.small_plan_group_bay_split_penalty,
                 name=f"col_{idx}",
@@ -2890,12 +2229,6 @@ class ColumnGenerationPlanner:
                 quicksum(unplaced.values()) <= sum(self._master_seed_unplaced.values()),
                 name="seed_unplaced_cap",
             )
-        stage0_unplaced_limit = None
-        if unplaced_cap is not None:
-            stage0_unplaced_limit = model.addCons(
-                quicksum(unplaced.values()) <= int(unplaced_cap),
-                name="stage0_unplaced_cap",
-            )
 
         relaxed_objective_constraints = {}
         if objective_mode == "min_unplaced":
@@ -2944,7 +2277,6 @@ class ColumnGenerationPlanner:
             "required_area_limit": required_area_limit,
             "required_group_bay_limit": required_group_bay_limit,
             "seed_unplaced_limit": seed_unplaced_limit,
-            "stage0_unplaced_limit": stage0_unplaced_limit,
             **relaxed_objective_constraints,
         }
 
@@ -3306,15 +2638,73 @@ class ColumnGenerationPlanner:
         lp_quota_actual = self._column_values_quota_actual(lp_column_values)
         lp_coarse_area_actual = self._column_values_coarse_area_actual(lp_column_values)
         lp_unplaced = lp_unplaced or Counter()
-        candidates: list[tuple[float, SmallBoxGroup, str, int, float]] = []
-        negative_candidates: list[tuple[float, SmallBoxGroup, str, int, float]] = []
-        primal_candidates: list[tuple[tuple, float, SmallBoxGroup, str, int, float]] = []
+        negative_heap: list[tuple[_ReverseSortKey, int, float, tuple[float, SmallBoxGroup, str, int, float]]] = []
+        stalled_heap: list[tuple[_ReverseSortKey, int, float, tuple[float, SmallBoxGroup, str, int, float]]] = []
+        primal_heap: list[tuple[_ReverseSortKey, int, tuple, tuple[tuple, float, SmallBoxGroup, str, int, float]]] = []
+        sequence = 0
         scanned = 0
+        skipped_existing = 0
+        negative_count = 0
+        best_reduced: float | None = None
+        candidate_bays_available = 0
+        candidate_bays_considered = 0
+        candidate_bay_limits: list[int] = []
+        candidate_bay_limited_groups = 0
+        candidate_bay_unplaced_groups = 0
+        candidate_bay_high_dual_groups = 0
+        adaptive_enabled = bool(getattr(self.config, "adaptive_pricing_enabled", True))
+        negative_limit = max(0, int(getattr(self.config, "columns_per_iteration", 0) or 0))
+        stalled_limit = max(0, int(getattr(self.config, "stalled_pricing_columns", 0) or 0)) if iteration == 0 else 0
+        primal_limit = max(0, int(getattr(self.config, "primal_expansion_columns", 0) or 0))
+        primal_rounds_allowed = self._primal_expansion_rounds < max(
+            0,
+            int(self.config.max_primal_expansion_rounds or 0),
+        )
+        reduced_limit = float(getattr(self.config, "primal_expansion_reduced_cost_limit", 0.0) or 0.0)
+        max_group_dual = max((abs(float(value)) for value in group_dual.values()), default=0.0)
+
+        def keep_best(heap: list, limit: int, key, payload) -> None:
+            nonlocal sequence
+            if limit <= 0:
+                return
+            item = (_ReverseSortKey(key), sequence, key, payload)
+            sequence += 1
+            if len(heap) < limit:
+                heapq.heappush(heap, item)
+            elif key < heap[0][2]:
+                heapq.heapreplace(heap, item)
+
+        def heap_payloads(heap: list) -> list:
+            return [payload for _reverse_key, _seq, _key, payload in sorted(heap, key=lambda item: item[2])]
+
         for group in self.groups:
-            for bay_key, max_qty, base_cost in self._candidate_bays_for_group(group):
+            group_candidates = self._candidate_bays_for_group(group)
+            candidate_bays_available += len(group_candidates)
+            bay_limit, limit_reason = self._pricing_candidate_bay_limit(
+                group,
+                len(group_candidates),
+                iteration,
+                group_dual.get(group.group_id, 0.0),
+                max_group_dual,
+                lp_unplaced,
+            )
+            if not adaptive_enabled:
+                bay_limit = len(group_candidates)
+                limit_reason = "full"
+            bay_limit = min(len(group_candidates), max(0, int(bay_limit)))
+            if bay_limit < len(group_candidates):
+                candidate_bay_limited_groups += 1
+            if limit_reason == "lp_unplaced":
+                candidate_bay_unplaced_groups += 1
+            elif limit_reason == "high_dual":
+                candidate_bay_high_dual_groups += 1
+            candidate_bay_limits.append(bay_limit)
+            candidate_bays_considered += bay_limit
+            for bay_key, max_qty, base_cost in group_candidates[:bay_limit]:
                 for qty in self._quantity_options(group, max_qty):
-                    key = (group.group_id, bay_key, qty)
-                    if key in self._column_keys:
+                    triplet = (group.group_id, bay_key, qty)
+                    if triplet in self._default_column_triplets:
+                        skipped_existing += 1
                         continue
                     scanned += 1
                     area_no = self.bays[bay_key].area_no
@@ -3369,47 +2759,39 @@ class ColumnGenerationPlanner:
                             self.config.small_plan_coarse_area_block_split_penalty,
                         )
                     candidate = (reduced, group, bay_key, qty, base_cost)
-                    candidates.append(candidate)
-                    primal_candidates.append(
-                        (
-                            self._primal_expansion_score(
+                    if best_reduced is None or reduced < best_reduced:
+                        best_reduced = reduced
+                    if stalled_limit > 0:
+                        keep_best(stalled_heap, stalled_limit, reduced, candidate)
+                    if reduced < -1e-6:
+                        negative_count += 1
+                        keep_best(negative_heap, negative_limit, reduced, candidate)
+                    elif negative_count == 0 and primal_rounds_allowed and primal_limit > 0:
+                        if reduced_limit <= 0 or reduced <= reduced_limit:
+                            primal_score = self._primal_expansion_score(
                                 group,
                                 bay_key,
                                 qty,
                                 base_cost,
                                 lp_quota_actual,
                                 lp_coarse_area_actual,
-                            ),
-                            reduced,
-                            group,
-                            bay_key,
-                            qty,
-                            base_cost,
-                        )
-                    )
-                    if reduced < -1e-6:
-                        negative_candidates.append(candidate)
-        candidates.sort(key=lambda item: item[0])
-        negative_candidates.sort(key=lambda item: item[0])
-        if negative_candidates:
-            selected_candidates = negative_candidates[: self.config.columns_per_iteration]
+                            )
+                            keep_best(
+                                primal_heap,
+                                primal_limit,
+                                primal_score,
+                                (primal_score, reduced, group, bay_key, qty, base_cost),
+                            )
+        if negative_count:
+            selected_candidates = heap_payloads(negative_heap)
             mode = "negative_reduced_cost"
         elif iteration == 0:
-            limit = max(0, int(getattr(self.config, "stalled_pricing_columns", 0) or 0))
-            selected_candidates = candidates[:limit]
+            selected_candidates = heap_payloads(stalled_heap)
             mode = "stalled_best_reduced_cost"
-        elif self._primal_expansion_rounds < max(0, int(self.config.max_primal_expansion_rounds or 0)):
-            limit = max(0, int(getattr(self.config, "primal_expansion_columns", 0) or 0))
-            reduced_limit = float(getattr(self.config, "primal_expansion_reduced_cost_limit", 0.0) or 0.0)
-            if reduced_limit > 0:
-                primal_candidates = [
-                    item for item in primal_candidates
-                    if item[1] <= reduced_limit
-                ]
-            primal_candidates.sort(key=lambda item: item[0])
+        elif primal_rounds_allowed:
             selected_candidates = [
                 (reduced, group, bay_key, qty, base_cost)
-                for _score, reduced, group, bay_key, qty, base_cost in primal_candidates[:limit]
+                for _score, reduced, group, bay_key, qty, base_cost in heap_payloads(primal_heap)
             ]
             if selected_candidates:
                 self._primal_expansion_rounds += 1
@@ -3426,11 +2808,25 @@ class ColumnGenerationPlanner:
         return {
             "new_columns": added,
             "pricing_mode": mode,
+            "pricing_topk_heap": True,
+            "adaptive_pricing_enabled": adaptive_enabled,
             "scanned_candidates": scanned,
-            "negative_reduced_candidates": len(negative_candidates),
+            "skipped_existing_column_triplets": skipped_existing,
+            "candidate_bays_available": candidate_bays_available,
+            "candidate_bays_considered": candidate_bays_considered,
+            "candidate_bay_limited_groups": candidate_bay_limited_groups,
+            "candidate_bay_unplaced_groups": candidate_bay_unplaced_groups,
+            "candidate_bay_high_dual_groups": candidate_bay_high_dual_groups,
+            "candidate_bay_limit_min": min(candidate_bay_limits) if candidate_bay_limits else 0,
+            "candidate_bay_limit_max": max(candidate_bay_limits) if candidate_bay_limits else 0,
+            "candidate_bay_limit_avg": round(
+                sum(candidate_bay_limits) / max(1, len(candidate_bay_limits)),
+                3,
+            ),
+            "negative_reduced_candidates": negative_count,
             "primal_expansion_rounds_used": self._primal_expansion_rounds,
             "primal_expansion_reduced_cost_limit": self.config.primal_expansion_reduced_cost_limit,
-            "best_reduced_cost": round(candidates[0][0], 6) if candidates else None,
+            "best_reduced_cost": round(best_reduced, 6) if best_reduced is not None else None,
             "worst_added_reduced_cost": round(selected_candidates[-1][0], 6) if selected_candidates else None,
         }
 
@@ -3821,8 +3217,9 @@ class ColumnGenerationPlanner:
         bay = self.bays[bay_key]
         block_id = self.block_by_bay.get((bay.area_no, bay_key), "")
         added = False
+        triplet = (group.group_id, bay_key, quantity)
         for allocation in allocations:
-            key = (group.group_id, bay_key, quantity, allocation)
+            key = triplet + (allocation,)
             if key in self._column_keys:
                 continue
             column_id = f"C{len(self._columns) + 1:07d}"
@@ -3851,9 +3248,13 @@ class ColumnGenerationPlanner:
                 coarse_key=self._coarse_key(group),
                 intrinsic_cost=base_cost,
             )
+            idx = len(self._columns)
             self._columns.append(col)
             self._column_keys.add(key)
+            self._column_indices_by_triplet[triplet].append(idx)
             added = True
+        if row_allocation is None and state is None:
+            self._default_column_triplets.add(triplet)
         return added
 
     def _greedy_fallback(self) -> tuple[Counter[int], Counter[str]]:
@@ -3894,15 +3295,38 @@ class ColumnGenerationPlanner:
         self,
         selected: Counter[int],
         allow_new_columns: bool = True,
+        stop_after_zero: bool = False,
+        deadline: float | None = None,
+        min_remaining_for_secondary: float = 0.0,
     ) -> tuple[Counter[int], Counter[str], dict]:
         candidates: list[tuple[str, Counter[int], Counter[str], list[dict]]] = []
-        for label, group_order in self._staged_repair_group_orders():
+        skipped_candidates: list[dict] = []
+        stop_reason = "all_candidates_evaluated"
+        for order_index, (label, group_order) in enumerate(self._staged_repair_group_orders()):
+            remaining_seconds = None if deadline is None else deadline - perf_counter()
+            if (
+                order_index > 0
+                and remaining_seconds is not None
+                and remaining_seconds <= float(min_remaining_for_secondary)
+            ):
+                skipped_candidates.append(
+                    {
+                        "candidate": label,
+                        "skipped_reason": "time_budget",
+                        "remaining_seconds": round(max(0.0, remaining_seconds), 3),
+                    }
+                )
+                stop_reason = "time_budget"
+                continue
             repaired, unplaced, stats = self._staged_repair_selected_solution_for_order(
                 selected,
                 group_order,
                 allow_new_columns=allow_new_columns,
             )
             candidates.append((label, repaired, unplaced, stats))
+            if stop_after_zero and sum(unplaced.values()) <= 0:
+                stop_reason = "zero_unplaced"
+                break
         label, best_selected, best_unplaced, best_stats = min(
             candidates,
             key=lambda item: self._solution_rank(item[1], item[2]),
@@ -3919,935 +3343,15 @@ class ColumnGenerationPlanner:
                 }
                 for candidate_label, candidate_selected, candidate_unplaced, _candidate_stats in candidates
             ],
+            "skipped_candidates": skipped_candidates,
+            "stop_reason": stop_reason,
         }
-
-    def _run_repair_lns_rounds(
-        self,
-        incumbent_selected: Counter[int],
-        incumbent_unplaced: Counter[str],
-        seed_unplaced: Counter[str],
-    ) -> tuple[Counter[int], Counter[str], dict]:
-        max_rounds = max(0, int(getattr(self.config, "repair_lns_rounds", 0) or 0))
-        per_round_time = max(0.0, float(getattr(self.config, "repair_lns_time_limit", 0.0) or 0.0))
-        max_groups = max(1, int(getattr(self.config, "repair_lns_max_groups", 1) or 1))
-        max_no_improve_rounds = max(
-            0,
-            int(getattr(self.config, "repair_lns_max_no_improve_rounds", 0) or 0),
-        )
-        stats = {
-            "repair_lns_rounds_requested": max_rounds,
-            "repair_lns_time_limit": per_round_time,
-            "repair_lns_max_groups": max_groups,
-            "repair_lns_max_no_improve_rounds": max_no_improve_rounds,
-            "repair_lns_candidate_neighborhoods": 0,
-            "repair_lns_rounds_run": 0,
-            "repair_lns_improvements": 0,
-            "repair_lns_added_columns": 0,
-            "repair_lns_initial_unplaced_boxes": sum(incumbent_unplaced.values()),
-            "repair_lns_seed_unplaced_boxes": sum(seed_unplaced.values()),
-            "repair_lns_initial_objective": round(self._selected_solution_energy(incumbent_selected, incumbent_unplaced), 6),
-            "repair_lns_final_objective": round(self._selected_solution_energy(incumbent_selected, incumbent_unplaced), 6),
-            "repair_lns_iterations": [],
-            "repair_lns_stop_reason": "",
-        }
-        if max_rounds <= 0 or per_round_time <= 0:
-            stats["repair_lns_stop_reason"] = "disabled"
-            return Counter(incumbent_selected), Counter(incumbent_unplaced), stats
-        if not any(qty > 0 for qty in seed_unplaced.values()) and not any(qty > 0 for qty in incumbent_unplaced.values()):
-            stats["repair_lns_stop_reason"] = "no_seed_unplaced"
-            return Counter(incumbent_selected), Counter(incumbent_unplaced), stats
-
-        try:
-            from pyscipopt import Model, quicksum
-        except Exception as exc:
-            stats["repair_lns_stop_reason"] = f"scip_unavailable:{type(exc).__name__}"
-            return Counter(incumbent_selected), Counter(incumbent_unplaced), stats
-
-        best_selected = Counter(incumbent_selected)
-        best_unplaced = Counter(incumbent_unplaced)
-        best_rank = self._solution_rank(best_selected, best_unplaced)
-        no_improve_rounds = 0
-        seen_signatures: set[tuple[tuple[tuple[str, int], ...], tuple[str, ...]]] = set()
-        hard_round_limit = max(max_rounds, max_rounds * 3)
-        round_no = 0
-        while round_no < hard_round_limit:
-            if not any(qty > 0 for qty in best_unplaced.values()):
-                stats["repair_lns_stop_reason"] = "no_unplaced"
-                break
-            if round_no >= max_rounds and no_improve_rounds > 0:
-                stats["repair_lns_stop_reason"] = "round_budget_exhausted_without_recent_improvement"
-                break
-            current_seed_unplaced = Counter({gid: qty for gid, qty in best_unplaced.items() if qty > 0})
-            neighborhoods = self._repair_lns_neighborhoods(
-                best_selected,
-                current_seed_unplaced,
-                max_rounds * 2,
-                max_groups,
-            )
-            stats["repair_lns_candidate_neighborhoods"] += len(neighborhoods)
-            if not neighborhoods:
-                stats["repair_lns_stop_reason"] = "no_neighborhood"
-                break
-            unplaced_signature = tuple(sorted((gid, int(qty)) for gid, qty in current_seed_unplaced.items() if qty > 0))
-            selected_neighborhood: tuple[str, set[str], tuple[tuple[tuple[str, int], ...], tuple[str, ...]]] | None = None
-            for label, release_group_ids in neighborhoods:
-                signature = (unplaced_signature, tuple(sorted(release_group_ids)))
-                if signature in seen_signatures:
-                    continue
-                selected_neighborhood = (label, release_group_ids, signature)
-                break
-            if selected_neighborhood is None:
-                stats["repair_lns_stop_reason"] = "no_new_neighborhood"
-                break
-            label, release_group_ids, neighborhood_signature = selected_neighborhood
-            seen_signatures.add(neighborhood_signature)
-            before_columns = len(self._columns)
-            current_unplaced_total = sum(int(qty) for qty in current_seed_unplaced.values() if qty > 0)
-            expand_columns = len(release_group_ids) <= 8 or (
-                label == "seed_residual_all"
-                and current_unplaced_total <= max(24, max_groups)
-                and len(release_group_ids) <= max_groups
-            )
-            if expand_columns:
-                self._ensure_repair_lns_columns(release_group_ids, best_selected)
-            added_columns = len(self._columns) - before_columns
-            stats["repair_lns_added_columns"] += added_columns
-            if self.config.verbose:
-                print(
-                    "[column-generation-scip] repair LNS "
-                    f"round={round_no} label={label} release_groups={len(release_group_ids)} "
-                    f"added_columns={added_columns} expand_columns={expand_columns} "
-                    f"time_limit={per_round_time:.1f}s",
-                    flush=True,
-                )
-
-            (
-                candidate_selected,
-                candidate_unplaced,
-                sub_stats,
-            ) = self._solve_repair_lns_subproblem(
-                Model,
-                quicksum,
-                best_selected,
-                best_unplaced,
-                release_group_ids,
-                per_round_time,
-            )
-            status = str(sub_stats.get("status", ""))
-            has_solution = bool(sub_stats.get("has_solution", False))
-            mip_start_added = bool(sub_stats.get("mip_start_added", False))
-            candidate_rank = best_rank
-            candidate_objective = self._selected_solution_energy(candidate_selected, candidate_unplaced)
-            round_improved = False
-            if has_solution:
-                candidate_rank = self._solution_rank(candidate_selected, candidate_unplaced)
-                candidate_objective = self._selected_solution_energy(candidate_selected, candidate_unplaced)
-                if candidate_rank < best_rank:
-                    best_selected = candidate_selected
-                    best_unplaced = candidate_unplaced
-                    best_rank = candidate_rank
-                    stats["repair_lns_improvements"] += 1
-                    round_improved = True
-                    no_improve_rounds = 0
-                else:
-                    no_improve_rounds += 1
-            else:
-                no_improve_rounds += 1
-            stats["repair_lns_iterations"].append(
-                {
-                    "round": round_no,
-                    "label": label,
-                    "status": status,
-                    "has_solution": has_solution,
-                    "mip_start_added": mip_start_added,
-                    "hard_no_unplaced": bool(sub_stats.get("hard_no_unplaced", False)),
-                    "enforce_medium_plan_quota": bool(sub_stats.get("enforce_medium_plan_quota", True)),
-                    "unplaced_nonworsening_cap": sub_stats.get("unplaced_nonworsening_cap"),
-                    "released_group_count": len(release_group_ids),
-                    "candidate_column_count": sub_stats.get("candidate_column_count", 0),
-                    "fixed_selected_column_count": sub_stats.get("fixed_selected_column_count", 0),
-                    "added_columns": added_columns,
-                    "expand_columns": expand_columns,
-                    "objective": round(candidate_objective, 6),
-                    "unplaced_boxes": sum(candidate_unplaced.values()),
-                    "improved": round_improved,
-                }
-            )
-            stats["repair_lns_rounds_run"] += 1
-            round_no += 1
-            if max_no_improve_rounds > 0 and no_improve_rounds >= max_no_improve_rounds:
-                stats["repair_lns_stop_reason"] = "no_incumbent_improvement"
-                break
-        stats["repair_lns_final_objective"] = round(self._selected_solution_energy(best_selected, best_unplaced), 6)
-        stats["repair_lns_final_unplaced_boxes"] = sum(best_unplaced.values())
-        if not stats["repair_lns_stop_reason"]:
-            stats["repair_lns_stop_reason"] = "completed"
-        return best_selected, best_unplaced, stats
-
-    def _run_coarse_compaction_lns_rounds(
-        self,
-        incumbent_selected: Counter[int],
-        incumbent_unplaced: Counter[str],
-    ) -> tuple[Counter[int], Counter[str], dict]:
-        max_rounds = max(0, int(getattr(self.config, "coarse_compaction_lns_rounds", 0) or 0))
-        per_round_time = max(0.0, float(getattr(self.config, "coarse_compaction_lns_time_limit", 0.0) or 0.0))
-        max_groups = max(1, int(getattr(self.config, "coarse_compaction_lns_max_groups", 1) or 1))
-        max_no_improve_rounds = max(
-            0,
-            int(getattr(self.config, "coarse_compaction_lns_max_no_improve_rounds", 0) or 0),
-        )
-        stats = {
-            "coarse_compaction_lns_rounds_requested": max_rounds,
-            "coarse_compaction_lns_time_limit": per_round_time,
-            "coarse_compaction_lns_max_groups": max_groups,
-            "coarse_compaction_lns_max_no_improve_rounds": max_no_improve_rounds,
-            "coarse_compaction_lns_candidate_neighborhoods": 0,
-            "coarse_compaction_lns_rounds_run": 0,
-            "coarse_compaction_lns_improvements": 0,
-            "coarse_compaction_lns_added_columns": 0,
-            "coarse_compaction_lns_initial_objective": round(self._selected_solution_energy(incumbent_selected, incumbent_unplaced), 6),
-            "coarse_compaction_lns_final_objective": round(self._selected_solution_energy(incumbent_selected, incumbent_unplaced), 6),
-            "coarse_compaction_lns_iterations": [],
-            "coarse_compaction_lns_stop_reason": "",
-        }
-        if max_rounds <= 0 or per_round_time <= 0:
-            stats["coarse_compaction_lns_stop_reason"] = "disabled"
-            return Counter(incumbent_selected), Counter(incumbent_unplaced), stats
-        if sum(incumbent_unplaced.values()) > 0:
-            stats["coarse_compaction_lns_stop_reason"] = "incumbent_has_unplaced"
-            return Counter(incumbent_selected), Counter(incumbent_unplaced), stats
-        try:
-            from pyscipopt import Model, quicksum
-        except Exception as exc:
-            stats["coarse_compaction_lns_stop_reason"] = f"scip_unavailable:{type(exc).__name__}"
-            return Counter(incumbent_selected), Counter(incumbent_unplaced), stats
-
-        neighborhoods = self._coarse_compaction_neighborhoods(incumbent_selected, max_rounds * 2, max_groups)
-        stats["coarse_compaction_lns_candidate_neighborhoods"] = len(neighborhoods)
-        if not neighborhoods:
-            stats["coarse_compaction_lns_stop_reason"] = "no_fragmented_coarse_group"
-            return Counter(incumbent_selected), Counter(incumbent_unplaced), stats
-
-        best_selected = Counter(incumbent_selected)
-        best_unplaced = Counter(incumbent_unplaced)
-        best_rank = self._solution_rank(best_selected, best_unplaced)
-        no_improve_rounds = 0
-        for round_no, (label, release_group_ids) in enumerate(neighborhoods[:max_rounds]):
-            before_columns = len(self._columns)
-            self._ensure_repair_lns_columns(release_group_ids, best_selected)
-            added_columns = len(self._columns) - before_columns
-            stats["coarse_compaction_lns_added_columns"] += added_columns
-            if self.config.verbose:
-                print(
-                    "[column-generation-scip] coarse compaction LNS "
-                    f"round={round_no} label={label} release_groups={len(release_group_ids)} "
-                    f"added_columns={added_columns} time_limit={per_round_time:.1f}s",
-                    flush=True,
-                )
-            candidate_selected, candidate_unplaced, sub_stats = self._solve_repair_lns_subproblem(
-                Model,
-                quicksum,
-                best_selected,
-                best_unplaced,
-                release_group_ids,
-                per_round_time,
-            )
-            has_solution = bool(sub_stats.get("has_solution", False))
-            candidate_rank = best_rank
-            candidate_objective = self._selected_solution_energy(candidate_selected, candidate_unplaced)
-            round_improved = False
-            if has_solution:
-                candidate_rank = self._solution_rank(candidate_selected, candidate_unplaced)
-                candidate_objective = self._selected_solution_energy(candidate_selected, candidate_unplaced)
-                if candidate_rank < best_rank:
-                    best_selected = candidate_selected
-                    best_unplaced = candidate_unplaced
-                    best_rank = candidate_rank
-                    stats["coarse_compaction_lns_improvements"] += 1
-                    round_improved = True
-                    no_improve_rounds = 0
-                else:
-                    no_improve_rounds += 1
-            else:
-                no_improve_rounds += 1
-            stats["coarse_compaction_lns_iterations"].append(
-                {
-                    "round": round_no,
-                    "label": label,
-                    "status": str(sub_stats.get("status", "")),
-                    "has_solution": has_solution,
-                    "mip_start_added": bool(sub_stats.get("mip_start_added", False)),
-                    "hard_no_unplaced": bool(sub_stats.get("hard_no_unplaced", False)),
-                    "enforce_medium_plan_quota": bool(sub_stats.get("enforce_medium_plan_quota", True)),
-                    "unplaced_nonworsening_cap": sub_stats.get("unplaced_nonworsening_cap"),
-                    "released_group_count": len(release_group_ids),
-                    "candidate_column_count": sub_stats.get("candidate_column_count", 0),
-                    "fixed_selected_column_count": sub_stats.get("fixed_selected_column_count", 0),
-                    "added_columns": added_columns,
-                    "objective": round(candidate_objective, 6),
-                    "unplaced_boxes": sum(candidate_unplaced.values()),
-                    "improved": round_improved,
-                }
-            )
-            stats["coarse_compaction_lns_rounds_run"] += 1
-            if max_no_improve_rounds > 0 and no_improve_rounds >= max_no_improve_rounds:
-                stats["coarse_compaction_lns_stop_reason"] = "no_incumbent_improvement"
-                break
-        stats["coarse_compaction_lns_final_objective"] = round(self._selected_solution_energy(best_selected, best_unplaced), 6)
-        stats["coarse_compaction_lns_final_unplaced_boxes"] = sum(best_unplaced.values())
-        if not stats["coarse_compaction_lns_stop_reason"]:
-            stats["coarse_compaction_lns_stop_reason"] = "completed"
-        return best_selected, best_unplaced, stats
-
-    def _solve_repair_lns_subproblem(
-        self,
-        Model,
-        quicksum,
-        incumbent_selected: Counter[int],
-        incumbent_unplaced: Counter[str],
-        release_group_ids: set[str],
-        time_limit: float,
-    ) -> tuple[Counter[int], Counter[str], dict]:
-        fixed_selected = Counter(
-            {
-                idx: qty
-                for idx, qty in incumbent_selected.items()
-                if qty > 0 and 0 <= idx < len(self._columns) and self._columns[idx].group_id not in release_group_ids
-            }
-        )
-        _fixed_repaired, fixed_state, fixed_placed = self._selection_state(fixed_selected)
-        hard_no_unplaced = sum(incumbent_unplaced.values()) <= 0
-        enforce_medium_plan_quota = self._repair_enforces_medium_plan_quota()
-        released_remaining = {
-            group_id: max(0, int(self.groups_by_id[group_id].demand) - int(fixed_placed.get(group_id, 0)))
-            for group_id in release_group_ids
-            if group_id in self.groups_by_id
-        }
-        candidate_indices: list[int] = []
-        for idx, col in enumerate(self._columns):
-            if col.group_id not in release_group_ids:
-                continue
-            group = self.groups_by_id.get(col.group_id)
-            if group is None:
-                continue
-            remaining = int(group.demand) - int(fixed_placed.get(group.group_id, 0))
-            if remaining <= 0 or col.quantity > remaining:
-                continue
-            if self._column_fits_state(
-                col,
-                fixed_state,
-                remaining,
-                enforce_quota=False,
-                enforce_medium_plan_quota=enforce_medium_plan_quota,
-            ):
-                candidate_indices.append(idx)
-
-        stats = {
-            "status": "",
-            "has_solution": False,
-            "mip_start_added": False,
-            "candidate_column_count": len(candidate_indices),
-            "fixed_selected_column_count": sum(1 for qty in fixed_selected.values() if qty > 0),
-            "hard_no_unplaced": hard_no_unplaced,
-            "enforce_medium_plan_quota": enforce_medium_plan_quota,
-        }
-        if not candidate_indices:
-            if hard_no_unplaced and any(qty > 0 for qty in released_remaining.values()):
-                stats["status"] = "no_candidate_columns_hard_no_unplaced"
-                return Counter(incumbent_selected), Counter(incumbent_unplaced), stats
-            unplaced = Counter(
-                {
-                    group_id: qty
-                    for group_id, qty in released_remaining.items()
-                    if qty > 0
-                }
-            )
-            for group_id, qty in incumbent_unplaced.items():
-                if group_id not in release_group_ids and qty > 0:
-                    unplaced[group_id] += int(qty)
-            stats["status"] = "no_candidate_columns"
-            return Counter(fixed_selected), unplaced, stats
-
-        model = Model("yard_repair_lns_residual_scip")
-        self._configure_scip_output(model)
-        try:
-            model.setMinimize()
-        except Exception:
-            pass
-        self._set_scip_param(model, "limits/time", float(time_limit))
-        self._set_scip_param(model, "limits/gap", float(self.config.mip_gap))
-
-        column_vars = {}
-        for idx in candidate_indices:
-            col = self._columns[idx]
-            obj = (
-                col.intrinsic_cost
-                + self.config.small_plan_group_bay_split_penalty
-                + self._area_fallback_tier_penalty_for_column(col) * col.quantity
-            )
-            column_vars[idx] = model.addVar(vtype="B", obj=float(obj), name=f"lns_col_{idx}")
-
-        unplaced_vars = {}
-        for group_id in sorted(release_group_ids):
-            group = self.groups_by_id.get(group_id)
-            if group is None:
-                continue
-            remaining = int(released_remaining.get(group_id, 0))
-            unplaced_vars[group_id] = model.addVar(
-                lb=0.0,
-                ub=0.0 if hard_no_unplaced else float(remaining),
-                vtype="I",
-                obj=float(self.config.unplaced_penalty),
-                name=f"lns_unplaced_{group_id}",
-            )
-
-        fixed_unplaced_total = sum(
-            int(qty)
-            for group_id, qty in incumbent_unplaced.items()
-            if group_id not in release_group_ids and qty > 0
-        )
-        incumbent_unplaced_total = sum(int(qty) for qty in incumbent_unplaced.values() if qty > 0)
-        released_unplaced_cap = max(0, incumbent_unplaced_total - fixed_unplaced_total)
-        if unplaced_vars:
-            model.addCons(
-                quicksum(unplaced_vars.values()) <= released_unplaced_cap,
-                name="lns_unplaced_nonworsening_cap",
-            )
-        stats["unplaced_nonworsening_cap"] = released_unplaced_cap
-
-        group_cols: defaultdict[str, list[tuple[int, PlacementColumn]]] = defaultdict(list)
-        bay_capacity_cols: defaultdict[str, list[tuple[int, PlacementColumn]]] = defaultdict(list)
-        bay_size_cols: defaultdict[tuple[str, str], list[tuple[int, PlacementColumn]]] = defaultdict(list)
-        bay_port_size_cols: defaultdict[tuple[str, str, str], list[tuple[int, PlacementColumn]]] = defaultdict(list)
-        row_capacity_cols: defaultdict[tuple[str, str], list[tuple[int, int]]] = defaultdict(list)
-        row_size_cols: defaultdict[tuple[str, str, str], list[tuple[int, int]]] = defaultdict(list)
-        row_attr_choice_cols: defaultdict[tuple[str, str, str, str], list[int]] = defaultdict(list)
-        group_bay_cols: defaultdict[tuple[str, str], list[int]] = defaultdict(list)
-        group_area_cols: defaultdict[tuple[str, str], list[int]] = defaultdict(list)
-        group_block_cols: defaultdict[tuple[str, str], list[int]] = defaultdict(list)
-        coarse_area_bay_cols: defaultdict[tuple[str, str, str, str, str, str], list[int]] = defaultdict(list)
-        coarse_area_cols: defaultdict[tuple[str, str, str, str, str], list[tuple[int, PlacementColumn]]] = defaultdict(list)
-        voyage_area_cols: defaultdict[tuple[str, str], list[int]] = defaultdict(list)
-        area_size_cols: defaultdict[tuple[str, str, str, str], list[tuple[int, PlacementColumn]]] = defaultdict(list)
-        medium_quota_cols: defaultdict[tuple[str, str, str, str, str], list[tuple[int, PlacementColumn]]] = defaultdict(list)
-        medium_bay_quota_cols: defaultdict[tuple[str, str, str, str, str, str], list[tuple[int, PlacementColumn]]] = defaultdict(list)
-        bay_attr_choice_cols: defaultdict[tuple[str, str, str], list[int]] = defaultdict(list)
-        edge_45_cols: defaultdict[str, list[int]] = defaultdict(list)
-        edge_non45_cols: defaultdict[str, list[int]] = defaultdict(list)
-        for idx in candidate_indices:
-            col = self._columns[idx]
-            group_cols[col.group_id].append((idx, col))
-            for footprint_key in self._placement_footprint_keys(col.bay_key, col.size):
-                bay_capacity_cols[footprint_key].append((idx, col))
-                bay_port_size_cols[(footprint_key, self._row_mix_key_for_column(col), col.size)].append((idx, col))
-                for attr in self._bay_no_mix_attrs_for_column(col):
-                    bay_attr_choice_cols[(footprint_key, attr, self._column_attr_value(col, attr))].append(idx)
-            for footprint_key, row_no, qty in col.row_allocation:
-                row_capacity_cols[(footprint_key, row_no)].append((idx, int(qty)))
-                row_size_cols[(footprint_key, row_no, col.size)].append((idx, int(qty)))
-                for attr in self._row_no_mix_attrs_for_column(col):
-                    row_attr_choice_cols[(footprint_key, row_no, attr, self._column_attr_value(col, attr))].append(idx)
-            bay_size_cols[(col.bay_key, col.size)].append((idx, col))
-            group_bay_cols[(col.group_id, col.bay_key)].append(idx)
-            group_area_cols[(col.group_id, col.area_no)].append(idx)
-            if col.block_id:
-                group_block_cols[(col.group_id, col.block_id)].append(idx)
-            coarse_area_bay_cols[col.coarse_key + (col.area_no, col.bay_key)].append(idx)
-            coarse_area_cols[col.coarse_key + (col.area_no,)].append((idx, col))
-            voyage_area_cols[(col.voyage_id, col.area_no)].append(idx)
-            area_size_cols[col.quota_key].append((idx, col))
-            medium_quota_cols[col.coarse_key + (col.area_no,)].append((idx, col))
-            medium_bay_quota_cols[col.coarse_key + (col.area_no, col.bay_key)].append((idx, col))
-            if col.bay_key in self.area_edge_bays.get(col.area_no, set()):
-                if col.size == "45":
-                    edge_45_cols[col.area_no].append(idx)
-                else:
-                    edge_non45_cols[col.area_no].append(idx)
-
-        for group_id in sorted(release_group_ids):
-            group = self.groups_by_id.get(group_id)
-            if group is None:
-                continue
-            remaining = max(0, int(group.demand) - int(fixed_placed.get(group_id, 0)))
-            expr = quicksum(col.quantity * column_vars[idx] for idx, col in group_cols.get(group_id, []))
-            model.addCons(expr + unplaced_vars[group_id] == remaining, name=f"lns_cover_{group_id}")
-
-        for bay_key, items in bay_capacity_cols.items():
-            residual = self.bays[bay_key].physical_capacity - fixed_state["bay_load"][bay_key]
-            model.addCons(quicksum(col.quantity * column_vars[idx] for idx, col in items) <= residual)
-        for (bay_key, size), items in bay_size_cols.items():
-            residual = self.bays[bay_key].cap_by_size.get(size, 0) - fixed_state["bay_size_load"][(bay_key, size)]
-            model.addCons(quicksum(col.quantity * column_vars[idx] for idx, col in items) <= residual)
-        for (bay_key, row_no), items in row_capacity_cols.items():
-            residual = int(self.bays[bay_key].row_physical_capacity.get(row_no, self.bays[bay_key].physical_capacity)) - fixed_state["row_load"][(bay_key, row_no)]
-            model.addCons(quicksum(qty * column_vars[idx] for idx, qty in items) <= residual)
-        for (bay_key, row_no, size), items in row_size_cols.items():
-            residual = int(self.bays[bay_key].row_cap_by_size.get(size, {}).get(row_no, self.bays[bay_key].cap_by_size.get(size, 0))) - fixed_state["row_size_load"][(bay_key, row_no, size)]
-            model.addCons(quicksum(qty * column_vars[idx] for idx, qty in items) <= residual)
-        for (group_id, bay_key), indices in group_bay_cols.items():
-            model.addCons(quicksum(column_vars[idx] for idx in indices) <= 1)
-
-        stack_vars_by_bay_size: defaultdict[tuple[str, str], list[tuple[object, int]]] = defaultdict(list)
-        for key, items in sorted(bay_port_size_cols.items()):
-            bay_key, _port, size = key
-            sample_group = self.groups_by_id.get(items[0][1].group_id) if items else None
-            if sample_group is None:
-                continue
-            unit_capacity = self._stack_unit_capacity_for_group(bay_key, size, sample_group)
-            port_stack_count = self._stack_count_for_group(bay_key, size, sample_group)
-            if unit_capacity <= 0 or port_stack_count <= 0:
-                continue
-            fixed_load = fixed_state["bay_port_size_load"][key]
-            fixed_units = self._stack_units_for_quantity(bay_key, size, sample_group, fixed_load)
-            stack_var = model.addVar(lb=float(fixed_units), ub=float(port_stack_count), vtype="I", name=f"lns_stack_{bay_key}_{size}_{len(stack_vars_by_bay_size)}")
-            load = quicksum(col.quantity * column_vars[idx] for idx, col in items)
-            model.addCons(fixed_load + load <= unit_capacity * stack_var)
-            stack_vars_by_bay_size[(bay_key, size)].append((stack_var, fixed_units))
-        for bay_size_key, stack_items in stack_vars_by_bay_size.items():
-            bay_key, size = bay_size_key
-            total_stack_count = self._stack_count_for_bay_size(bay_key, size)
-            fixed_total_units = fixed_state["bay_stack_used"][bay_size_key]
-            model.addCons(quicksum(stack_var - fixed_units for stack_var, fixed_units in stack_items) <= max(0, total_stack_count - fixed_total_units))
-
-        self._add_local_use_objectives(model, quicksum, column_vars, group_area_cols, fixed_state["used_group_area"], self.config.small_plan_group_area_split_penalty)
-        self._add_local_use_objectives(model, quicksum, column_vars, group_block_cols, fixed_state["used_group_block"], self.config.small_plan_group_block_split_penalty)
-        self._add_local_use_objectives(model, quicksum, column_vars, coarse_area_bay_cols, fixed_state["used_coarse_area_bay"], self.config.small_plan_coarse_area_bay_split_penalty)
-        self._add_local_use_objectives(model, quicksum, column_vars, voyage_area_cols, fixed_state["used_voyage_area"], 0.0, voyage_area_cost=True)
-        self._add_local_coarse_area_distribution_objectives(
-            model,
-            quicksum,
-            column_vars,
-            coarse_area_cols,
-            fixed_state["coarse_area_used"],
-            release_group_ids,
-        )
-
-        for key, items in area_size_cols.items():
-            voyage_id, flow, area_no, big_size = key
-            target = self._area_size_target(voyage_id, flow, area_no, big_size)
-            fixed_actual = fixed_state["big_plan_quota_used"][key]
-            pos = model.addVar(lb=0.0, obj=float(self.config.big_plan_area_deviation_penalty), name=f"lns_big_pos_{len(model.getVars())}")
-            neg = model.addVar(lb=0.0, obj=float(self.config.big_plan_area_deviation_penalty), name=f"lns_big_neg_{len(model.getVars())}")
-            actual = fixed_actual + quicksum(col.quantity * column_vars[idx] for idx, col in items)
-            model.addCons(actual - target == pos - neg)
-
-        if enforce_medium_plan_quota and self.config.medium_plan_quota is not None:
-            medium_plan_quota = Counter(self.config.medium_plan_quota)
-            for key, items in medium_quota_cols.items():
-                residual = medium_plan_quota[key] - fixed_state["medium_plan_quota_used"][key]
-                model.addCons(quicksum(col.quantity * column_vars[idx] for idx, col in items) <= residual)
-        if enforce_medium_plan_quota and self.config.medium_plan_bay_quota is not None:
-            medium_plan_bay_quota = Counter(self.config.medium_plan_bay_quota)
-            for key, items in medium_bay_quota_cols.items():
-                residual = medium_plan_bay_quota[key] - fixed_state["medium_plan_bay_quota_used"][key]
-                model.addCons(quicksum(col.quantity * column_vars[idx] for idx, col in items) <= residual)
-
-        self._add_bay_compatibility_constraints(quicksum, model, column_vars, bay_attr_choice_cols)
-        self._add_row_compatibility_constraints(quicksum, model, column_vars, row_attr_choice_cols)
-        for area_no in set(edge_45_cols) | set(edge_non45_cols):
-            has45 = model.addVar(vtype="B", name=f"lns_area_has45_{area_no}")
-            if edge_45_cols.get(area_no):
-                model.addCons(quicksum(column_vars[idx] for idx in edge_45_cols[area_no]) <= len(edge_45_cols[area_no]) * has45)
-            if edge_non45_cols.get(area_no):
-                model.addCons(quicksum(column_vars[idx] for idx in edge_non45_cols[area_no]) <= len(edge_non45_cols[area_no]) * (1 - has45))
-
-        fixed_voyage_area_qty: Counter[tuple[str, str]] = Counter()
-        for idx, qty in fixed_selected.items():
-            if qty > 0 and 0 <= idx < len(self._columns):
-                col = self._columns[idx]
-                fixed_voyage_area_qty[(col.voyage_id, col.area_no)] += int(qty) * int(col.quantity)
-        for voyage_id, areas in sorted(getattr(self.problem, "user_voyage_area_requirements", {}).items()):
-            for area_no in sorted(areas):
-                if fixed_voyage_area_qty[(voyage_id, area_no)] >= 1:
-                    continue
-                indices = voyage_area_cols.get((voyage_id, area_no), [])
-                if indices:
-                    model.addCons(quicksum(self._columns[idx].quantity * column_vars[idx] for idx in indices) >= 1)
-
-        fixed_group_bay_qty: Counter[tuple[str, str]] = Counter()
-        for idx, qty in fixed_selected.items():
-            if qty > 0 and 0 <= idx < len(self._columns):
-                col = self._columns[idx]
-                fixed_group_bay_qty[(col.group_id, col.bay_key)] += int(qty) * int(col.quantity)
-        for group_id, bay_keys in sorted(getattr(self.problem, "user_group_bay_requirements", {}).items()):
-            for bay_key in sorted(bay_keys):
-                if fixed_group_bay_qty[(group_id, bay_key)] >= 1:
-                    continue
-                indices = group_bay_cols.get((group_id, bay_key), [])
-                if indices:
-                    model.addCons(quicksum(self._columns[idx].quantity * column_vars[idx] for idx in indices) >= 1)
-
-        mip_start_added = self._add_repair_lns_start(model, column_vars, unplaced_vars, incumbent_selected, incumbent_unplaced)
-        stats["mip_start_added"] = mip_start_added
-        model.optimize()
-        stats["status"] = self._scip_status_name(model)
-        stats["has_solution"] = self._scip_solution_count(model) > 0
-        selected = Counter(fixed_selected)
-        unplaced = Counter(
-            {
-                group_id: int(qty)
-                for group_id, qty in incumbent_unplaced.items()
-                if group_id not in release_group_ids and qty > 0
-            }
-        )
-        if stats["has_solution"]:
-            for idx, var in column_vars.items():
-                if self._scip_value(model, var) > 0.5:
-                    selected[idx] = 1
-            for group_id, var in unplaced_vars.items():
-                value = int(round(self._scip_value(model, var)))
-                if value > 0:
-                    unplaced[group_id] += value
-        else:
-            selected = Counter(incumbent_selected)
-            unplaced = Counter(incumbent_unplaced)
-        self._free_scip_model(model)
-        return selected, unplaced, stats
-
-    def _add_repair_lns_start(
-        self,
-        model,
-        column_vars: dict[int, object],
-        unplaced_vars: dict[str, object],
-        selected: Counter[int],
-        unplaced: Counter[str],
-    ) -> bool:
-        try:
-            creator = getattr(model, "createPartialSol", None) or getattr(model, "createSol")
-            sol = creator()
-            for idx, var in column_vars.items():
-                model.setSolVal(sol, var, 1.0 if selected.get(idx, 0) > 0 else 0.0)
-            for group_id, var in unplaced_vars.items():
-                model.setSolVal(sol, var, float(unplaced.get(group_id, 0)))
-            return bool(model.addSol(sol, free=True))
-        except Exception:
-            return False
-
-    def _add_local_use_objectives(
-        self,
-        model,
-        quicksum,
-        column_vars: dict[int, object],
-        grouped_indices: dict,
-        already_used: set,
-        penalty: float,
-        voyage_area_cost: bool = False,
-    ) -> None:
-        for key, indices in grouped_indices.items():
-            if key in already_used:
-                continue
-            cost = self._voyage_area_cost(*key) if voyage_area_cost else penalty
-            if abs(float(cost)) <= 1e-9:
-                continue
-            use = model.addVar(vtype="B", obj=float(cost), name=f"lns_use_{len(model.getVars())}")
-            model.addCons(quicksum(column_vars[idx] for idx in indices) <= len(indices) * use)
-            if cost < 0:
-                model.addCons(use <= quicksum(column_vars[idx] for idx in indices))
-
-    def _add_local_coarse_area_distribution_objectives(
-        self,
-        model,
-        quicksum,
-        column_vars: dict[int, object],
-        coarse_area_cols: dict[tuple[str, str, str, str, str], list[tuple[int, PlacementColumn]]],
-        fixed_coarse_area_used: Counter[tuple[str, str, str, str, str]],
-        release_group_ids: set[str],
-    ) -> None:
-        release_coarse_keys = {
-            self._coarse_key(group)
-            for group_id in release_group_ids
-            if (group := self.groups_by_id.get(group_id)) is not None
-        }
-        if not release_coarse_keys:
-            return
-        area_keys_by_coarse: defaultdict[tuple[str, str, str, str], set[tuple[str, str, str, str, str]]] = defaultdict(set)
-        for key in coarse_area_cols:
-            if key[:4] in release_coarse_keys:
-                area_keys_by_coarse[key[:4]].add(key)
-        for key, qty in fixed_coarse_area_used.items():
-            if qty > 0 and key[:4] in release_coarse_keys:
-                area_keys_by_coarse[key[:4]].add(key)
-
-        for coarse_key, area_keys in sorted(area_keys_by_coarse.items()):
-            demand = max(1, int(self.coarse_demand.get(coarse_key, 0)))
-            if demand <= 0:
-                continue
-            actual_by_area = {}
-            for key in sorted(area_keys):
-                fixed_qty = float(fixed_coarse_area_used.get(key, 0))
-                items = coarse_area_cols.get(key, [])
-                actual = model.addVar(
-                    lb=0.0,
-                    ub=float(demand),
-                    name=f"lns_coarse_actual_{'_'.join(coarse_key)}_{key[4]}",
-                )
-                model.addCons(actual == fixed_qty + quicksum(col.quantity * column_vars[idx] for idx, col in items))
-                actual_by_area[key] = actual
-            if not actual_by_area:
-                continue
-            if self._prefers_concentrated_coarse_key(coarse_key):
-                self._add_concentrated_coarse_group_objective(
-                    model,
-                    coarse_key,
-                    sorted(actual_by_area),
-                    actual_by_area,
-                    demand,
-                )
-            else:
-                self._add_large_coarse_group_balance_objective(
-                    model,
-                    coarse_key,
-                    sorted(actual_by_area),
-                    actual_by_area,
-                    demand,
-                )
-
-    def _repair_lns_neighborhoods(
-        self,
-        selected: Counter[int],
-        seed_unplaced: Counter[str],
-        max_neighborhoods: int,
-        max_groups: int,
-    ) -> list[tuple[str, set[str]]]:
-        selected_group_qty: Counter[str] = Counter()
-        coarse_to_groups: defaultdict[tuple[str, str, str, str], Counter[str]] = defaultdict(Counter)
-        area_to_groups: defaultdict[tuple[str, str, str], Counter[str]] = defaultdict(Counter)
-        fallback_groups: Counter[str] = Counter()
-        for idx, chosen in selected.items():
-            if chosen <= 0 or idx < 0 or idx >= len(self._columns):
-                continue
-            col = self._columns[idx]
-            qty = int(chosen) * int(col.quantity)
-            selected_group_qty[col.group_id] += qty
-            coarse_to_groups[col.coarse_key][col.group_id] += qty
-            area_to_groups[(col.voyage_id, col.size, col.area_no)][col.group_id] += qty
-            group = self.groups_by_id.get(col.group_id)
-            if group is not None and self._area_fallback_tier_for_group(group, col.area_no) > 0:
-                fallback_groups[col.group_id] += qty
-
-        neighborhoods: list[tuple[str, set[str]]] = []
-        seen: set[tuple[str, ...]] = set()
-
-        def add(label: str, group_ids: Iterable[str]) -> None:
-            cleaned = [group_id for group_id in group_ids if group_id in self.groups_by_id]
-            if not cleaned:
-                return
-            ordered = sorted(
-                set(cleaned),
-                key=lambda group_id: (
-                    -int(seed_unplaced.get(group_id, 0)),
-                    -int(selected_group_qty.get(group_id, 0)),
-                    group_id,
-                ),
-            )[:max_groups]
-            signature = tuple(sorted(ordered))
-            if not signature or signature in seen:
-                return
-            seen.add(signature)
-            neighborhoods.append((label, set(ordered)))
-
-        positive_seed_groups = [group_id for group_id, qty in seed_unplaced.items() if qty > 0]
-        residual_total = sum(int(qty) for qty in seed_unplaced.values() if qty > 0)
-        residual_flow_groups: defaultdict[tuple[str, str], list[str]] = defaultdict(list)
-        residual_flow_qty: Counter[tuple[str, str]] = Counter()
-        for group_id in positive_seed_groups:
-            group = self.groups_by_id.get(group_id)
-            if group is None:
-                continue
-            key = (group.voyage_id, group.status)
-            residual_flow_groups[key].append(group_id)
-            residual_flow_qty[key] += int(seed_unplaced.get(group_id, 0))
-
-        if residual_total <= 70:
-            for (voyage_id, flow), group_ids in residual_flow_qty.most_common(max_neighborhoods):
-                related: list[str] = []
-                for group_id in residual_flow_groups.get((voyage_id, flow), []):
-                    group = self.groups_by_id.get(group_id)
-                    if group is None:
-                        continue
-                    related.append(group_id)
-                    related.extend(
-                        gid for gid, _qty in coarse_to_groups.get(self._coarse_key(group), Counter()).most_common()
-                    )
-                    for (area_voyage_id, size, _area_no), area_groups in sorted(area_to_groups.items()):
-                        if area_voyage_id == group.voyage_id and size == group.size and group_id in area_groups:
-                            related.extend(gid for gid, _qty in area_groups.most_common())
-                add(f"seed_residual_flow_{voyage_id}_{flow}", related)
-
-        if 0 < residual_total <= max(24, max_groups) and len(positive_seed_groups) <= max_groups:
-            residual_related: list[str] = []
-            for group_id in positive_seed_groups:
-                group = self.groups_by_id.get(group_id)
-                if group is None:
-                    continue
-                residual_related.append(group_id)
-                residual_related.extend(
-                    gid for gid, _qty in coarse_to_groups.get(self._coarse_key(group), Counter()).most_common()
-                )
-                for (voyage_id, size, _area_no), area_groups in sorted(area_to_groups.items()):
-                    if voyage_id == group.voyage_id and size == group.size and group_id in area_groups:
-                        residual_related.extend(gid for gid, _qty in area_groups.most_common())
-            add("seed_residual_all", residual_related)
-
-        for group_id, _qty in seed_unplaced.most_common():
-            group = self.groups_by_id.get(group_id)
-            if group is None:
-                continue
-            coarse_key = self._coarse_key(group)
-            add(f"seed_coarse_{group_id}", [group_id] + [gid for gid, _ in coarse_to_groups.get(coarse_key, Counter()).most_common()])
-            for (voyage_id, size, _area_no), area_groups in sorted(area_to_groups.items()):
-                if voyage_id == group.voyage_id and size == group.size and group_id in area_groups:
-                    add(f"seed_area_{group_id}", [group_id] + [gid for gid, _ in area_groups.most_common()])
-
-        for group_id, _qty in fallback_groups.most_common(max_neighborhoods):
-            group = self.groups_by_id.get(group_id)
-            if group is None:
-                continue
-            add(
-                f"fallback_coarse_{group_id}",
-                [group_id] + [gid for gid, _ in coarse_to_groups.get(self._coarse_key(group), Counter()).most_common()],
-            )
-
-        for index, group_ids in enumerate(self._diving_improvement_neighborhoods(selected, max_neighborhoods, max_groups)):
-            add(f"fragmentation_{index}", group_ids)
-            if len(neighborhoods) >= max_neighborhoods:
-                break
-        return neighborhoods[:max_neighborhoods]
-
-    def _coarse_compaction_neighborhoods(
-        self,
-        selected: Counter[int],
-        max_neighborhoods: int,
-        max_groups: int,
-    ) -> list[tuple[str, set[str]]]:
-        by_coarse: defaultdict[tuple[str, str, str, str], dict] = defaultdict(
-            lambda: {"groups": Counter(), "areas": Counter(), "area_groups": defaultdict(Counter), "bays": set()}
-        )
-        area_groups: defaultdict[str, Counter[str]] = defaultdict(Counter)
-        selected_group_qty: Counter[str] = Counter()
-        for idx, chosen in selected.items():
-            if chosen <= 0 or idx < 0 or idx >= len(self._columns):
-                continue
-            col = self._columns[idx]
-            qty = int(chosen) * int(col.quantity)
-            selected_group_qty[col.group_id] += qty
-            data = by_coarse[col.coarse_key]
-            data["groups"][col.group_id] += qty
-            data["areas"][col.area_no] += qty
-            data["area_groups"][col.area_no][col.group_id] += qty
-            data["bays"].add(col.bay_key)
-            area_groups[col.area_no][col.group_id] += qty
-
-        ranked: list[tuple[float, tuple[str, str, str, str], set[str]]] = []
-        min_boxes = max(1, int(self.config.medium_large_group_min_area_boxes or 1))
-        for coarse_key, data in by_coarse.items():
-            groups: Counter[str] = data["groups"]
-            areas: Counter[str] = data["areas"]
-            if not groups or not areas:
-                continue
-            demand = max(1, int(self.coarse_demand.get(coarse_key, sum(groups.values()))))
-            area_count = sum(1 for qty in areas.values() if qty > 0)
-            tiny_count = sum(1 for qty in areas.values() if 0 < qty < min_boxes)
-            target_count = self._target_large_group_area_count(coarse_key, demand)
-            if self._prefers_concentrated_coarse_key(coarse_key):
-                score = 3000.0 * max(0, area_count - 1) + 200.0 * tiny_count + 0.01 * demand
-            else:
-                score = 1800.0 * tiny_count + 250.0 * max(0, area_count - target_count) + 0.01 * demand
-            if score <= 0:
-                continue
-
-            release = {group_id for group_id, _qty in groups.most_common(max_groups)}
-            remaining_slots = max(0, max_groups - len(release))
-            if remaining_slots > 0:
-                tiny_or_small_areas = sorted(
-                    [area_no for area_no, qty in areas.items() if qty < min_boxes],
-                    key=lambda area_no: (areas[area_no], area_no),
-                )
-                if not tiny_or_small_areas:
-                    tiny_or_small_areas = [area_no for area_no, _qty in areas.most_common()]
-                related: Counter[str] = Counter()
-                for area_no in tiny_or_small_areas:
-                    related.update(area_groups.get(area_no, Counter()))
-                for group_id, _qty in related.most_common():
-                    if len(release) >= max_groups:
-                        break
-                    if group_id not in release:
-                        release.add(group_id)
-            if release:
-                ranked.append((score, coarse_key, release))
-
-        neighborhoods: list[tuple[str, set[str]]] = []
-        seen: set[tuple[str, ...]] = set()
-        for score, coarse_key, group_ids in sorted(ranked, reverse=True):
-            ordered = sorted(
-                group_ids,
-                key=lambda group_id: (-selected_group_qty.get(group_id, 0), group_id),
-            )[:max_groups]
-            signature = tuple(sorted(ordered))
-            if not signature or signature in seen:
-                continue
-            seen.add(signature)
-            label = f"coarse_compact_{'_'.join(coarse_key)}_{int(score)}"
-            neighborhoods.append((label, set(ordered)))
-            if len(neighborhoods) >= max_neighborhoods:
-                break
-        return neighborhoods
-
-    def _fixed_selected_columns_for_released_groups(
-        self,
-        selected: Counter[int],
-        release_group_ids: set[str],
-    ) -> dict[int, int]:
-        return {
-            idx: 1
-            for idx, qty in selected.items()
-            if qty > 0 and 0 <= idx < len(self._columns) and self._columns[idx].group_id not in release_group_ids
-        }
-
-    def _ensure_repair_lns_columns(self, release_group_ids: set[str], selected: Counter[int]) -> None:
-        fixed_selected = Counter(
-            {
-                idx: qty
-                for idx, qty in selected.items()
-                if qty > 0 and 0 <= idx < len(self._columns) and self._columns[idx].group_id not in release_group_ids
-            }
-        )
-        _fixed_selected, state, placed = self._selection_state(fixed_selected)
-        stages = [
-            ("stage1a", True),
-            ("stage1b", False),
-            ("stage2", False),
-            ("stage3", False),
-            ("stage4", False),
-        ]
-        enforce_medium_plan_quota = self._repair_enforces_medium_plan_quota()
-        for group_id in sorted(release_group_ids):
-            group = self.groups_by_id.get(group_id)
-            if group is None:
-                continue
-            remaining = int(group.demand) - int(placed.get(group.group_id, 0))
-            if remaining <= 0:
-                continue
-            for stage, enforce_quota in stages:
-                for bay_key, _max_qty, base_cost in self._candidate_bays_for_group(group, scope=stage):
-                    capacity = self._remaining_capacity_for_group_bay(
-                        group,
-                        bay_key,
-                        state,
-                        remaining,
-                        enforce_quota=enforce_quota,
-                        enforce_medium_plan_quota=enforce_medium_plan_quota,
-                    )
-                    if capacity <= 0:
-                        continue
-                    for qty in self._quantity_options(group, min(remaining, capacity)):
-                        self._add_column(group, bay_key, qty, base_cost)
 
     def _staged_repair_group_orders(self) -> list[tuple[str, list[SmallBoxGroup]]]:
         groups = list(self.groups)
         orders: list[tuple[str, list[SmallBoxGroup]]] = [
-            ("default", groups),
             ("coarse_concentration_first", self._coarse_concentration_repair_order(groups)),
+            ("default", groups),
         ]
         unique: list[tuple[str, list[SmallBoxGroup]]] = []
         seen: set[tuple[str, ...]] = set()
@@ -4911,15 +3415,16 @@ class ColumnGenerationPlanner:
     ) -> tuple[Counter[int], Counter[str], list[dict]]:
         repaired, state, placed = self._selection_state(selected)
         stages = [
-            ("stage1a", True),
-            ("stage1b", False),
-            ("stage2", False),
-            ("stage3", False),
-            ("stage4", False),
+            ("stage1a", True, True),
+            ("stage1b", False, True),
+            ("stage2", False, True),
+            ("stage3", False, False),
+            ("stage4", False, False),
         ]
-        enforce_medium_plan_quota = self._repair_enforces_medium_plan_quota()
+        base_enforce_medium_plan_quota = self._repair_enforces_medium_plan_quota()
         stats: list[dict] = []
-        for stage, enforce_quota in stages:
+        for stage, enforce_quota, stage_enforce_medium_plan_quota in stages:
+            enforce_medium_plan_quota = base_enforce_medium_plan_quota and stage_enforce_medium_plan_quota
             before_unplaced = sum(max(0, int(group.demand) - int(placed.get(group.group_id, 0))) for group in self.groups)
             if before_unplaced <= 0:
                 break
@@ -4951,6 +3456,7 @@ class ColumnGenerationPlanner:
                     "stage": stage,
                     "enforce_big_plan_quota": enforce_quota,
                     "enforce_medium_plan_quota": enforce_medium_plan_quota,
+                    "scope": self._staged_repair_stage_scope_label(stage),
                     "before_unplaced_boxes": before_unplaced,
                     "after_unplaced_boxes": after_unplaced,
                     "placed_boxes": before_unplaced - after_unplaced,
@@ -4966,6 +3472,16 @@ class ColumnGenerationPlanner:
             }
         )
         return repaired, unplaced, stats
+
+    @staticmethod
+    def _staged_repair_stage_scope_label(stage: str) -> str:
+        return {
+            "stage1a": "strict_big_plan_quota",
+            "stage1b": "same_group_big_plan_area",
+            "stage2": "any_big_plan_area",
+            "stage3": "compatible_yard_area",
+            "stage4": "fallback_yard_area",
+        }.get(stage, stage)
 
     def _selection_state(self, selected: Counter[int]) -> tuple[Counter[int], dict, Counter[str]]:
         repaired: Counter[int] = Counter()
@@ -5180,11 +3696,11 @@ class ColumnGenerationPlanner:
         return float(energy)
 
     def _column_index_for(self, group_id: str, bay_key: str, quantity: int, state: dict | None = None) -> int | None:
-        for idx, col in enumerate(self._columns):
-            if col.group_id == group_id and col.bay_key == bay_key and col.quantity == quantity:
-                if state is not None and not self._column_row_allocation_fits_state(col, state):
-                    continue
-                return idx
+        for idx in self._column_indices_by_triplet.get((group_id, bay_key, quantity), ()):
+            col = self._columns[idx]
+            if state is not None and not self._column_row_allocation_fits_state(col, state):
+                continue
+            return idx
         return None
 
     def _column_fits_state(
@@ -5443,6 +3959,40 @@ class ColumnGenerationPlanner:
         out = self._limit_candidate_bays(group, out)
         self._candidate_cache[cache_key] = out
         return out
+
+    def _pricing_candidate_bay_limit(
+        self,
+        group: SmallBoxGroup,
+        available_count: int,
+        iteration: int,
+        group_dual_value: float,
+        max_group_dual: float,
+        lp_unplaced: Counter[str],
+    ) -> tuple[int, str]:
+        if available_count <= 0:
+            return 0, "empty"
+        if not bool(getattr(self.config, "adaptive_pricing_enabled", True)):
+            return available_count, "full"
+
+        base = max(1, int(getattr(self.config, "pricing_candidate_bays_initial", 0) or 0))
+        growth = max(0, int(getattr(self.config, "pricing_candidate_bays_growth_per_iteration", 0) or 0))
+        limit = base + growth * max(0, int(iteration))
+        reason = "adaptive_base"
+
+        if lp_unplaced.get(group.group_id, 0) > 1e-6:
+            limit = max(
+                limit,
+                max(1, int(getattr(self.config, "pricing_candidate_bays_unplaced", 0) or 0)),
+            )
+            reason = "lp_unplaced"
+        elif max_group_dual > 1e-9 and abs(float(group_dual_value)) >= 0.75 * max_group_dual:
+            limit = max(
+                limit,
+                max(1, int(getattr(self.config, "pricing_candidate_bays_high_dual", 0) or 0)),
+            )
+            reason = "high_dual"
+
+        return min(available_count, max(1, int(limit))), reason
 
     def _candidate_areas_for_group(self, group: SmallBoxGroup, scope: str | None = None) -> list[str]:
         scope = scope or self._candidate_scope
