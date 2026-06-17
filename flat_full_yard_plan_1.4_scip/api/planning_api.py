@@ -93,7 +93,13 @@ def solve_large_plan_df(
             mip_gap=config.large_mip_gap,
             verbose=config.large_verbose,
         )
-        return pd.DataFrame(adapter_data_io.allocation_output_rows(solution, artifacts.data))
+        return pd.DataFrame(
+            adapter_data_io.allocation_output_rows(
+                solution,
+                artifacts.data,
+                planning_time=planning_time,
+            )
+        )
     finally:
         input_adapter.history_plan_info = original_history
 

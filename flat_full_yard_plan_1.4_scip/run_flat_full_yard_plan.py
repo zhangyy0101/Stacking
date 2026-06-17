@@ -125,7 +125,11 @@ def main() -> None:
     large_state_rows = pd.DataFrame()
     if not args.no_write_large_state and large_solution.objective_value is not None:
         large_state_rows = state.append_solution(planning_time, large_solution)
-    large_allocation_rows = adapter_data_io.allocation_output_rows(large_solution, artifacts.data)
+    large_allocation_rows = adapter_data_io.allocation_output_rows(
+        large_solution,
+        artifacts.data,
+        planning_time=planning_time,
+    )
     adapter_data_io.write_large_outputs(large_output_dir, artifacts, large_solution, large_state_rows)
 
     large_allocation_path = large_output_dir / "allocation.csv"

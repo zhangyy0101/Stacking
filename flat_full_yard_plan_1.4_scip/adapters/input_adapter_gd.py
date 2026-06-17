@@ -100,31 +100,34 @@ class InputAdapterGd:
     """Guandong input adapter used by the standalone flat yard planner."""
 
     def __init__(self):
-        self.take_over_vessel: Dict[str, List] = {}
-        self.bay_slots_detail: pd.DataFrame = None
-        self.tops_plan: pd.DataFrame = None
-        self.area_function_info: pd.DataFrame = None
-        self.vessel_berth_info: pd.DataFrame = None
-        self.planning_time: pd.Timestamp = pd.Timestamp.now()
-        self.history_plan_info: pd.DataFrame = None
-        self.vessel_containers: Dict[str, Dict[str, pd.DataFrame | Dict]] = {}
-        self.closed_area: Set[str] = set()
-        self.berth_area_dist_matrix: pd.DataFrame = None
-        self.voyage_predict: Dict = {}
-        self.large_plan: Dict = {}
-        self.adjust_plan_info: Dict = {}
-        self.user_design: bool = True
-        self.user_design_large_plan_area: List[str] = []
-        self.rough_attr: Dict[str, List[str]] = {}
-        self.detail_attr: Dict[str, List[str]] = {}
-        self.bay_rules: Dict[str, List[str]] = {}
-        self.row_rules: Dict[str, List[str]] = {}
-        self.weight_level: Dict[str, List[int]] = {}
-        self.is_data_local: bool = False
-        self.local_path: str = None
-        self.need_save_data: bool = True
+        self.take_over_vessel: Dict[str, List] = {}       # 接管的航次信息
+        self.bay_slots_detail: pd.DataFrame               # 空间场箱位信息
+        self.tops_plan: pd.DataFrame = None               # tops上已有的计划占位信息
+        self.area_function_info: pd.DataFrame = None      # 箱区功能和负载信息
+        self.vessel_berth_info: pd.DataFrame = None       # 船舶靠泊信息
+        self.planning_time: pd.Timestamp = pd.Timestamp.now()     # 做计划时间
+        self.history_plan_info: pd.DataFrame = None       # 接管航次的上一次计划信息
+        self.vessel_containers: Dict[str, Dict[str, pd.DataFrame|Dict]] = {}      # 航次的箱信息
+        self.closed_area: Set[str] = set()                # 关闭的箱区
+        self.berth_area_dist_matrix: pd.DataFrame = None  # 泊位箱区距离矩阵
+        self.voyage_predict: Dict = {}                    # 航次预测信息
+        self.large_plan: Dict = {}                        # 大计划计算结果
+        self.adjust_plan_info: Dict = {}                  # 计划的人工调整信息
+        self.user_design: Dict[str, bool] = {} # 用户指定大计划区域，区域放在user_design_large_plan_area,大中小计划都不能突破用户给定的区域
+        self.user_design_large_plan_area: Dict[str, List[str]] = {} # 用户指定的大计划区域
+        self.voyage_limit_areas: Dict[str, List[str]] = {} # 用户为航次限定的可选大范围箱区
+        self.voyage_priority_areas: Dict[str, List[str]] = {} # 用户为航次限定的优选大范围箱区
+        self.rough_attr: Dict[str, List[str]] = {} # 粗属性分组依据
+        self.detail_attr: Dict[str, List[str]] = {} # 细分属性分组依据
+        self.bay_rules: Dict[str, List[str]] = {}   # 贝不能混
+        self.row_rules: Dict[str, List[str]] = {}   # 排不能混
+        self.weight_level: Dict[str, List[int]] = {} # 重量等级
+        self.is_data_local: bool = False                  # 是否本地加载信息
+        self.local_path: str = None                       # 本地加载文件地址
+        self.need_save_data: bool = True                  # 是否保存输入信息
 
     def to_dict(self) -> dict:
+        """Convert entire object to JSON-safe dictionary (recursive cleaning)."""
         return {
             "__class__": "InputAdapter",
             "take_over_vessel": self.take_over_vessel,
@@ -132,9 +135,9 @@ class InputAdapterGd:
             "tops_plan": clean_for_json(self.tops_plan),
             "area_function_info": clean_for_json(self.area_function_info),
             "vessel_berth_info": clean_for_json(self.vessel_berth_info),
-            "planning_time": self.planning_time,
+            "planning_time": self.planning_time,  # Handled by SafeJSONEncoder
             "history_plan_info": clean_for_json(self.history_plan_info),
-            "vessel_containers": clean_for_json(self.vessel_containers),
+            "vessel_containers": clean_for_json(self.vessel_containers),  # ✅ Recursive!
             "closed_area": list(self.closed_area),
             "berth_area_dist_matrix": clean_for_json(self.berth_area_dist_matrix),
             "voyage_predict": clean_for_json(self.voyage_predict),
@@ -142,6 +145,8 @@ class InputAdapterGd:
             "adjust_plan_info": clean_for_json(self.adjust_plan_info),
             "user_design": self.user_design,
             "user_design_large_plan_area": self.user_design_large_plan_area,
+            "voyage_limit_areas": self.voyage_limit_areas,
+            "voyage_priority_areas": self.voyage_priority_areas,
             "rough_attr": self.rough_attr,
             "detail_attr": self.detail_attr,
             "bay_rules": self.bay_rules,
@@ -154,7 +159,9 @@ class InputAdapterGd:
 
     @classmethod
     def from_dict(cls, data: dict) -> "InputAdapterGd":
+        """Reconstruct object from dictionary (with DataFrame restoration)."""
         obj = cls()
+
         obj.take_over_vessel = data.get("take_over_vessel", {})
         obj.bay_slots_detail = restore_dataframe_from_split(data.get("bay_slots_detail"))
         obj.tops_plan = restore_dataframe_from_split(data.get("tops_plan"))
@@ -163,8 +170,10 @@ class InputAdapterGd:
 
         pt = data.get("planning_time")
         obj.planning_time = pd.Timestamp(pt) if pt is not None else pd.NaT
+
         obj.history_plan_info = restore_dataframe_from_split(data.get("history_plan_info"))
 
+        # 🔁 Restore nested DataFrames in vessel_containers
         vessel_containers_raw = data.get("vessel_containers", {})
         vessel_containers_restored = {}
         for vid, content in vessel_containers_raw.items():
@@ -173,19 +182,19 @@ class InputAdapterGd:
                 if key in {"doc_cntrs"}:
                     new_content[key] = restore_dataframe_from_split(value)
                 else:
-                    new_content[key] = value
+                    new_content[key] = value  # keep as dict/list/scalar
             vessel_containers_restored[vid] = new_content
         obj.vessel_containers = vessel_containers_restored
-
         takeover_vessel_list = sum(obj.take_over_vessel.values(), [])
         obj.closed_area = set(data.get("closed_area", []))
         obj.berth_area_dist_matrix = restore_dataframe_from_split(data.get("berth_area_dist_matrix"))
         obj.voyage_predict = data.get("voyage_predict", {})
         obj.large_plan = data.get("large_plan", {})
         obj.adjust_plan_info = data.get("adjust_plan_info", {})
-        user_design_value = data["user_design"] if "user_design" in data else obj.user_design
-        obj.user_design = bool(user_design_value) if user_design_value is not None else False
-        obj.user_design_large_plan_area = list_or_default(data.get("user_design_large_plan_area"), [])
+        obj.user_design = data.get("user_design", {})
+        obj.user_design_large_plan_area = data.get("user_design_large_plan_area", {})
+        obj.voyage_limit_areas = data.get("voyage_limit_areas", {})
+        obj.voyage_priority_areas = data.get("voyage_priority_areas", {})
         obj.rough_attr = voyage_rule_dict(data.get("rough_attr"), takeover_vessel_list, DEFAULT_ROUGH_ATTR)
         obj.detail_attr = voyage_rule_dict(data.get("detail_attr"), takeover_vessel_list, DEFAULT_DETAIL_ATTR)
         obj.bay_rules = voyage_rule_dict(data.get("bay_rules"), takeover_vessel_list, [], fill_missing=False)
@@ -199,6 +208,7 @@ class InputAdapterGd:
         obj.is_data_local = data.get("is_data_local", False)
         obj.local_path = data.get("local_path")
         obj.need_save_data = data.get("need_save_data", True)
+
         return obj
 
     def save_to_json(self, filepath: str):

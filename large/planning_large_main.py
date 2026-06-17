@@ -25,20 +25,16 @@ from planning_large_solver import (
 DEFAULT_PLANNING_TIME = "2026-05-19 09:30:00"
 DEFAULT_EXPORT_VESSELS = None
 DEFAULT_IMPORT_VESSELS = None
-IGNORED_EXPORT_VESSELS = {"454447"}
 KNOWN_EXPORT_SNAPSHOT_FLOWS = {"OF", "OZ", "T"}
 UNKNOWN_EXPORT_SNAPSHOT_FLOW_FALLBACK = "OF"
-IMPORT_DIRECT_FLOWS = {"IZ", "IF", "T"}
-IMPORT_FALLBACK_FLOW = "OZ"
-UNRESTRICTED_AREA_PREFIX = "E"
 BERTH_CONFLICT_THRESHOLD_HOURS = 2.0
 
 # 进口资料箱中存在 IE/RF/RE，但当前箱区功能表没有这些功能。
-# 这里默认将它们映射为 IF，使进口箱能使用 IF 功能箱区；如业务口径变化，可在此修改。
+# 这里默认将它们映射为 OZ，与 flat_full_yard_plan_1.4_scip 的大计划口径保持一致。
 DEFAULT_FLOW_ALIASES = {
-    "IE": "IF",
-    "RF": "IF",
-    "RE": "IF",
+    "IE": "OZ",
+    "RF": "OZ",
+    "RE": "OZ",
 }
 
 
@@ -296,7 +292,7 @@ def build_current_case_data(
         export_vessels = discover_export_vessels(data_dir)
     if import_vessels is None:
         import_vessels = discover_import_vessels(data_dir)
-    export_vessels = [v for v in normalize_vessel_list(export_vessels) if v not in IGNORED_EXPORT_VESSELS]
+    export_vessels = normalize_vessel_list(export_vessels)
     import_vessels = normalize_vessel_list(import_vessels)
     all_vessels = export_vessels + import_vessels
 
@@ -786,7 +782,7 @@ def discover_export_vessels(data_dir: Path) -> list[str]:
             vessel = normalize_code(match.group(1))
             if vessel:
                 vessels.add(vessel)
-    return sorted(vessel for vessel in vessels if vessel not in IGNORED_EXPORT_VESSELS)
+    return sorted(vessels)
 
 
 def discover_import_container_dir(data_dir: Path) -> Path:
@@ -904,7 +900,7 @@ def normalize_code(value: Any) -> Optional[str]:
     return text
 
 
-def normalize_size(value: Any) -> Optional[str]:
+def normalize_size(value: Any) -> str:
     """
     功能：
         将箱尺寸编码标准化为模型使用的 20/40 两类。
@@ -913,16 +909,17 @@ def normalize_size(value: Any) -> Optional[str]:
         value: 原始箱尺寸编码。
 
     返回：
-        ``"20"``、``"40"`` 或 ``None``。45 尺箱按 40 尺口径处理。
+        ``"20"``、``"40"`` 或空字符串。45 尺箱按 40 尺口径处理。
+        空字符串在后续汇总中按非 20 尺处理，进入 40 尺分支。
     """
     code = normalize_code(value)
     if not code:
-        return None
+        return ""
     if code.startswith("20"):
         return "20"
     if code.startswith(("40", "45")):
         return "40"
-    return None
+    return ""
 
 
 def normalize_flow(value: Any, aliases: Mapping[str, str]) -> Optional[str]:
@@ -950,18 +947,15 @@ def normalize_export_snapshot_flow(value: Any, aliases: Mapping[str, str]) -> Op
     return flow
 
 
-def normalize_import_planning_flow(value: Any, aliases: Mapping[str, str]) -> Optional[str]:
-    flow = normalize_flow(value, aliases)
-    if not flow:
-        return None
-    if flow in IMPORT_DIRECT_FLOWS:
-        return flow
-    return IMPORT_FALLBACK_FLOW
-
-
-def is_unrestricted_area(area: Any) -> bool:
-    code = normalize_code(area)
-    return bool(code and code.startswith(UNRESTRICTED_AREA_PREFIX))
+def medium_small_area_flow(flow: Any) -> str:
+    normalized = normalize_flow(flow, {})
+    if not normalized:
+        return "OF"
+    if normalized == "OF":
+        return "OF"
+    if normalized in {"IF", "IZ", "T"}:
+        return normalized
+    return "OZ"
 
 
 def area_allows_flow(area: Any, flow: Any, area_functions: Mapping[str, set[str]]) -> bool:
@@ -969,7 +963,7 @@ def area_allows_flow(area: Any, flow: Any, area_functions: Mapping[str, set[str]
     flow_code = normalize_code(flow)
     if not area_code or not flow_code:
         return False
-    return is_unrestricted_area(area_code) or flow_code in area_functions.get(area_code, set())
+    return flow_code in area_functions.get(area_code, set())
 
 
 def normalize_bay(value: Any) -> Optional[str]:
@@ -1357,7 +1351,7 @@ def build_snapshot_count_params(
         size = row.get("size")
         if str(row.get("cntr_id")) == "-1":
             continue
-        if not vessel or not flow or not area or area not in model_areas or size not in {"20", "40"}:
+        if not vessel or not flow or not area or area not in model_areas:
             continue
         flow_matches_area = area_allows_flow(area, flow, area_functions)
         if flow_matches_area and size == "20":
@@ -1461,7 +1455,6 @@ def build_demand_params(
         if doc_path.exists():
             doc = normalize_container_frame(pd.read_parquet(doc_path), flow_aliases)
             doc = doc[doc["e_voy"].eq(vessel)].copy()
-            doc["flow"] = "OF"
         else:
             doc = empty_normalized_container_frame()
         snap_all = current_snapshot[current_snapshot["voy_id"].eq(vessel)].copy()
@@ -1505,7 +1498,6 @@ def build_demand_params(
         doc_path = resolve_import_doc_path(import_dir, vessel)
         doc = normalize_container_frame(pd.read_parquet(doc_path), flow_aliases)
         doc = doc[doc["i_voy"].eq(vessel)].copy()
-        doc["flow"] = doc["raw_flow"].map(lambda value: normalize_import_planning_flow(value, flow_aliases))
         snap_all = current_snapshot[current_snapshot["voy_id"].eq(vessel)].copy()
         snap = snap_all[snap_all["area_no"].isin(model_areas)].copy()
         existing_ids = valid_container_ids(snap_all)
@@ -1580,7 +1572,7 @@ def normalize_container_frame(df: pd.DataFrame, flow_aliases: Mapping[str, str])
     df["i_voy"] = df["IYC_IVOY_ID"].map(normalize_code)
     df["size"] = df["IYC_CSZ_CSIZECD"].map(normalize_size)
     df["raw_flow"] = df["IYC_STS_CSTATUSCD"].map(normalize_code)
-    df["flow"] = df["raw_flow"].map(lambda value: normalize_flow(value, flow_aliases))
+    df["flow"] = df["raw_flow"].map(lambda value: medium_small_area_flow(normalize_flow(value, flow_aliases)))
     return df
 
 
@@ -2102,11 +2094,19 @@ def build_allocation_output_rows(
     data: DailyRollingYardPlanningData,
     *,
     include_zero: bool = False,
+    planning_time: pd.Timestamp | str | None = None,
 ) -> list[dict[str, Any]]:
     """
     Convert total X into output rows and expose the snapshot/new split.
     """
 
+    metadata: dict[str, Any] = {}
+    if planning_time is not None:
+        metadata["planning_time"] = pd.Timestamp(planning_time).isoformat()
+    if solution.status_name is not None:
+        metadata["status_name"] = solution.status_name
+    if solution.objective_value is not None:
+        metadata["objective_value"] = solution.objective_value
     rows: list[dict[str, Any]] = []
     for size, values in (("20", solution.x20), ("40", solution.x40)):
         for key, qty in values.items():
@@ -2124,6 +2124,7 @@ def build_allocation_output_rows(
                     "planned_qty": int(qty),
                     "snapshot_qty": float(snapshot_qty),
                     "new_qty": float(new_qty),
+                    **metadata,
                 }
             )
     return rows
@@ -2196,7 +2197,13 @@ def write_run_outputs(
     """
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    allocation = pd.DataFrame(build_allocation_output_rows(solution, artifacts.data))
+    allocation = pd.DataFrame(
+        build_allocation_output_rows(
+            solution,
+            artifacts.data,
+            planning_time=artifacts.planning_time,
+        )
+    )
     allocation.to_csv(output_dir / "allocation.csv", index=False, encoding="utf-8-sig")
     if allocation.empty:
         allocation_new = allocation.copy()

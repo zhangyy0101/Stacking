@@ -1,0 +1,4778 @@
+{
+  "data_dir": "E:\\container_terminal\\stacking\\堆存计划测试数据20260519",
+  "area_count": 158,
+  "flows": [
+    "IF",
+    "IZ",
+    "OF",
+    "OZ",
+    "T"
+  ],
+  "flow_aliases": {
+    "IE": "OZ",
+    "RF": "OZ",
+    "RE": "OZ"
+  },
+  "user_design_requested": false,
+  "user_design_active": false,
+  "user_design_large_plan_area": [],
+  "user_design_large_plan_area_ignored": [],
+  "adjust_plan_info_large_plan_present": false,
+  "adjust_plan_unknown_areas": {},
+  "area_controls_by_vessel": {
+    "453250": {
+      "allowed_count": 158,
+      "required_areas": [],
+      "removed_areas": []
+    },
+    "453308": {
+      "allowed_count": 158,
+      "required_areas": [],
+      "removed_areas": []
+    },
+    "453324": {
+      "allowed_count": 158,
+      "required_areas": [],
+      "removed_areas": []
+    },
+    "453352": {
+      "allowed_count": 158,
+      "required_areas": [],
+      "removed_areas": []
+    },
+    "453356": {
+      "allowed_count": 158,
+      "required_areas": [],
+      "removed_areas": []
+    },
+    "453388": {
+      "allowed_count": 158,
+      "required_areas": [],
+      "removed_areas": []
+    },
+    "453396": {
+      "allowed_count": 158,
+      "required_areas": [],
+      "removed_areas": []
+    },
+    "453412": {
+      "allowed_count": 158,
+      "required_areas": [],
+      "removed_areas": []
+    },
+    "453416": {
+      "allowed_count": 158,
+      "required_areas": [],
+      "removed_areas": []
+    },
+    "454447": {
+      "allowed_count": 158,
+      "required_areas": [],
+      "removed_areas": []
+    },
+    "454549": {
+      "allowed_count": 158,
+      "required_areas": [],
+      "removed_areas": []
+    },
+    "454585": {
+      "allowed_count": 158,
+      "required_areas": [],
+      "removed_areas": []
+    },
+    "454710": {
+      "allowed_count": 158,
+      "required_areas": [],
+      "removed_areas": []
+    },
+    "453273": {
+      "allowed_count": 158,
+      "required_areas": [],
+      "removed_areas": []
+    },
+    "453307": {
+      "allowed_count": 158,
+      "required_areas": [],
+      "removed_areas": []
+    },
+    "454548": {
+      "allowed_count": 158,
+      "required_areas": [],
+      "removed_areas": []
+    }
+  },
+  "bad_bay_count": 12,
+  "bad_bay_sample": [
+    [
+      "1K",
+      "47"
+    ],
+    [
+      "1K",
+      "49"
+    ],
+    [
+      "1K",
+      "51"
+    ],
+    [
+      "1K",
+      "53"
+    ],
+    [
+      "2K",
+      "33"
+    ],
+    [
+      "2K",
+      "35"
+    ],
+    [
+      "49",
+      "01"
+    ],
+    [
+      "49",
+      "03"
+    ],
+    [
+      "76",
+      "29"
+    ],
+    [
+      "76",
+      "31"
+    ],
+    [
+      "9D",
+      "09"
+    ],
+    [
+      "9D",
+      "11"
+    ]
+  ],
+  "current_snapshot_rows": 41531,
+  "active_tops_rows": 452,
+  "capacity20_total": 65936.0,
+  "capacity20_direct_total": 62149.0,
+  "capacity40_total": 65638.0,
+  "capacity20_if_total": 18739.0,
+  "capacity20_direct_if_total": 18739.0,
+  "capacity40_if_total": 18739.0,
+  "load_capacity_original_total": 47400.0,
+  "load_capacity_effective_total": 40621.0,
+  "departure_operation_deduction_total": 6779.0,
+  "departure_operation_deductions_by_area": {
+    "19": 7.0,
+    "1A": 2.0,
+    "1B": 190.0,
+    "1C": 4.0,
+    "1D": 179.0,
+    "1J": 0.0,
+    "1K": 3.0,
+    "28": 13.0,
+    "29": 110.0,
+    "2A": 60.0,
+    "2B": 2.0,
+    "2C": 29.0,
+    "2D": 115.0,
+    "2J": 0.0,
+    "2K": 33.0,
+    "38": 5.0,
+    "39": 1.0,
+    "3A": 106.0,
+    "3B": 16.0,
+    "3C": 0.0,
+    "3D": 1.0,
+    "3G": 52.0,
+    "3H": 41.0,
+    "3J": 33.0,
+    "3K": 26.0,
+    "49": 3.0,
+    "4A": 0.0,
+    "4B": 1.0,
+    "4C": 30.0,
+    "4D": 3.0,
+    "4E": 0.0,
+    "4F": 0.0,
+    "4G": 0.0,
+    "4H": 0.0,
+    "4J": 1.0,
+    "4K": 0.0,
+    "59": 117.0,
+    "5A": 0.0,
+    "5B": 0.0,
+    "5C": 128.0,
+    "5D": 52.0,
+    "5E": 0.0,
+    "5F": 0.0,
+    "5G": 0.0,
+    "5H": 0.0,
+    "5J": 0.0,
+    "5K": 0.0,
+    "69": 3.0,
+    "6A": 70.0,
+    "6B": 138.0,
+    "6C": 123.0,
+    "6D": 72.0,
+    "6G": 5.0,
+    "6H": 8.0,
+    "6J": 0.0,
+    "6K": 211.0,
+    "79": 0.0,
+    "7A": 1.0,
+    "7C": 69.0,
+    "7D": 23.0,
+    "7J": 202.0,
+    "89": 108.0,
+    "8A": 18.0,
+    "8B": 9.0,
+    "9B": 206.0,
+    "9C": 212.0,
+    "9D": 35.0,
+    "AB": 128.0,
+    "AC": 60.0,
+    "AD": 52.0,
+    "E1": 52.0,
+    "E2": 53.0,
+    "E3": 12.0,
+    "E4": 119.0,
+    "E5": 77.0,
+    "E6": 70.0,
+    "E7": 82.0,
+    "E8": 77.0,
+    "E9": 78.0,
+    "EA": 108.0,
+    "EB": 74.0,
+    "EC": 137.0,
+    "ED": 140.0,
+    "EE": 87.0,
+    "10": 12.0,
+    "11": 23.0,
+    "12": 27.0,
+    "20": 0.0,
+    "21": 14.0,
+    "30": 31.0,
+    "31": 20.0,
+    "40": 11.0,
+    "41": 30.0,
+    "51": 38.0,
+    "60": 25.0,
+    "61": 61.0,
+    "70": 38.0,
+    "71": 40.0,
+    "80": 32.0,
+    "81": 53.0,
+    "90": 0.0,
+    "A0": 0.0,
+    "13": 14.0,
+    "14": 40.0,
+    "15": 26.0,
+    "16": 12.0,
+    "17": 9.0,
+    "22": 19.0,
+    "23": 19.0,
+    "24": 16.0,
+    "25": 0.0,
+    "26": 19.0,
+    "27": 9.0,
+    "32": 22.0,
+    "33": 20.0,
+    "37": 1.0,
+    "42": 44.0,
+    "43": 31.0,
+    "44": 108.0,
+    "45": 21.0,
+    "46": 37.0,
+    "47": 31.0,
+    "52": 39.0,
+    "53": 32.0,
+    "54": 132.0,
+    "55": 30.0,
+    "57": 154.0,
+    "62": 33.0,
+    "63": 53.0,
+    "64": 138.0,
+    "65": 51.0,
+    "66": 41.0,
+    "67": 17.0,
+    "72": 31.0,
+    "73": 22.0,
+    "74": 150.0,
+    "75": 35.0,
+    "76": 50.0,
+    "77": 15.0,
+    "82": 28.0,
+    "83": 37.0,
+    "84": 87.0,
+    "85": 13.0,
+    "86": 26.0,
+    "87": 17.0,
+    "88": 59.0,
+    "91": 0.0,
+    "93": 44.0,
+    "94": 25.0,
+    "48": 4.0,
+    "58": 5.0,
+    "68": 20.0,
+    "78": 24.0,
+    "7B": 1.0,
+    "7G": 0.0,
+    "7H": 0.0,
+    "8G": 70.0,
+    "8H": 61.0
+  },
+  "departure_operation_avoidance": {
+    "active_export_voyages": [
+      "453274",
+      "453308",
+      "453346",
+      "453356",
+      "453396",
+      "454447",
+      "454549"
+    ],
+    "counts_by_voyage_area": [
+      {
+        "voy_id": "453274",
+        "area_no": "23",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "41",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "42",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "43",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "45",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "51",
+        "yard_container_count": 8,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "55",
+        "yard_container_count": 7,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "61",
+        "yard_container_count": 10,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 5.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "62",
+        "yard_container_count": 11,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 6.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "63",
+        "yard_container_count": 17,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 9.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "64",
+        "yard_container_count": 3,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "65",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "66",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "67",
+        "yard_container_count": 10,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 5.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "68",
+        "yard_container_count": 11,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 6.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "6G",
+        "yard_container_count": 3,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "6H",
+        "yard_container_count": 3,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "70",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "71",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "74",
+        "yard_container_count": 7,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "75",
+        "yard_container_count": 6,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "76",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "77",
+        "yard_container_count": 6,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "78",
+        "yard_container_count": 11,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 6.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "81",
+        "yard_container_count": 6,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "82",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "83",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "84",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "86",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "87",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "88",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "E2",
+        "yard_container_count": 6,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "E4",
+        "yard_container_count": 47,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 24.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "E5",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "E6",
+        "yard_container_count": 15,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 8.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "E7",
+        "yard_container_count": 20,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 10.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "E8",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "E9",
+        "yard_container_count": 7,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "EA",
+        "yard_container_count": 21,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 11.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "EB",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "EC",
+        "yard_container_count": 6,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "ED",
+        "yard_container_count": 16,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 8.0
+      },
+      {
+        "voy_id": "453274",
+        "area_no": "EE",
+        "yard_container_count": 59,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 30.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "10",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "11",
+        "yard_container_count": 10,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "12",
+        "yard_container_count": 7,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "13",
+        "yard_container_count": 3,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "14",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "15",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "16",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "17",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "21",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "22",
+        "yard_container_count": 9,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "23",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "26",
+        "yard_container_count": 8,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "27",
+        "yard_container_count": 6,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "29",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "2C",
+        "yard_container_count": 76,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 26.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "30",
+        "yard_container_count": 8,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "31",
+        "yard_container_count": 8,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "32",
+        "yard_container_count": 9,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "33",
+        "yard_container_count": 7,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "38",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "3A",
+        "yard_container_count": 12,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "3B",
+        "yard_container_count": 15,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 5.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "3G",
+        "yard_container_count": 7,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "3H",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "3K",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "40",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "41",
+        "yard_container_count": 8,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "42",
+        "yard_container_count": 6,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "43",
+        "yard_container_count": 12,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "45",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "46",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "47",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "48",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "49",
+        "yard_container_count": 3,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "4J",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "51",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "52",
+        "yard_container_count": 15,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 5.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "53",
+        "yard_container_count": 14,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 5.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "54",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "55",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "59",
+        "yard_container_count": 328,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 110.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "5C",
+        "yard_container_count": 368,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 123.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "60",
+        "yard_container_count": 3,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "61",
+        "yard_container_count": 17,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 6.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "62",
+        "yard_container_count": 10,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "63",
+        "yard_container_count": 11,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "65",
+        "yard_container_count": 6,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "66",
+        "yard_container_count": 9,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "67",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "69",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "6A",
+        "yard_container_count": 205,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 69.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "6D",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "6G",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "6H",
+        "yard_container_count": 7,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "6K",
+        "yard_container_count": 8,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "70",
+        "yard_container_count": 7,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "71",
+        "yard_container_count": 7,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "72",
+        "yard_container_count": 11,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "73",
+        "yard_container_count": 8,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "74",
+        "yard_container_count": 3,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "75",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "76",
+        "yard_container_count": 19,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 7.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "77",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "78",
+        "yard_container_count": 9,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "7A",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "7C",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "7D",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "80",
+        "yard_container_count": 12,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "81",
+        "yard_container_count": 10,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "82",
+        "yard_container_count": 12,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "83",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "84",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "85",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "86",
+        "yard_container_count": 3,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "87",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "89",
+        "yard_container_count": 305,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 102.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "93",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "94",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "9B",
+        "yard_container_count": 6,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "9D",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "AB",
+        "yard_container_count": 8,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "AC",
+        "yard_container_count": 12,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "AD",
+        "yard_container_count": 11,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "E1",
+        "yard_container_count": 22,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 8.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "E2",
+        "yard_container_count": 27,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 9.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "E3",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "E4",
+        "yard_container_count": 15,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 5.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "E5",
+        "yard_container_count": 29,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 10.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "E6",
+        "yard_container_count": 29,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 10.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "E7",
+        "yard_container_count": 57,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 19.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "E8",
+        "yard_container_count": 18,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 6.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "E9",
+        "yard_container_count": 46,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 16.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "EA",
+        "yard_container_count": 48,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 16.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "EB",
+        "yard_container_count": 10,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "EC",
+        "yard_container_count": 100,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 34.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "ED",
+        "yard_container_count": 70,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 24.0
+      },
+      {
+        "voy_id": "453308",
+        "area_no": "EE",
+        "yard_container_count": 76,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 26.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "10",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "11",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "12",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "13",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "14",
+        "yard_container_count": 6,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 6.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "21",
+        "yard_container_count": 13,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 13.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "22",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "23",
+        "yard_container_count": 3,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "26",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "27",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "30",
+        "yard_container_count": 17,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 17.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "31",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "32",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 5.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "33",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "3G",
+        "yard_container_count": 30,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 30.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "3H",
+        "yard_container_count": 32,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 32.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "3J",
+        "yard_container_count": 25,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 25.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "3K",
+        "yard_container_count": 16,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 16.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "40",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "41",
+        "yard_container_count": 13,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 13.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "42",
+        "yard_container_count": 10,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 10.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "43",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 5.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "44",
+        "yard_container_count": 105,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 105.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "45",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "46",
+        "yard_container_count": 6,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 6.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "47",
+        "yard_container_count": 11,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 11.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "48",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "51",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 5.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "52",
+        "yard_container_count": 10,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 10.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "53",
+        "yard_container_count": 6,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 6.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "54",
+        "yard_container_count": 121,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 121.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "55",
+        "yard_container_count": 9,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 9.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "57",
+        "yard_container_count": 153,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 153.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "60",
+        "yard_container_count": 8,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 8.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "61",
+        "yard_container_count": 16,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 16.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "63",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "64",
+        "yard_container_count": 125,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 125.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "65",
+        "yard_container_count": 19,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 19.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "66",
+        "yard_container_count": 8,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 8.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "67",
+        "yard_container_count": 6,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 6.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "70",
+        "yard_container_count": 12,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 12.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "71",
+        "yard_container_count": 9,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 9.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "72",
+        "yard_container_count": 6,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 6.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "73",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 5.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "74",
+        "yard_container_count": 132,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 132.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "75",
+        "yard_container_count": 12,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 12.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "76",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "77",
+        "yard_container_count": 6,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 6.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "78",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "80",
+        "yard_container_count": 6,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 6.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "81",
+        "yard_container_count": 14,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 14.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "82",
+        "yard_container_count": 6,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 6.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "83",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "84",
+        "yard_container_count": 75,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 75.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "85",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 5.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "86",
+        "yard_container_count": 8,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 8.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "88",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "8G",
+        "yard_container_count": 57,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 57.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "8H",
+        "yard_container_count": 45,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 45.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "93",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "94",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "9D",
+        "yard_container_count": 3,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "AC",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 5.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "AD",
+        "yard_container_count": 8,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 8.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "E1",
+        "yard_container_count": 3,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "E2",
+        "yard_container_count": 3,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "E3",
+        "yard_container_count": 3,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "E4",
+        "yard_container_count": 8,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 8.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "E5",
+        "yard_container_count": 3,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "E6",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "E8",
+        "yard_container_count": 6,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 6.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "E9",
+        "yard_container_count": 14,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 14.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "EA",
+        "yard_container_count": 6,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 6.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "EB",
+        "yard_container_count": 3,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "EC",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453346",
+        "area_no": "EE",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "10",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "11",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "12",
+        "yard_container_count": 6,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 6.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "14",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 5.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "15",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "16",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "17",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "19",
+        "yard_container_count": 6,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 6.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "1A",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "1B",
+        "yard_container_count": 190,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 190.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "1D",
+        "yard_container_count": 116,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 116.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "22",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "23",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 5.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "24",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "27",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "28",
+        "yard_container_count": 13,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 13.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "29",
+        "yard_container_count": 107,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 107.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "2A",
+        "yard_container_count": 60,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 60.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "2B",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "30",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "31",
+        "yard_container_count": 3,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "32",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "38",
+        "yard_container_count": 3,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "39",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "3A",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "3D",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "3G",
+        "yard_container_count": 3,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "3H",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "3K",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "41",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 5.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "42",
+        "yard_container_count": 9,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 9.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "43",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "44",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "45",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 5.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "46",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "47",
+        "yard_container_count": 12,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 12.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "49",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "51",
+        "yard_container_count": 8,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 8.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "52",
+        "yard_container_count": 8,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 8.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "53",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "54",
+        "yard_container_count": 7,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 7.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "55",
+        "yard_container_count": 10,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 10.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "58",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "60",
+        "yard_container_count": 3,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "61",
+        "yard_container_count": 11,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 11.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "62",
+        "yard_container_count": 7,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 7.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "63",
+        "yard_container_count": 8,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 8.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "64",
+        "yard_container_count": 8,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 8.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "65",
+        "yard_container_count": 14,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 14.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "66",
+        "yard_container_count": 10,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 10.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "67",
+        "yard_container_count": 3,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "68",
+        "yard_container_count": 10,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 10.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "69",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "70",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "71",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 5.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "72",
+        "yard_container_count": 3,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "73",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "74",
+        "yard_container_count": 9,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 9.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "75",
+        "yard_container_count": 8,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 8.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "76",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "77",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "78",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "81",
+        "yard_container_count": 8,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 8.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "82",
+        "yard_container_count": 3,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "83",
+        "yard_container_count": 9,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 9.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "84",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "85",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "86",
+        "yard_container_count": 3,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "87",
+        "yard_container_count": 10,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 10.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "88",
+        "yard_container_count": 46,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 46.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "8A",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "8G",
+        "yard_container_count": 12,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 12.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "8H",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 5.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "93",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "94",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "AC",
+        "yard_container_count": 7,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 7.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "AD",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "E1",
+        "yard_container_count": 3,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "E2",
+        "yard_container_count": 14,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 14.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "E3",
+        "yard_container_count": 3,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "E4",
+        "yard_container_count": 29,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 29.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "E5",
+        "yard_container_count": 31,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 31.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "E6",
+        "yard_container_count": 6,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 6.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "E7",
+        "yard_container_count": 15,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 15.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "E8",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "E9",
+        "yard_container_count": 17,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 17.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "EA",
+        "yard_container_count": 21,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 21.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "EB",
+        "yard_container_count": 29,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 29.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "EC",
+        "yard_container_count": 45,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 45.0
+      },
+      {
+        "voy_id": "453356",
+        "area_no": "ED",
+        "yard_container_count": 41,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 41.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "10",
+        "yard_container_count": 7,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "11",
+        "yard_container_count": 15,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 8.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "12",
+        "yard_container_count": 26,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 13.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "13",
+        "yard_container_count": 20,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 10.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "14",
+        "yard_container_count": 47,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 24.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "15",
+        "yard_container_count": 46,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 23.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "16",
+        "yard_container_count": 18,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 9.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "17",
+        "yard_container_count": 11,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 6.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "19",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "1C",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "1D",
+        "yard_container_count": 9,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 5.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "1K",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "22",
+        "yard_container_count": 15,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 8.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "23",
+        "yard_container_count": 12,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 6.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "24",
+        "yard_container_count": 25,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 13.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "26",
+        "yard_container_count": 30,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 15.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "27",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "29",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "2C",
+        "yard_container_count": 3,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "2D",
+        "yard_container_count": 3,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "2K",
+        "yard_container_count": 8,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "30",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "31",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "32",
+        "yard_container_count": 16,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 8.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "33",
+        "yard_container_count": 24,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 12.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "37",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "38",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "3A",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "3B",
+        "yard_container_count": 22,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 11.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "3G",
+        "yard_container_count": 30,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 15.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "3H",
+        "yard_container_count": 14,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 7.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "3J",
+        "yard_container_count": 15,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 8.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "3K",
+        "yard_container_count": 13,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 7.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "40",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "41",
+        "yard_container_count": 6,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "42",
+        "yard_container_count": 31,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 16.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "43",
+        "yard_container_count": 31,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 16.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "44",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "45",
+        "yard_container_count": 15,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 8.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "46",
+        "yard_container_count": 57,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 29.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "47",
+        "yard_container_count": 10,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 5.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "48",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "4D",
+        "yard_container_count": 3,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "51",
+        "yard_container_count": 33,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 17.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "52",
+        "yard_container_count": 19,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 10.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "53",
+        "yard_container_count": 30,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 15.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "54",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "55",
+        "yard_container_count": 6,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "57",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "59",
+        "yard_container_count": 14,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 7.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "5C",
+        "yard_container_count": 10,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 5.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "60",
+        "yard_container_count": 13,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 7.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "61",
+        "yard_container_count": 35,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 18.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "62",
+        "yard_container_count": 10,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 5.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "63",
+        "yard_container_count": 29,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 15.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "64",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "65",
+        "yard_container_count": 15,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 8.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "66",
+        "yard_container_count": 24,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 12.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "67",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "68",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "6B",
+        "yard_container_count": 275,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 138.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "6C",
+        "yard_container_count": 246,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 123.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "6G",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "6H",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "6K",
+        "yard_container_count": 416,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 208.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "70",
+        "yard_container_count": 19,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 10.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "71",
+        "yard_container_count": 25,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 13.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "72",
+        "yard_container_count": 20,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 10.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "73",
+        "yard_container_count": 11,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 6.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "74",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "75",
+        "yard_container_count": 10,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 5.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "76",
+        "yard_container_count": 70,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 35.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "77",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "78",
+        "yard_container_count": 12,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 6.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "7B",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "7D",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "7J",
+        "yard_container_count": 403,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 202.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "80",
+        "yard_container_count": 19,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 10.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "81",
+        "yard_container_count": 32,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 16.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "82",
+        "yard_container_count": 22,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 11.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "83",
+        "yard_container_count": 32,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 16.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "84",
+        "yard_container_count": 6,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "85",
+        "yard_container_count": 10,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 5.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "86",
+        "yard_container_count": 15,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 8.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "87",
+        "yard_container_count": 6,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "88",
+        "yard_container_count": 9,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 5.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "89",
+        "yard_container_count": 11,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 6.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "8A",
+        "yard_container_count": 28,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 14.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "8B",
+        "yard_container_count": 17,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 9.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "8G",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "8H",
+        "yard_container_count": 19,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 10.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "93",
+        "yard_container_count": 74,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 37.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "94",
+        "yard_container_count": 22,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 11.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "9B",
+        "yard_container_count": 407,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 204.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "9C",
+        "yard_container_count": 423,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 212.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "9D",
+        "yard_container_count": 24,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 12.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "AB",
+        "yard_container_count": 248,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 124.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "AC",
+        "yard_container_count": 80,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 40.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "AD",
+        "yard_container_count": 50,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 25.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "E1",
+        "yard_container_count": 52,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 26.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "E2",
+        "yard_container_count": 23,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 12.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "E3",
+        "yard_container_count": 6,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "E4",
+        "yard_container_count": 75,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 38.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "E5",
+        "yard_container_count": 49,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 25.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "E6",
+        "yard_container_count": 46,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 23.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "E7",
+        "yard_container_count": 51,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 26.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "E8",
+        "yard_container_count": 56,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 28.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "E9",
+        "yard_container_count": 21,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 11.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "EA",
+        "yard_container_count": 80,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 40.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "EB",
+        "yard_container_count": 63,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 32.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "EC",
+        "yard_container_count": 86,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 43.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "ED",
+        "yard_container_count": 101,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 51.0
+      },
+      {
+        "voy_id": "453396",
+        "area_no": "EE",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 2,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "10",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "11",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "12",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "13",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "14",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "15",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "22",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "24",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "2K",
+        "yard_container_count": 29,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 29.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "30",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "31",
+        "yard_container_count": 6,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 6.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "32",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "33",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "42",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 5.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "43",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "4B",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "4C",
+        "yard_container_count": 30,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 30.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "4D",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "52",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "55",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "5D",
+        "yard_container_count": 51,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 51.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "62",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 5.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "63",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "65",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "66",
+        "yard_container_count": 3,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "68",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "6A",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "6D",
+        "yard_container_count": 70,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 70.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "6G",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "70",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "71",
+        "yard_container_count": 3,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "72",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "73",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "75",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "76",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "78",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "7C",
+        "yard_container_count": 67,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 67.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "7D",
+        "yard_container_count": 20,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 20.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "80",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "81",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "82",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "83",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "86",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "88",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 5.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "8H",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "93",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "94",
+        "yard_container_count": 8,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 8.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "AD",
+        "yard_container_count": 3,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "E1",
+        "yard_container_count": 10,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 10.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "E2",
+        "yard_container_count": 9,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 9.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "E4",
+        "yard_container_count": 6,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 6.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "E5",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "E6",
+        "yard_container_count": 14,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 14.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "E7",
+        "yard_container_count": 12,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 12.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "E8",
+        "yard_container_count": 16,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 16.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "E9",
+        "yard_container_count": 6,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 6.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "EA",
+        "yard_container_count": 8,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 8.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "EB",
+        "yard_container_count": 3,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "EC",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454447",
+        "area_no": "EE",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 1,
+        "daily_departure_operation_deduction": 5.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "10",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "11",
+        "yard_container_count": 7,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "12",
+        "yard_container_count": 6,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "13",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "14",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "1A",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "1C",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "1D",
+        "yard_container_count": 172,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 58.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "22",
+        "yard_container_count": 6,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "23",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "24",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "2C",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "2D",
+        "yard_container_count": 338,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 113.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "30",
+        "yard_container_count": 19,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 7.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "31",
+        "yard_container_count": 9,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "32",
+        "yard_container_count": 9,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "33",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "3A",
+        "yard_container_count": 296,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 99.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "3G",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "40",
+        "yard_container_count": 15,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 5.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "41",
+        "yard_container_count": 8,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "43",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "45",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "47",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "49",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "51",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "52",
+        "yard_container_count": 11,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "53",
+        "yard_container_count": 10,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "54",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "55",
+        "yard_container_count": 6,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "58",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "5D",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "60",
+        "yard_container_count": 17,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 6.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "61",
+        "yard_container_count": 14,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 5.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "62",
+        "yard_container_count": 17,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 6.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "63",
+        "yard_container_count": 27,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 9.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "64",
+        "yard_container_count": 3,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "65",
+        "yard_container_count": 10,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "66",
+        "yard_container_count": 8,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "67",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "68",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "69",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "6H",
+        "yard_container_count": 1,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "70",
+        "yard_container_count": 10,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "71",
+        "yard_container_count": 11,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "72",
+        "yard_container_count": 11,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "73",
+        "yard_container_count": 8,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "74",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "75",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "76",
+        "yard_container_count": 7,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "77",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "78",
+        "yard_container_count": 7,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "80",
+        "yard_container_count": 28,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 10.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "81",
+        "yard_container_count": 19,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 7.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "82",
+        "yard_container_count": 3,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "83",
+        "yard_container_count": 7,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "84",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "85",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "86",
+        "yard_container_count": 9,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "87",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "88",
+        "yard_container_count": 3,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "93",
+        "yard_container_count": 4,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "94",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "9D",
+        "yard_container_count": 53,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 18.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "AB",
+        "yard_container_count": 2,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 1.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "AC",
+        "yard_container_count": 11,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 4.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "AD",
+        "yard_container_count": 31,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 11.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "E1",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "E2",
+        "yard_container_count": 7,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 3.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "E3",
+        "yard_container_count": 5,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "E4",
+        "yard_container_count": 25,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 9.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "E5",
+        "yard_container_count": 15,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 5.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "E6",
+        "yard_container_count": 23,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 8.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "E8",
+        "yard_container_count": 47,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 16.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "E9",
+        "yard_container_count": 29,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 10.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "EA",
+        "yard_container_count": 17,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 6.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "EB",
+        "yard_container_count": 6,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 2.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "EC",
+        "yard_container_count": 28,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 10.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "ED",
+        "yard_container_count": 46,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 16.0
+      },
+      {
+        "voy_id": "454549",
+        "area_no": "EE",
+        "yard_container_count": 67,
+        "days_until_planned_departure_inclusive": 3,
+        "daily_departure_operation_deduction": 23.0
+      }
+    ]
+  },
+  "close_berth_conflict_threshold_hours": 2.0,
+  "close_berth_conflict_pairs": [
+    [
+      "453308",
+      "454549"
+    ]
+  ],
+  "close_berth_conflict_pair_details": [
+    {
+      "left_voy_id": "453308",
+      "right_voy_id": "454549",
+      "left_planned_berth_time": "2026-05-19T14:00:00",
+      "right_planned_berth_time": "2026-05-19T13:30:00",
+      "delta_hours": 0.5
+    }
+  ],
+  "cbar20_min": 0.0,
+  "cbar20_direct_min": 0.0,
+  "cbar40_min": 0.0,
+  "old_vessels": [],
+  "of_work_lanes": {
+    "453250": 0.0,
+    "453308": 4.47,
+    "453324": 4.455,
+    "453352": 0.276,
+    "453356": 4.437,
+    "453388": 3.939,
+    "453396": 6.261000000000001,
+    "453412": 9.951,
+    "453416": 9.39,
+    "454447": 0.0,
+    "454549": 0.0,
+    "454585": 4.641,
+    "454710": 0.0,
+    "453273": 0.0,
+    "453307": 0.0,
+    "454548": 0.0
+  },
+  "of_area_limits": {
+    "453250": 0.0,
+    "453308": 8.94,
+    "453324": 8.91,
+    "453352": 0.552,
+    "453356": 8.874,
+    "453388": 7.878,
+    "453396": 12.522000000000002,
+    "453412": 19.902,
+    "453416": 18.78,
+    "454447": 0.0,
+    "454549": 0.0,
+    "454585": 9.282,
+    "454710": 0.0,
+    "453273": 0.0,
+    "453307": 0.0,
+    "454548": 0.0
+  },
+  "demand": {
+    "453250": {
+      "type": "export",
+      "doc_path": "E:\\container_terminal\\stacking\\堆存计划测试数据20260519\\container_info_453250.parquet",
+      "predict_path": null,
+      "doc_rows": 78,
+      "snapshot_rows": 3862,
+      "snapshot_rows_in_model_areas": 3756,
+      "dedup_rows": 2202,
+      "prediction20": 0.0,
+      "prediction40": 0.0,
+      "detail20_before_prediction_extra": 518.0,
+      "detail40_before_prediction_extra": 1737.0,
+      "extra_prediction20_to_OF": 0.0,
+      "extra_prediction40_to_OF": 0.0
+    },
+    "453308": {
+      "type": "export",
+      "doc_path": "E:\\container_terminal\\stacking\\堆存计划测试数据20260519\\container_info_453308.parquet",
+      "predict_path": "E:\\container_terminal\\stacking\\堆存计划测试数据20260519\\predict_data_453308.xlsx",
+      "doc_rows": 120,
+      "snapshot_rows": 4083,
+      "snapshot_rows_in_model_areas": 4066,
+      "dedup_rows": 2420,
+      "prediction20": 464.0,
+      "prediction40": 1026.0,
+      "detail20_before_prediction_extra": 628.0,
+      "detail40_before_prediction_extra": 1801.0,
+      "extra_prediction20_to_OF": 0.0,
+      "extra_prediction40_to_OF": 0.0
+    },
+    "453324": {
+      "type": "export",
+      "doc_path": "E:\\container_terminal\\stacking\\堆存计划测试数据20260519\\container_info_453324.parquet",
+      "predict_path": "E:\\container_terminal\\stacking\\堆存计划测试数据20260519\\predict_data_453324.xlsx",
+      "doc_rows": 14,
+      "snapshot_rows": 4572,
+      "snapshot_rows_in_model_areas": 4536,
+      "dedup_rows": 2481,
+      "prediction20": 270.0,
+      "prediction40": 1215.0,
+      "detail20_before_prediction_extra": 400.0,
+      "detail40_before_prediction_extra": 2099.0,
+      "extra_prediction20_to_OF": 0.0,
+      "extra_prediction40_to_OF": 0.0
+    },
+    "453352": {
+      "type": "export",
+      "doc_path": "E:\\container_terminal\\stacking\\堆存计划测试数据20260519\\container_info_453352.parquet",
+      "predict_path": "E:\\container_terminal\\stacking\\堆存计划测试数据20260519\\predict_data_453352.xlsx",
+      "doc_rows": 11,
+      "snapshot_rows": 269,
+      "snapshot_rows_in_model_areas": 263,
+      "dedup_rows": 146,
+      "prediction20": 25.0,
+      "prediction40": 67.0,
+      "detail20_before_prediction_extra": 7.0,
+      "detail40_before_prediction_extra": 142.0,
+      "extra_prediction20_to_OF": 18.0,
+      "extra_prediction40_to_OF": 0.0
+    },
+    "453356": {
+      "type": "export",
+      "doc_path": "E:\\container_terminal\\stacking\\堆存计划测试数据20260519\\container_info_453356.parquet",
+      "predict_path": "E:\\container_terminal\\stacking\\堆存计划测试数据20260519\\predict_data_453356.xlsx",
+      "doc_rows": 11,
+      "snapshot_rows": 2136,
+      "snapshot_rows_in_model_areas": 2130,
+      "dedup_rows": 1115,
+      "prediction20": 280.0,
+      "prediction40": 1199.0,
+      "detail20_before_prediction_extra": 85.0,
+      "detail40_before_prediction_extra": 1033.0,
+      "extra_prediction20_to_OF": 195.0,
+      "extra_prediction40_to_OF": 166.0
+    },
+    "453388": {
+      "type": "export",
+      "doc_path": "E:\\container_terminal\\stacking\\堆存计划测试数据20260519\\container_info_453388.parquet",
+      "predict_path": "E:\\container_terminal\\stacking\\堆存计划测试数据20260519\\predict_data_453388.xlsx",
+      "doc_rows": 670,
+      "snapshot_rows": 1007,
+      "snapshot_rows_in_model_areas": 995,
+      "dedup_rows": 1247,
+      "prediction20": 424.0,
+      "prediction40": 889.0,
+      "detail20_before_prediction_extra": 391.0,
+      "detail40_before_prediction_extra": 862.0,
+      "extra_prediction20_to_OF": 33.0,
+      "extra_prediction40_to_OF": 27.0
+    },
+    "453396": {
+      "type": "export",
+      "doc_path": "E:\\container_terminal\\stacking\\堆存计划测试数据20260519\\container_info_453396.parquet",
+      "predict_path": "E:\\container_terminal\\stacking\\堆存计划测试数据20260519\\predict_data_453396.xlsx",
+      "doc_rows": 65,
+      "snapshot_rows": 8572,
+      "snapshot_rows_in_model_areas": 8473,
+      "dedup_rows": 4721,
+      "prediction20": 539.0,
+      "prediction40": 1548.0,
+      "detail20_before_prediction_extra": 858.0,
+      "detail40_before_prediction_extra": 3913.0,
+      "extra_prediction20_to_OF": 0.0,
+      "extra_prediction40_to_OF": 0.0
+    },
+    "453412": {
+      "type": "export",
+      "doc_path": "E:\\container_terminal\\stacking\\堆存计划测试数据20260519\\container_info_453412.parquet",
+      "predict_path": "E:\\container_terminal\\stacking\\堆存计划测试数据20260519\\predict_data_453412.xlsx",
+      "doc_rows": 188,
+      "snapshot_rows": 6361,
+      "snapshot_rows_in_model_areas": 6297,
+      "dedup_rows": 3835,
+      "prediction20": 836.0,
+      "prediction40": 2481.0,
+      "detail20_before_prediction_extra": 1018.0,
+      "detail40_before_prediction_extra": 2849.0,
+      "extra_prediction20_to_OF": 0.0,
+      "extra_prediction40_to_OF": 0.0
+    },
+    "453416": {
+      "type": "export",
+      "doc_path": "E:\\container_terminal\\stacking\\堆存计划测试数据20260519\\container_info_453416.parquet",
+      "predict_path": "E:\\container_terminal\\stacking\\堆存计划测试数据20260519\\predict_data_453416.xlsx",
+      "doc_rows": 501,
+      "snapshot_rows": 4324,
+      "snapshot_rows_in_model_areas": 4025,
+      "dedup_rows": 2754,
+      "prediction20": 743.0,
+      "prediction40": 2387.0,
+      "detail20_before_prediction_extra": 586.0,
+      "detail40_before_prediction_extra": 2326.0,
+      "extra_prediction20_to_OF": 157.0,
+      "extra_prediction40_to_OF": 61.0
+    },
+    "454447": {
+      "type": "export",
+      "doc_path": "E:\\container_terminal\\stacking\\堆存计划测试数据20260519\\container_info_454447.parquet",
+      "predict_path": "E:\\container_terminal\\stacking\\堆存计划测试数据20260519\\predict_data_454447.xlsx",
+      "doc_rows": 22,
+      "snapshot_rows": 975,
+      "snapshot_rows_in_model_areas": 861,
+      "dedup_rows": 478,
+      "prediction20": 0.0,
+      "prediction40": 0.0,
+      "detail20_before_prediction_extra": 66.0,
+      "detail40_before_prediction_extra": 469.0,
+      "extra_prediction20_to_OF": 0.0,
+      "extra_prediction40_to_OF": 0.0
+    },
+    "454549": {
+      "type": "export",
+      "doc_path": "E:\\container_terminal\\stacking\\堆存计划测试数据20260519\\container_info_454549.parquet",
+      "predict_path": null,
+      "doc_rows": 12,
+      "snapshot_rows": 3063,
+      "snapshot_rows_in_model_areas": 2872,
+      "dedup_rows": 1638,
+      "prediction20": 0.0,
+      "prediction40": 0.0,
+      "detail20_before_prediction_extra": 389.0,
+      "detail40_before_prediction_extra": 1345.0,
+      "extra_prediction20_to_OF": 0.0,
+      "extra_prediction40_to_OF": 0.0
+    },
+    "454585": {
+      "type": "export",
+      "doc_path": "E:\\container_terminal\\stacking\\堆存计划测试数据20260519\\container_info_454585.parquet",
+      "predict_path": "E:\\container_terminal\\stacking\\堆存计划测试数据20260519\\predict_data_454585.xlsx",
+      "doc_rows": 157,
+      "snapshot_rows": 2165,
+      "snapshot_rows_in_model_areas": 1732,
+      "dedup_rows": 1115,
+      "prediction20": 611.0,
+      "prediction40": 936.0,
+      "detail20_before_prediction_extra": 240.0,
+      "detail40_before_prediction_extra": 1115.0,
+      "extra_prediction20_to_OF": 371.0,
+      "extra_prediction40_to_OF": 0.0
+    },
+    "454710": {
+      "type": "export",
+      "doc_path": "E:\\container_terminal\\stacking\\堆存计划测试数据20260519\\container_info_454710.parquet",
+      "predict_path": null,
+      "doc_rows": 141,
+      "snapshot_rows": 142,
+      "snapshot_rows_in_model_areas": 142,
+      "dedup_rows": 248,
+      "prediction20": 0.0,
+      "prediction40": 0.0,
+      "detail20_before_prediction_extra": 122.0,
+      "detail40_before_prediction_extra": 126.0,
+      "extra_prediction20_to_OF": 0.0,
+      "extra_prediction40_to_OF": 0.0
+    },
+    "453273": {
+      "type": "import",
+      "doc_path": "E:\\container_terminal\\stacking\\堆存计划测试数据20260519\\进口卸船箱\\container_info_import_453273.parquet",
+      "doc_rows": 3561,
+      "snapshot_rows": 0,
+      "snapshot_rows_in_model_areas": 0,
+      "dedup_rows": 3561
+    },
+    "453307": {
+      "type": "import",
+      "doc_path": "E:\\container_terminal\\stacking\\堆存计划测试数据20260519\\进口卸船箱\\container_info_import_453307.parquet",
+      "doc_rows": 3373,
+      "snapshot_rows": 0,
+      "snapshot_rows_in_model_areas": 0,
+      "dedup_rows": 3373
+    },
+    "454548": {
+      "type": "import",
+      "doc_path": "E:\\container_terminal\\stacking\\堆存计划测试数据20260519\\进口卸船箱\\container_info_import_454548.parquet",
+      "doc_rows": 2773,
+      "snapshot_rows": 0,
+      "snapshot_rows_in_model_areas": 0,
+      "dedup_rows": 2773
+    }
+  },
+  "status": "GAPLIMIT",
+  "objective_value": 474548.53669782495,
+  "best_bound": 474125.62955333805,
+  "mip_gap": 0.0008919727560083905,
+  "runtime": 23.0,
+  "objective_components": {
+    "miss": -2.1316282072803006e-14,
+    "operation": 1078.0,
+    "of_area": 294.36000000000007,
+    "distance": 12929.071223260626,
+    "distance_raw": 114508350.9999999,
+    "share": 824.0,
+    "berth_conflict": 70.0,
+    "required_area": 0.0,
+    "adjustment": 0.0,
+    "balance": 2772.0
+  },
+  "unmet20": {},
+  "unmet40": {},
+  "operation_overage": {
+    "E1": 41.0,
+    "E8": 564.0,
+    "E9": 442.0,
+    "68": 31.0
+  },
+  "area_share_overage": {
+    "19": 2,
+    "1A": 2,
+    "1C": 2,
+    "1D": 2,
+    "28": 2,
+    "29": 3,
+    "2A": 1,
+    "2B": 3,
+    "2C": 4,
+    "2D": 1,
+    "2K": 4,
+    "38": 6,
+    "39": 1,
+    "3A": 3,
+    "3B": 1,
+    "3G": 8,
+    "3H": 8,
+    "3J": 4,
+    "3K": 7,
+    "49": 4,
+    "4B": 1,
+    "4C": 1,
+    "4D": 1,
+    "59": 1,
+    "5D": 3,
+    "69": 3,
+    "6A": 2,
+    "6G": 2,
+    "6H": 4,
+    "6K": 1,
+    "79": 2,
+    "7A": 1,
+    "7D": 1,
+    "89": 2,
+    "8A": 5,
+    "8B": 2,
+    "9D": 5,
+    "AB": 1,
+    "AC": 7,
+    "AD": 8,
+    "E1": 11,
+    "E2": 12,
+    "E3": 9,
+    "E4": 11,
+    "E5": 11,
+    "E6": 9,
+    "E7": 7,
+    "E8": 11,
+    "E9": 10,
+    "EA": 11,
+    "EB": 9,
+    "EC": 10,
+    "ED": 9,
+    "EE": 7,
+    "10": 13,
+    "11": 11,
+    "12": 9,
+    "21": 6,
+    "30": 10,
+    "31": 8,
+    "40": 6,
+    "41": 9,
+    "51": 9,
+    "60": 9,
+    "61": 10,
+    "70": 10,
+    "71": 11,
+    "80": 9,
+    "81": 11,
+    "13": 9,
+    "14": 9,
+    "15": 8,
+    "16": 6,
+    "17": 6,
+    "22": 14,
+    "23": 9,
+    "24": 9,
+    "26": 4,
+    "27": 5,
+    "32": 11,
+    "33": 11,
+    "37": 2,
+    "42": 10,
+    "43": 10,
+    "44": 7,
+    "45": 9,
+    "46": 6,
+    "47": 8,
+    "52": 11,
+    "53": 10,
+    "54": 10,
+    "55": 10,
+    "57": 3,
+    "62": 13,
+    "63": 10,
+    "64": 8,
+    "65": 11,
+    "66": 10,
+    "67": 7,
+    "72": 12,
+    "73": 12,
+    "74": 8,
+    "75": 10,
+    "76": 9,
+    "77": 6,
+    "82": 10,
+    "83": 13,
+    "84": 9,
+    "85": 10,
+    "86": 9,
+    "87": 6,
+    "88": 7,
+    "93": 9,
+    "94": 8,
+    "48": 4,
+    "58": 2,
+    "68": 7,
+    "78": 9,
+    "7B": 1,
+    "8G": 3,
+    "8H": 5
+  },
+  "of_area_overage": {
+    "453308": 61.06,
+    "453324": 41.09,
+    "453352": 5.448,
+    "453356": 35.126,
+    "453388": 15.122,
+    "453396": 65.478,
+    "453412": 35.098,
+    "453416": 19.22,
+    "454585": 16.718
+  },
+  "berth_conflict_shared": {
+    "('453308', '454549', '2C')": 1,
+    "('453308', '454549', '3A')": 1,
+    "('453308', '454549', '3G')": 1,
+    "('453308', '454549', '49')": 1,
+    "('453308', '454549', '69')": 1,
+    "('453308', '454549', '6H')": 1,
+    "('453308', '454549', '9D')": 1,
+    "('453308', '454549', 'AB')": 1,
+    "('453308', '454549', 'AC')": 1,
+    "('453308', '454549', 'AD')": 1,
+    "('453308', '454549', 'E1')": 1,
+    "('453308', '454549', 'E2')": 1,
+    "('453308', '454549', 'E3')": 1,
+    "('453308', '454549', 'E4')": 1,
+    "('453308', '454549', 'E5')": 1,
+    "('453308', '454549', 'E6')": 1,
+    "('453308', '454549', 'E8')": 1,
+    "('453308', '454549', 'E9')": 1,
+    "('453308', '454549', 'EA')": 1,
+    "('453308', '454549', 'EB')": 1,
+    "('453308', '454549', 'EC')": 1,
+    "('453308', '454549', 'ED')": 1,
+    "('453308', '454549', 'EE')": 1,
+    "('453308', '454549', '10')": 1,
+    "('453308', '454549', '11')": 1,
+    "('453308', '454549', '12')": 1,
+    "('453308', '454549', '30')": 1,
+    "('453308', '454549', '31')": 1,
+    "('453308', '454549', '40')": 1,
+    "('453308', '454549', '41')": 1,
+    "('453308', '454549', '51')": 1,
+    "('453308', '454549', '60')": 1,
+    "('453308', '454549', '61')": 1,
+    "('453308', '454549', '70')": 1,
+    "('453308', '454549', '71')": 1,
+    "('453308', '454549', '80')": 1,
+    "('453308', '454549', '81')": 1,
+    "('453308', '454549', '13')": 1,
+    "('453308', '454549', '14')": 1,
+    "('453308', '454549', '22')": 1,
+    "('453308', '454549', '23')": 1,
+    "('453308', '454549', '32')": 1,
+    "('453308', '454549', '33')": 1,
+    "('453308', '454549', '43')": 1,
+    "('453308', '454549', '45')": 1,
+    "('453308', '454549', '47')": 1,
+    "('453308', '454549', '52')": 1,
+    "('453308', '454549', '53')": 1,
+    "('453308', '454549', '54')": 1,
+    "('453308', '454549', '55')": 1,
+    "('453308', '454549', '62')": 1,
+    "('453308', '454549', '63')": 1,
+    "('453308', '454549', '65')": 1,
+    "('453308', '454549', '66')": 1,
+    "('453308', '454549', '67')": 1,
+    "('453308', '454549', '72')": 1,
+    "('453308', '454549', '73')": 1,
+    "('453308', '454549', '74')": 1,
+    "('453308', '454549', '75')": 1,
+    "('453308', '454549', '76')": 1,
+    "('453308', '454549', '77')": 1,
+    "('453308', '454549', '82')": 1,
+    "('453308', '454549', '83')": 1,
+    "('453308', '454549', '84')": 1,
+    "('453308', '454549', '85')": 1,
+    "('453308', '454549', '86')": 1,
+    "('453308', '454549', '87')": 1,
+    "('453308', '454549', '93')": 1,
+    "('453308', '454549', '94')": 1,
+    "('453308', '454549', '78')": 1
+  },
+  "required_area_unmet": {},
+  "of_area_used_count": {
+    "453250": 0,
+    "453308": 70,
+    "453324": 50,
+    "453352": 6,
+    "453356": 44,
+    "453388": 23,
+    "453396": 78,
+    "453412": 55,
+    "453416": 38,
+    "454447": 0,
+    "454549": 0,
+    "454585": 26,
+    "454710": 0
+  },
+  "allocation_total_wrong_function_rows": 1073,
+  "allocation_new_wrong_function_rows": 0
+}

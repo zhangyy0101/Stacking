@@ -70,6 +70,7 @@ class YardPlanningWeights:
     berth_conflict: float = 25.0
     adjustment: float = 10.0
     balance: float = 1.0
+    priority_area: float = 0.01
 
 
 @dataclass(frozen=True)
@@ -135,6 +136,7 @@ class LargePlanningData:
     berth_conflict_pairs: Sequence[tuple[str, str]] = field(default_factory=tuple)
     allowed_areas_by_vessel: Mapping[str, Sequence[str]] = field(default_factory=dict)
     required_areas_by_vessel: Mapping[str, Sequence[str]] = field(default_factory=dict)
+    priority_areas_by_vessel: Mapping[str, Sequence[str]] = field(default_factory=dict)
     weights: YardPlanningWeights = field(default_factory=YardPlanningWeights)
     required_area_penalty: float = 10000.0
     allow_unmet_demand: bool = True
@@ -845,25 +847,65 @@ def large_plan_adjust_entry(adjust_plan_info: Mapping[str, Any] | None, vessel: 
     )
 
 
+def _voyage_control_value(raw: Any, vessel: str) -> tuple[Any, bool]:
+    if raw is None:
+        return None, False
+    if isinstance(raw, Mapping):
+        for key in (vessel, str(vessel), normalize_voyage(vessel)):
+            if key in raw:
+                return raw[key], True
+        return None, False
+    return raw, True
+
+
+def _voyage_control_bool(raw: Any, vessel: str) -> bool:
+    value, present = _voyage_control_value(raw, vessel)
+    return bool(value) if present else False
+
+
+def _voyage_control_area_list(raw: Any, vessel: str) -> tuple[list[str], bool]:
+    value, present = _voyage_control_value(raw, vessel)
+    return normalize_area_list(value), present
+
+
 def build_large_area_controls(
     *,
     vessels: Sequence[str],
     areas: Sequence[str],
-    user_design: bool,
-    user_design_large_plan_area: Sequence[str] | None,
+    user_design: bool | Mapping[str, Any],
+    user_design_large_plan_area: Sequence[str] | Mapping[str, Any] | None,
+    voyage_limit_areas: Sequence[str] | Mapping[str, Any] | None = None,
+    voyage_priority_areas: Sequence[str] | Mapping[str, Any] | None = None,
     adjust_plan_info: Mapping[str, Any] | None,
-) -> tuple[dict[str, list[str]], dict[str, list[str]], dict[str, Any]]:
+) -> tuple[dict[str, list[str]], dict[str, list[str]], dict[str, list[str]], dict[str, Any]]:
     area_set = set(areas)
-    design_areas_raw = normalize_area_list(user_design_large_plan_area)
-    design_areas = [area for area in design_areas_raw if area in area_set]
-    active_user_design = bool(user_design and design_areas)
-
     allowed_by_vessel: dict[str, list[str]] = {}
     required_by_vessel: dict[str, list[str]] = {}
+    priority_by_vessel: dict[str, list[str]] = {}
     per_vessel: dict[str, dict[str, Any]] = {}
-    unknown_areas: dict[str, list[str]] = {}
+    adjust_unknown_areas: dict[str, list[str]] = {}
+    design_ignored: dict[str, list[str]] = {}
+    limit_ignored: dict[str, list[str]] = {}
+    priority_ignored: dict[str, list[str]] = {}
+    design_by_vessel: dict[str, list[str]] = {}
+    limit_by_vessel: dict[str, list[str]] = {}
+    raw_priority_by_vessel: dict[str, list[str]] = {}
+    active_design_vessels: list[str] = []
+    active_limit_vessels: list[str] = []
 
     for vessel in vessels:
+        design_requested = _voyage_control_bool(user_design, vessel)
+        design_areas_raw, _design_present = _voyage_control_area_list(user_design_large_plan_area, vessel)
+        design_areas = [area for area in design_areas_raw if area in area_set]
+        active_user_design = bool(design_requested and design_areas)
+
+        limit_areas_raw, limit_present = _voyage_control_area_list(voyage_limit_areas, vessel)
+        limit_areas = [area for area in limit_areas_raw if area in area_set]
+        active_limit = bool(limit_present and limit_areas and not active_user_design)
+
+        priority_areas_raw, priority_present = _voyage_control_area_list(voyage_priority_areas, vessel)
+        priority_areas_valid = [area for area in priority_areas_raw if area in area_set]
+
         entry = large_plan_adjust_entry(adjust_plan_info, vessel)
         add_raw = normalize_area_list(entry.get("add")) if isinstance(entry, Mapping) else []
         remove_raw = normalize_area_list(entry.get("remove")) if isinstance(entry, Mapping) else []
@@ -872,34 +914,73 @@ def build_large_area_controls(
 
         unknown = sorted((set(add_raw) | set(remove_raw)) - area_set)
         if unknown:
-            unknown_areas[vessel] = unknown
+            adjust_unknown_areas[vessel] = unknown
+        if set(design_areas_raw) - area_set:
+            design_ignored[vessel] = sorted(set(design_areas_raw) - area_set)
+        if set(limit_areas_raw) - area_set:
+            limit_ignored[vessel] = sorted(set(limit_areas_raw) - area_set)
+        if set(priority_areas_raw) - area_set:
+            priority_ignored[vessel] = sorted(set(priority_areas_raw) - area_set)
 
-        allowed = set(design_areas if active_user_design else areas)
-        allowed.update(add)
+        if active_user_design:
+            allowed = set(design_areas)
+            active_design_vessels.append(vessel)
+        elif active_limit:
+            allowed = set(limit_areas)
+            active_limit_vessels.append(vessel)
+        else:
+            allowed = set(areas)
         allowed.difference_update(remove)
         required = sorted(set(add) & allowed)
+        priority_areas = sorted(set(priority_areas_valid) & allowed) if (priority_present and not active_user_design) else []
 
         allowed_by_vessel[vessel] = sorted(allowed)
         if required:
             required_by_vessel[vessel] = required
+        if priority_areas:
+            priority_by_vessel[vessel] = priority_areas
+        if design_areas:
+            design_by_vessel[vessel] = design_areas
+        if active_limit:
+            limit_by_vessel[vessel] = limit_areas
+        if priority_areas_valid:
+            raw_priority_by_vessel[vessel] = priority_areas_valid
         per_vessel[vessel] = {
             "allowed_count": len(allowed),
+            "allowed_areas": sorted(allowed),
+            "user_design_requested": design_requested,
+            "user_design_active": active_user_design,
+            "user_design_large_plan_area": design_areas,
+            "limit_active": active_limit,
+            "limit_areas": limit_areas if active_limit else [],
+            "priority_areas": priority_areas,
             "required_areas": required,
             "removed_areas": sorted(set(remove)),
+            "add_areas_ignored_by_allowed_scope": sorted(set(add) - allowed),
         }
 
     diagnostics = {
-        "user_design_requested": bool(user_design),
-        "user_design_active": active_user_design,
-        "user_design_large_plan_area": design_areas,
-        "user_design_large_plan_area_ignored": sorted(set(design_areas_raw) - area_set),
+        "user_design_requested": bool(active_design_vessels) or any(
+            _voyage_control_bool(user_design, vessel) for vessel in vessels
+        ),
+        "user_design_active": bool(active_design_vessels),
+        "user_design_active_vessels": active_design_vessels,
+        "user_design_large_plan_area": sorted(set().union(*(set(values) for values in design_by_vessel.values()))) if design_by_vessel else [],
+        "user_design_large_plan_area_by_vessel": design_by_vessel,
+        "user_design_large_plan_area_ignored": design_ignored,
+        "voyage_limit_areas_active_vessels": active_limit_vessels,
+        "voyage_limit_areas_by_vessel": limit_by_vessel,
+        "voyage_limit_areas_ignored": limit_ignored,
+        "voyage_priority_areas_by_vessel": priority_by_vessel,
+        "voyage_priority_areas_requested_by_vessel": raw_priority_by_vessel,
+        "voyage_priority_areas_ignored": priority_ignored,
         "adjust_plan_info_large_plan_present": bool(
             isinstance(adjust_plan_info, Mapping) and adjust_plan_info.get("large_plan", adjust_plan_info)
         ),
-        "adjust_plan_unknown_areas": unknown_areas,
+        "adjust_plan_unknown_areas": adjust_unknown_areas,
         "area_controls_by_vessel": per_vessel,
     }
-    return allowed_by_vessel, required_by_vessel, diagnostics
+    return allowed_by_vessel, required_by_vessel, priority_by_vessel, diagnostics
 
 
 def build_medium_small_bay_controls(
@@ -1898,11 +1979,18 @@ def build_large_inputs(
     areas, area_functions, load_capacity = read_area_functions_large(input_guandong)
     berth_by_vessel = read_berths_for_vessels(vessel_info, all_vessels)
     distance = read_distance_matrix(input_guandong, areas, berth_by_vessel)
-    allowed_areas_by_vessel, required_areas_by_vessel, area_control_diagnostics = build_large_area_controls(
+    (
+        allowed_areas_by_vessel,
+        required_areas_by_vessel,
+        priority_areas_by_vessel,
+        area_control_diagnostics,
+    ) = build_large_area_controls(
         vessels=all_vessels,
         areas=areas,
-        user_design=bool(getattr(input_guandong, "user_design", False)),
+        user_design=getattr(input_guandong, "user_design", False),
         user_design_large_plan_area=getattr(input_guandong, "user_design_large_plan_area", []),
+        voyage_limit_areas=getattr(input_guandong, "voyage_limit_areas", {}),
+        voyage_priority_areas=getattr(input_guandong, "voyage_priority_areas", {}),
         adjust_plan_info=getattr(input_guandong, "adjust_plan_info", {}),
     )
     user_design_active = bool(area_control_diagnostics["user_design_active"])
@@ -2016,6 +2104,7 @@ def build_large_inputs(
         berth_conflict_pairs=close_berth_pairs,
         allowed_areas_by_vessel=allowed_areas_by_vessel,
         required_areas_by_vessel=required_areas_by_vessel,
+        priority_areas_by_vessel=priority_areas_by_vessel,
         weights=config.weights,
         required_area_penalty=config.required_area_penalty,
         allow_unmet_demand=config.allow_unmet_demand,
@@ -2063,7 +2152,19 @@ def build_large_inputs(
     )
 
 
-def allocation_output_rows(solution: Any, data: LargePlanningData, include_zero: bool = False) -> list[dict[str, Any]]:
+def allocation_output_rows(
+    solution: Any,
+    data: LargePlanningData,
+    include_zero: bool = False,
+    planning_time: pd.Timestamp | datetime | str | None = None,
+) -> list[dict[str, Any]]:
+    metadata: dict[str, Any] = {}
+    if planning_time is not None:
+        metadata["planning_time"] = pd.Timestamp(planning_time).isoformat()
+    if getattr(solution, "status_name", None) is not None:
+        metadata["status_name"] = solution.status_name
+    if getattr(solution, "objective_value", None) is not None:
+        metadata["objective_value"] = solution.objective_value
     rows: list[dict[str, Any]] = []
     for size, values in (("20", solution.x20), ("40", solution.x40)):
         for key, qty in values.items():
@@ -2081,6 +2182,7 @@ def allocation_output_rows(solution: Any, data: LargePlanningData, include_zero:
                     "planned_qty": int(qty),
                     "snapshot_qty": float(snapshot_qty),
                     "new_qty": float(new_qty),
+                    **metadata,
                 }
             )
     return rows
@@ -2103,7 +2205,7 @@ def count_flow_function_mismatch_rows(allocation: pd.DataFrame, area_functions: 
 
 def write_large_outputs(output_dir: Path, artifacts: PlanningInputArtifacts, solution: Any, state_rows: pd.DataFrame) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    allocation = pd.DataFrame(allocation_output_rows(solution, artifacts.data))
+    allocation = pd.DataFrame(allocation_output_rows(solution, artifacts.data, planning_time=artifacts.planning_time))
     allocation.to_csv(output_dir / "allocation.csv", index=False, encoding="utf-8-sig")
     allocation_new = allocation[pd.to_numeric(allocation.get("new_qty", 0), errors="coerce").fillna(0.0) > 0].copy()
     allocation_new.to_csv(output_dir / "allocation_new.csv", index=False, encoding="utf-8-sig")
@@ -3183,11 +3285,18 @@ def build_problem(
     cleaned_plan: list[BigPlanRow] = []
     target_voyages = [normalize_voyage(v) for v in target_voyages]
     attribute_rules = read_attribute_rules(input_guandong, target_voyages)
-    allowed_areas_by_voyage, _required_areas_by_voyage, _area_control_diagnostics = build_large_area_controls(
+    (
+        allowed_areas_by_voyage,
+        _required_areas_by_voyage,
+        _priority_areas_by_voyage,
+        _area_control_diagnostics,
+    ) = build_large_area_controls(
         vessels=target_voyages,
         areas=sorted(function_areas),
-        user_design=bool(getattr(input_guandong, "user_design", False)),
+        user_design=getattr(input_guandong, "user_design", False),
         user_design_large_plan_area=getattr(input_guandong, "user_design_large_plan_area", []),
+        voyage_limit_areas=getattr(input_guandong, "voyage_limit_areas", {}),
+        voyage_priority_areas=getattr(input_guandong, "voyage_priority_areas", {}),
         adjust_plan_info=getattr(input_guandong, "adjust_plan_info", {}),
     )
     vessel_schedules = read_target_vessel_schedules(input_guandong, target_voyages, planning_time, horizon_hours)

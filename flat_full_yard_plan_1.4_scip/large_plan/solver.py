@@ -38,6 +38,7 @@ class YardPlanningWeights:
     berth_conflict: float = 25.0
     adjustment: float = 10.0
     balance: float = 1.0
+    priority_area: float = 0.01
 
 
 @dataclass
@@ -124,6 +125,7 @@ class DailyRollingYardPlanningData:
     # required 通过高权重软惩罚尽量让航次使用指定箱区。
     allowed_areas_by_vessel: Mapping[Vessel, Sequence[Area]] = field(default_factory=dict)
     required_areas_by_vessel: Mapping[Vessel, Sequence[Area]] = field(default_factory=dict)
+    priority_areas_by_vessel: Mapping[Vessel, Sequence[Area]] = field(default_factory=dict)
 
     # 目标函数权重。
     weights: YardPlanningWeights = field(default_factory=YardPlanningWeights)
@@ -312,6 +314,7 @@ def build_daily_rolling_yard_model(
     berth_conflict_pairs = params["berth_conflict_pairs"]
     berth_conflict_keys = params["berth_conflict_keys"]
     required_area_keys = params["required_area_keys"]
+    priority_area_keys = params["priority_area_keys"]
     of_area_used = model.addVars(OF_area_vessels, A, vtype=GRB.BINARY, name="of_area_used")
     of_area_over = model.addVars(OF_area_vessels, vtype=GRB.CONTINUOUS, lb=0, name="of_area_over")
     berth_conflict_shared = model.addVars(
@@ -617,6 +620,7 @@ def build_daily_rolling_yard_model(
 
     # Z_required_area：人工 add 箱区未被使用的软惩罚。
     Z_required_area = gp.quicksum(required_area_unmet[key] for key in required_area_keys)
+    Z_priority_area = gp.quicksum(y[v, a] for v, a in priority_area_keys)
 
     # Z_op：箱区作业能力超额惩罚。
     Z_op = gp.quicksum(o[a] for a in A)
@@ -639,6 +643,7 @@ def build_daily_rolling_yard_model(
         + weights.share * Z_share
         + weights.berth_conflict * Z_berth_conflict
         + data.required_area_penalty * Z_required_area
+        + getattr(weights, "priority_area", 0.01) * Z_priority_area
         + weights.adjustment * Z_adj
         + weights.balance * Z_bal,
         GRB.MINIMIZE,
@@ -675,6 +680,7 @@ def build_daily_rolling_yard_model(
             "share": Z_share,
             "berth_conflict": Z_berth_conflict,
             "required_area": Z_required_area,
+            "priority_area": Z_priority_area,
             "adjustment": Z_adj,
             "balance": Z_bal,
         },
@@ -914,6 +920,12 @@ def _prepare_params(
         V,
         A,
     )
+    priority_areas_by_vessel = _normalize_priority_area_controls(
+        getattr(data, "priority_areas_by_vessel", {}),
+        allowed_areas_by_vessel,
+        V,
+        A,
+    )
     for v, allowed_areas in allowed_areas_by_vessel.items():
         for f in F:
             for a in A:
@@ -957,6 +969,12 @@ def _prepare_params(
         (v, a)
         for v, required_areas in required_areas_by_vessel.items()
         for a in sorted(required_areas)
+    ]
+    priority_area_keys = [
+        (v, a)
+        for v, priority_areas in priority_areas_by_vessel.items()
+        for a in A
+        if a not in priority_areas
     ]
 
     # 旧航次集合：只有 O[v]=1 的航次进入调整幅度变量和调整惩罚。
@@ -1008,7 +1026,9 @@ def _prepare_params(
         "berth_conflict_keys": berth_conflict_keys,
         "allowed_areas_by_vessel": allowed_areas_by_vessel,
         "required_areas_by_vessel": required_areas_by_vessel,
+        "priority_areas_by_vessel": priority_areas_by_vessel,
         "required_area_keys": required_area_keys,
+        "priority_area_keys": priority_area_keys,
     }
 
 
@@ -1122,6 +1142,27 @@ def _normalize_area_controls(
             required_result[vessel] = normalized
 
     return allowed_result, required_result
+
+
+def _normalize_priority_area_controls(
+    priority: Mapping[Vessel, Sequence[Area]],
+    allowed: Mapping[Vessel, set[Area]],
+    vessels: Sequence[Vessel],
+    areas: Sequence[Area],
+) -> dict[Vessel, set[Area]]:
+    vessel_set = set(vessels)
+    area_set = set(areas)
+    result: dict[Vessel, set[Area]] = {}
+    for raw_vessel, raw_areas in (priority or {}).items():
+        vessel = str(raw_vessel)
+        if vessel not in vessel_set:
+            continue
+        normalized = {str(area) for area in (raw_areas or ()) if str(area) in area_set}
+        if vessel in allowed:
+            normalized &= allowed[vessel]
+        if normalized:
+            result[vessel] = normalized
+    return result
 
 
 def _num(mapping: Optional[Mapping[Any, Any]], key: tuple[Any, ...], default: float = 0.0) -> float:
@@ -1441,6 +1482,7 @@ def build_daily_rolling_yard_model_scip(
     berth_conflict_pairs = params["berth_conflict_pairs"]
     berth_conflict_keys = params["berth_conflict_keys"]
     required_area_keys = params["required_area_keys"]
+    priority_area_keys = params["priority_area_keys"]
     weights = data.weights
 
     model = Model(data.name)
@@ -1681,6 +1723,7 @@ def build_daily_rolling_yard_model_scip(
     Z_share = quicksum(h[a] for a in A)
     Z_berth_conflict = quicksum(berth_conflict_shared[key] for key in berth_conflict_keys)
     Z_required_area = quicksum(required_area_unmet[key] for key in required_area_keys)
+    Z_priority_area = quicksum(y[v, a] for v, a in priority_area_keys)
     Z_op = quicksum(o[a] for a in A)
     Z_of_area = quicksum(of_area_over[v] for v in OF_area_vessels)
     Z_bal = quicksum(
@@ -1697,6 +1740,7 @@ def build_daily_rolling_yard_model_scip(
         + weights.share * Z_share
         + weights.berth_conflict * Z_berth_conflict
         + data.required_area_penalty * Z_required_area
+        + getattr(weights, "priority_area", 0.01) * Z_priority_area
         + weights.adjustment * Z_adj
         + weights.balance * Z_bal,
         "minimize",
@@ -1729,6 +1773,7 @@ def build_daily_rolling_yard_model_scip(
             "share": Z_share,
             "berth_conflict": Z_berth_conflict,
             "required_area": Z_required_area,
+            "priority_area": Z_priority_area,
             "adjustment": Z_adj,
             "balance": Z_bal,
         },

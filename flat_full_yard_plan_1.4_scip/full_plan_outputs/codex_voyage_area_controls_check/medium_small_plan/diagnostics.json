@@ -1,0 +1,641 @@
+{
+  "algorithm": "small_plan_first_column_generation",
+  "target_voyages": [
+    "453250",
+    "453308",
+    "453324",
+    "453352",
+    "453356",
+    "453388",
+    "453396",
+    "453412",
+    "453416",
+    "454447",
+    "454549",
+    "454585",
+    "454710",
+    "453273",
+    "453307",
+    "454548"
+  ],
+  "user_area_constraints": {},
+  "attribute_rules": {
+    "coarse_group_attributes": [
+      "IYC_CSZ_CSIZECD",
+      "IYC_POT_UNLDPORT"
+    ],
+    "fine_group_attributes": [
+      "IYC_CSZ_CSIZECD",
+      "IYC_POT_UNLDPORT",
+      "IYC_CHEIGHTCD"
+    ],
+    "bay_no_mix_attributes": [],
+    "row_no_mix_attributes": [],
+    "weight_levels": [
+      0,
+      10,
+      15,
+      20,
+      25,
+      30
+    ],
+    "coarse_group_attributes_by_voyage": {
+      "453250": [
+        "IYC_CSZ_CSIZECD",
+        "IYC_POT_UNLDPORT"
+      ],
+      "453273": [
+        "IYC_CSZ_CSIZECD",
+        "IYC_POT_UNLDPORT"
+      ],
+      "453307": [
+        "IYC_CSZ_CSIZECD",
+        "IYC_POT_UNLDPORT"
+      ],
+      "453308": [
+        "IYC_CSZ_CSIZECD",
+        "IYC_POT_UNLDPORT"
+      ],
+      "453324": [
+        "IYC_CSZ_CSIZECD",
+        "IYC_POT_UNLDPORT"
+      ],
+      "453352": [
+        "IYC_CSZ_CSIZECD",
+        "IYC_POT_UNLDPORT"
+      ],
+      "453356": [
+        "IYC_CSZ_CSIZECD",
+        "IYC_POT_UNLDPORT"
+      ],
+      "453388": [
+        "IYC_CSZ_CSIZECD",
+        "IYC_POT_UNLDPORT"
+      ],
+      "453396": [
+        "IYC_CSZ_CSIZECD",
+        "IYC_POT_UNLDPORT"
+      ],
+      "453412": [
+        "IYC_CSZ_CSIZECD",
+        "IYC_POT_UNLDPORT"
+      ],
+      "453416": [
+        "IYC_CSZ_CSIZECD",
+        "IYC_POT_UNLDPORT"
+      ],
+      "454447": [
+        "IYC_CSZ_CSIZECD",
+        "IYC_POT_UNLDPORT"
+      ],
+      "454548": [
+        "IYC_CSZ_CSIZECD",
+        "IYC_POT_UNLDPORT"
+      ],
+      "454549": [
+        "IYC_CSZ_CSIZECD",
+        "IYC_POT_UNLDPORT"
+      ],
+      "454585": [
+        "IYC_CSZ_CSIZECD",
+        "IYC_POT_UNLDPORT"
+      ],
+      "454710": [
+        "IYC_CSZ_CSIZECD",
+        "IYC_POT_UNLDPORT"
+      ]
+    },
+    "fine_group_attributes_by_voyage": {
+      "453250": [
+        "IYC_CSZ_CSIZECD",
+        "IYC_POT_UNLDPORT",
+        "IYC_CWEIGHT",
+        "IYC_CHEIGHTCD"
+      ],
+      "453273": [
+        "IYC_CWEIGHT",
+        "IYC_CHEIGHTCD"
+      ],
+      "453307": [
+        "IYC_CWEIGHT",
+        "IYC_CHEIGHTCD"
+      ],
+      "453308": [
+        "IYC_CSZ_CSIZECD",
+        "IYC_POT_UNLDPORT",
+        "IYC_CWEIGHT",
+        "IYC_CHEIGHTCD"
+      ],
+      "453324": [
+        "IYC_CSZ_CSIZECD",
+        "IYC_POT_UNLDPORT",
+        "IYC_CWEIGHT",
+        "IYC_CHEIGHTCD"
+      ],
+      "453352": [
+        "IYC_CSZ_CSIZECD",
+        "IYC_POT_UNLDPORT",
+        "IYC_CWEIGHT",
+        "IYC_CHEIGHTCD"
+      ],
+      "453356": [
+        "IYC_CSZ_CSIZECD",
+        "IYC_POT_UNLDPORT",
+        "IYC_CWEIGHT",
+        "IYC_CHEIGHTCD"
+      ],
+      "453388": [
+        "IYC_CSZ_CSIZECD",
+        "IYC_POT_UNLDPORT",
+        "IYC_CWEIGHT",
+        "IYC_CHEIGHTCD"
+      ],
+      "453396": [
+        "IYC_CSZ_CSIZECD",
+        "IYC_POT_UNLDPORT",
+        "IYC_CWEIGHT",
+        "IYC_CHEIGHTCD"
+      ],
+      "453412": [
+        "IYC_CSZ_CSIZECD",
+        "IYC_POT_UNLDPORT",
+        "IYC_CWEIGHT",
+        "IYC_CHEIGHTCD"
+      ],
+      "453416": [
+        "IYC_CSZ_CSIZECD",
+        "IYC_POT_UNLDPORT",
+        "IYC_CWEIGHT",
+        "IYC_CHEIGHTCD"
+      ],
+      "454447": [
+        "IYC_CSZ_CSIZECD",
+        "IYC_POT_UNLDPORT",
+        "IYC_CWEIGHT",
+        "IYC_CHEIGHTCD"
+      ],
+      "454548": [
+        "IYC_CWEIGHT",
+        "IYC_CHEIGHTCD"
+      ],
+      "454549": [
+        "IYC_CSZ_CSIZECD",
+        "IYC_POT_UNLDPORT",
+        "IYC_CWEIGHT",
+        "IYC_CHEIGHTCD"
+      ],
+      "454585": [
+        "IYC_CSZ_CSIZECD",
+        "IYC_POT_UNLDPORT",
+        "IYC_CWEIGHT",
+        "IYC_CHEIGHTCD"
+      ],
+      "454710": [
+        "IYC_CSZ_CSIZECD",
+        "IYC_POT_UNLDPORT",
+        "IYC_CWEIGHT",
+        "IYC_CHEIGHTCD"
+      ]
+    },
+    "bay_no_mix_attributes_by_voyage": {
+      "453250": [
+        "IYC_CHEIGHTCD"
+      ],
+      "453273": [
+        "IYC_CHEIGHTCD"
+      ],
+      "453307": [
+        "IYC_CHEIGHTCD"
+      ],
+      "453308": [
+        "IYC_CHEIGHTCD"
+      ],
+      "453324": [
+        "IYC_CHEIGHTCD"
+      ],
+      "453352": [
+        "IYC_CHEIGHTCD"
+      ],
+      "453356": [
+        "IYC_CHEIGHTCD"
+      ],
+      "453388": [
+        "IYC_CHEIGHTCD"
+      ],
+      "453396": [
+        "IYC_CHEIGHTCD"
+      ],
+      "453412": [
+        "IYC_CHEIGHTCD"
+      ],
+      "453416": [
+        "IYC_CHEIGHTCD"
+      ],
+      "454447": [
+        "IYC_CHEIGHTCD"
+      ],
+      "454548": [
+        "IYC_CHEIGHTCD"
+      ],
+      "454549": [
+        "IYC_CHEIGHTCD"
+      ],
+      "454585": [
+        "IYC_CHEIGHTCD"
+      ],
+      "454710": [
+        "IYC_CHEIGHTCD"
+      ]
+    },
+    "row_no_mix_attributes_by_voyage": {
+      "453250": [
+        "IYC_POT_UNLDPORT"
+      ],
+      "453308": [
+        "IYC_POT_UNLDPORT"
+      ],
+      "453324": [
+        "IYC_POT_UNLDPORT"
+      ],
+      "453352": [
+        "IYC_POT_UNLDPORT"
+      ],
+      "453356": [
+        "IYC_POT_UNLDPORT"
+      ],
+      "453388": [
+        "IYC_POT_UNLDPORT"
+      ],
+      "453396": [
+        "IYC_POT_UNLDPORT"
+      ],
+      "453412": [
+        "IYC_POT_UNLDPORT"
+      ],
+      "453416": [
+        "IYC_POT_UNLDPORT"
+      ],
+      "454447": [
+        "IYC_POT_UNLDPORT"
+      ],
+      "454549": [
+        "IYC_POT_UNLDPORT"
+      ],
+      "454585": [
+        "IYC_POT_UNLDPORT"
+      ],
+      "454710": [
+        "IYC_POT_UNLDPORT"
+      ]
+    },
+    "weight_levels_by_voyage": {
+      "453250": [
+        0,
+        10,
+        15,
+        20,
+        25,
+        30
+      ],
+      "453273": [
+        0,
+        10,
+        15,
+        20,
+        25,
+        30
+      ],
+      "453307": [
+        0,
+        10,
+        15,
+        20,
+        25,
+        30
+      ],
+      "453308": [
+        0,
+        10,
+        15,
+        20,
+        25,
+        30
+      ],
+      "453324": [
+        0,
+        10,
+        15,
+        20,
+        25,
+        30
+      ],
+      "453352": [
+        0,
+        10,
+        15,
+        20,
+        25,
+        30
+      ],
+      "453356": [
+        0,
+        10,
+        15,
+        20,
+        25,
+        30
+      ],
+      "453388": [
+        0,
+        10,
+        15,
+        20,
+        25,
+        30
+      ],
+      "453396": [
+        0,
+        10,
+        15,
+        20,
+        25,
+        30
+      ],
+      "453412": [
+        0,
+        10,
+        15,
+        20,
+        25,
+        30
+      ],
+      "453416": [
+        0,
+        10,
+        15,
+        20,
+        25,
+        30
+      ],
+      "454447": [
+        0,
+        10,
+        15,
+        20,
+        25,
+        30
+      ],
+      "454548": [
+        0,
+        10,
+        15,
+        20,
+        25,
+        30
+      ],
+      "454549": [
+        0,
+        10,
+        15,
+        20,
+        25,
+        30
+      ],
+      "454585": [
+        0,
+        10,
+        15,
+        20,
+        25,
+        30
+      ],
+      "454710": [
+        0,
+        10,
+        15,
+        20,
+        25,
+        30
+      ]
+    },
+    "weight_group_voyages": [
+      "453250",
+      "453273",
+      "453307",
+      "453308",
+      "453324",
+      "453352",
+      "453356",
+      "453388",
+      "453396",
+      "453412",
+      "453416",
+      "454447",
+      "454548",
+      "454549",
+      "454585",
+      "454710"
+    ]
+  },
+  "small_doc_group_count": 1010,
+  "small_doc_box_count": 11695,
+  "planned_group_count": 1078,
+  "planned_box_count": 12873,
+  "berth_distance_count": 1771,
+  "berth_by_voyage": {
+    "453250": "B3",
+    "453308": "B4",
+    "453324": "B6",
+    "453352": "B2",
+    "453356": "B2",
+    "453388": "B3",
+    "453396": "B6",
+    "453412": "B4",
+    "453416": "B2",
+    "454447": "B4",
+    "454549": "B1",
+    "454585": "B6",
+    "454710": "B6"
+  },
+  "demand_mode": "original",
+  "demand_alignment": {
+    "demand_mode": "original",
+    "source_doc_group_count": 1010,
+    "source_doc_box_count": 11695,
+    "medium_target_group_count": 357,
+    "medium_target_box_count": 11754,
+    "original_small_output_box_count": 11695,
+    "original_medium_output_box_count": 11754,
+    "forecast_fallback_group_count": 68,
+    "forecast_fallback_box_count": 1178,
+    "dropped_doc_box_count": 0,
+    "doc_boxes_outside_medium_target": 1119,
+    "planned_box_count": 12873
+  },
+  "medium_doc_floor_added_boxes": 0,
+  "medium_doc_floor_added_groups": 0,
+  "medium_doc_floor_shifted_boxes": 0,
+  "medium_doc_floor_shifted_groups": 0,
+  "medium_doc_floor_by_coarse_group": {},
+  "medium_doc_floor_added_by_coarse_group": {},
+  "medium_doc_floor_shifted_by_coarse_group": {},
+  "initial_column_count": 69176,
+  "base_initial_column_count": 68119,
+  "full_column_pool": false,
+  "full_pool_added_columns": 0,
+  "master_seed_added_columns": 1057,
+  "master_seed_selected_columns": 784,
+  "master_seed_unplaced_boxes": 5302,
+  "pricing_iterations": [],
+  "scip_available": false,
+  "used_greedy_fallback": true,
+  "concentration_penalties": {
+    "fine_group_area": 80.0,
+    "fine_group_block": 35.0,
+    "fine_group_bay": 8.0,
+    "coarse_area_block": 24.0,
+    "coarse_area_bay": 2.5,
+    "medium_concentrated_group_threshold": 26,
+    "medium_small_group_area_split": 2400.0,
+    "medium_small_group_fragment": 90.0,
+    "medium_large_group_min_area_boxes": 10,
+    "medium_large_group_small_area": 900.0,
+    "medium_large_group_area_open": 0.0,
+    "medium_large_group_target_area_boxes": 60
+  },
+  "inheritance_penalties": {
+    "unplaced": 100000.0,
+    "required_area_reward": 1000.0,
+    "big_plan_area_deviation": 3.0,
+    "big_plan_fallback_tier": 20.0
+  },
+  "scip_failure": "OSError: [Errno 22] Invalid argument",
+  "final_repair_enabled": false,
+  "pre_repair_unplaced_boxes": 0,
+  "post_repair_unplaced_boxes": 0,
+  "used_unplaced_repair": false,
+  "unplaced_repair_method": "not_run_after_column_generation",
+  "post_repair_area_relayout_enabled": true,
+  "post_repair_area_relayout_used": true,
+  "post_repair_area_relayout_accepted": true,
+  "post_repair_area_relayout_skip_reason": "",
+  "post_repair_area_relayout_unplaced_boxes": 0,
+  "post_repair_area_relayout_partial_solution": false,
+  "post_repair_area_relayout_group_area_pairs": 1200,
+  "post_repair_area_relayout_selected_columns": 1874,
+  "post_repair_area_relayout_failure_reason": "partial_area_fallback",
+  "post_repair_area_relayout_areas_attempted": 82,
+  "post_repair_area_relayout_areas_relaid": 67,
+  "post_repair_area_relayout_areas_kept_original": 15,
+  "post_repair_area_relayout_last_failed_group": "453307_S002",
+  "post_repair_area_relayout_last_failed_area": "E6",
+  "post_repair_area_relayout_last_failed_remaining": 20,
+  "post_repair_area_relayout_before": {
+    "score": 1164318.0,
+    "fine_area_bays": 1889,
+    "fine_area_pairs": 1200,
+    "fine_excess_bays": 689,
+    "coarse_area_bays": 1439,
+    "coarse_area_pairs": 572,
+    "coarse_excess_bays": 867,
+    "coarse_tail_boxes": 5773
+  },
+  "post_repair_area_relayout_after": {
+    "score": 1134584.0,
+    "fine_area_bays": 1874,
+    "fine_area_pairs": 1200,
+    "fine_excess_bays": 674,
+    "coarse_area_bays": 1411,
+    "coarse_area_pairs": 572,
+    "coarse_excess_bays": 839,
+    "coarse_tail_boxes": 5590
+  },
+  "post_repair_area_relayout_delta_score": 29734.0,
+  "post_repair_area_relayout_elapsed_seconds": 9.069,
+  "final_column_count": 84692,
+  "selected_column_count": 1874,
+  "medium_plan_granularity": "bay",
+  "medium_plan_source": "selected_columns",
+  "small_row_count": 5028,
+  "medium_row_count": 1866,
+  "planned_small_boxes": 11695,
+  "planned_medium_boxes": 12873,
+  "planned_medium_by_source": {
+    "document": 11695,
+    "forecast_fallback": 1178
+  },
+  "medium_area_rows_below_min_boxes": 338,
+  "medium_fragmentation": {
+    "coarse_group_count": 424,
+    "tiny_area_rows": 338,
+    "small_coarse_group_count": 342,
+    "small_coarse_multi_area_groups": 17,
+    "large_coarse_group_count": 82,
+    "large_coarse_tiny_area_rows": 46,
+    "max_area_count_per_coarse_group": 20,
+    "average_area_count_per_coarse_group": 1.3491
+  },
+  "medium_big_plan_inheritance": {
+    "total_boxes": 12873,
+    "inherited_boxes": 7633,
+    "deviated_boxes": 5240,
+    "inheritance_ratio": 0.592946,
+    "deviation_ratio": 0.407054
+  },
+  "final_medium_inheritance_energy_components": {
+    "big_plan_fallback_tier": 190200.0,
+    "big_plan_deviation": 29504.6492,
+    "total": 219704.6492
+  },
+  "user_required_area_usage": {
+    "453250": {},
+    "453273": {},
+    "453307": {},
+    "453308": {},
+    "453324": {},
+    "453352": {},
+    "453356": {},
+    "453388": {},
+    "453396": {},
+    "453412": {},
+    "453416": {},
+    "454447": {},
+    "454548": {},
+    "454549": {},
+    "454585": {},
+    "454710": {}
+  },
+  "user_area_constraint_violations": {
+    "has_violations": false,
+    "unmet_required_areas": [],
+    "forbidden_area_usage": [],
+    "outside_only_area_usage": [],
+    "unmet_required_bays": [],
+    "forbidden_bay_usage": []
+  },
+  "unplaced_boxes": 0,
+  "unplaced_by_group": {},
+  "unplaced_group_details": [],
+  "small_medium_consistency_violations": 0,
+  "small_medium_consistency_shortage_boxes": 0,
+  "small_medium_bay_consistency_violations": 0,
+  "small_medium_bay_consistency_shortage_boxes": 0,
+  "output_dir": "E:\\container_terminal\\stacking\\flat_full_yard_plan_1.4_scip\\full_plan_outputs\\codex_voyage_area_controls_check\\medium_small_plan",
+  "created_at": "2026-06-17 21:56:09",
+  "planner_init_seconds": 114.969,
+  "planner_solve_seconds": 178.358,
+  "output_write_seconds": 1.569,
+  "write_small_plan_seconds": 0.058,
+  "write_medium_plan_seconds": 0.015,
+  "write_small_plan_six_bay_blocks_seconds": 0.012,
+  "write_big_plan_used_seconds": 0.002,
+  "write_generated_columns_seconds": 1.482,
+  "elapsed_seconds": 294.897,
+  "elapsed_time": "4m 55s",
+  "adapter_json": "E:\\container_terminal\\stacking\\flat_full_yard_plan_1.4_scip\\data_examples\\input_data.json",
+  "data_dir": "/mnt/d/Work/Project/GuanDong/debug_info/stack_plan_test_data/test_data0519/pro_test_data_0519",
+  "planning_time": "2026-05-19 09:40:00",
+  "large_allocation_input": "in_memory_large_solution",
+  "large_allocation_output": "E:\\container_terminal\\stacking\\flat_full_yard_plan_1.4_scip\\full_plan_outputs\\codex_voyage_area_controls_check\\outputs_large\\latest_run\\allocation.csv",
+  "flat_pipeline_mode": "large_then_embedded_column_generation_scip"
+}
