@@ -13,6 +13,10 @@ __pycache__/
 test_data/
 
 # Generated run artifacts.
+flat_full_yard_plan_1.4_scip/full_plan_outputs/
+flat_full_yard_plan_1.4_scip/large_plan_outputs/
+flat_full_yard_plan_1.4_scip/medium_small_column_generation_outputs/
+flat_full_yard_plan_1.4_scip/small_from_medium_outputs/
 flat_full_yard_plan_2_scip/full_plan_outputs/
 
 # Office temporary lock files.
