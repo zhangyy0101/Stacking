@@ -100,6 +100,8 @@ def main() -> None:
         "large_allocation_input": str(args.big_plan.resolve()) if args.big_plan else "derived_from_medium_plan",
         "small_plan_output_dir": str(output_dir),
         "small_row_count": len(result.small_rows),
+        "unplaced_boxes": str(output_dir / "unplaced_boxes.csv"),
+        "unplaced_row_count": len(result.unplaced_rows),
         "medium_algorithm": diagnostics.get("algorithm"),
         "medium_master_status": diagnostics.get("master_status"),
         "medium_unplaced_boxes": diagnostics.get("unplaced_boxes"),
@@ -109,6 +111,7 @@ def main() -> None:
     print_diagnostics_summary(diagnostics)
     print(f"small_plan: {output_dir / 'small_plan.csv'}")
     print(f"small_plan_medium_summary: {output_dir / 'small_plan_medium_summary.csv'}")
+    print(f"unplaced_boxes: {output_dir / 'unplaced_boxes.csv'}")
     print(f"diagnostics: {output_dir / 'diagnostics.json'}")
 
 

@@ -124,6 +124,7 @@ def solve_medium_small_plan_df(
     return {
         "medium_plan": pd.DataFrame(result.medium_rows),
         "small_plan": pd.DataFrame(result.small_rows),
+        "unplaced_boxes": pd.DataFrame(result.unplaced_rows),
     }
 
 
@@ -167,6 +168,7 @@ def solve_full_yard_plan_df(
         "large_plan": large_result_df,
         "medium_plan": medium_small["medium_plan"],
         "small_plan": medium_small["small_plan"],
+        "unplaced_boxes": medium_small["unplaced_boxes"],
     }
 
 

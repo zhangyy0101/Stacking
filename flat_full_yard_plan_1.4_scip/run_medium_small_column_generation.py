@@ -102,6 +102,8 @@ def main() -> None:
         "medium_voyages": problem.target_voyages,
         "medium_row_count": len(result.medium_rows),
         "small_row_count": len(result.small_rows),
+        "unplaced_boxes": str(output_dir / "unplaced_boxes.csv"),
+        "unplaced_row_count": len(result.unplaced_rows),
         "medium_algorithm": diagnostics.get("algorithm"),
         "medium_master_status": diagnostics.get("master_status"),
         "medium_unplaced_boxes": diagnostics.get("unplaced_boxes"),
@@ -111,6 +113,7 @@ def main() -> None:
     print_diagnostics_summary(diagnostics)
     print(f"medium_plan: {output_dir / 'medium_plan.csv'}")
     print(f"small_plan: {output_dir / 'small_plan.csv'}")
+    print(f"unplaced_boxes: {output_dir / 'unplaced_boxes.csv'}")
     print(f"diagnostics: {output_dir / 'diagnostics.json'}")
 
 

@@ -310,10 +310,12 @@ class ProblemData:
     allowed_areas_by_voyage: dict[str, set[str]] = field(default_factory=dict)
     user_voyage_area_allowlist: dict[str, set[str]] = field(default_factory=dict)
     user_voyage_area_blocklist: dict[str, set[str]] = field(default_factory=dict)
+    user_voyage_area_priority: dict[str, set[str]] = field(default_factory=dict)
     user_voyage_area_requirements: dict[str, set[str]] = field(default_factory=dict)
     user_group_bay_requirements: dict[str, set[str]] = field(default_factory=dict)
     user_group_bay_blocklist: dict[str, set[str]] = field(default_factory=dict)
     user_bay_adjust_rules: list[dict[str, Any]] = field(default_factory=list)
+    user_area_constraint_summary: dict[str, Any] = field(default_factory=dict)
     user_bay_constraint_summary: dict[str, Any] = field(default_factory=dict)
     tops_reserved_slot_count: int = 0
     tops_closed_bay_count: int = 0
@@ -981,6 +983,99 @@ def build_large_area_controls(
         "area_controls_by_vessel": per_vessel,
     }
     return allowed_by_vessel, required_by_vessel, priority_by_vessel, diagnostics
+
+
+def build_medium_small_area_controls(
+    *,
+    vessels: Sequence[str],
+    areas: Sequence[str],
+    user_design_large_plan_area: Sequence[str] | Mapping[str, Any] | None,
+    voyage_limit_areas: Sequence[str] | Mapping[str, Any] | None = None,
+    voyage_priority_areas: Sequence[str] | Mapping[str, Any] | None = None,
+) -> tuple[dict[str, set[str]], dict[str, set[str]], dict[str, Any]]:
+    """Build hard per-voyage area scopes for medium/small planning.
+
+    Medium/small planning treats both user-design areas and voyage-limit areas
+    as hard boundaries.  A more specific user-design area list wins over the
+    broader voyage limit when both are supplied for the same voyage.
+    """
+    area_set = set(areas)
+    default_allowed = set(area_set)
+    allowed_by_voyage: dict[str, set[str]] = {}
+    per_voyage: dict[str, dict[str, Any]] = {}
+    design_active_vessels: list[str] = []
+    limit_active_vessels: list[str] = []
+    design_ignored: dict[str, list[str]] = {}
+    limit_ignored: dict[str, list[str]] = {}
+    priority_by_voyage: dict[str, set[str]] = {}
+    priority_ignored: dict[str, list[str]] = {}
+    priority_outside_allowed: dict[str, list[str]] = {}
+
+    for raw_vessel in vessels:
+        vessel = normalize_voyage(raw_vessel)
+        design_raw, design_present = _voyage_control_area_list(user_design_large_plan_area, vessel)
+        design_valid = [area for area in design_raw if area in area_set]
+        design_active = bool(design_present and design_raw)
+
+        limit_raw, limit_present = _voyage_control_area_list(voyage_limit_areas, vessel)
+        limit_valid = [area for area in limit_raw if area in area_set]
+        limit_active = bool(limit_present and limit_raw and not design_active)
+        priority_raw, priority_present = _voyage_control_area_list(voyage_priority_areas, vessel)
+        priority_valid = [area for area in priority_raw if area in area_set]
+
+        if set(design_raw) - area_set:
+            design_ignored[vessel] = sorted(set(design_raw) - area_set)
+        if set(limit_raw) - area_set:
+            limit_ignored[vessel] = sorted(set(limit_raw) - area_set)
+        if set(priority_raw) - area_set:
+            priority_ignored[vessel] = sorted(set(priority_raw) - area_set)
+
+        if design_active:
+            allowed = set(design_valid)
+            source = "user_design_large_plan_area"
+            design_active_vessels.append(vessel)
+        elif limit_active:
+            allowed = set(limit_valid)
+            source = "voyage_limit_areas"
+            limit_active_vessels.append(vessel)
+        else:
+            allowed = set(default_allowed)
+            source = "default_all_function_areas"
+        priority_allowed = set(priority_valid) & allowed if priority_present else set()
+        if priority_allowed:
+            priority_by_voyage[vessel] = priority_allowed
+        if priority_present and set(priority_valid) - allowed:
+            priority_outside_allowed[vessel] = sorted(set(priority_valid) - allowed)
+
+        allowed_by_voyage[vessel] = allowed
+        per_voyage[vessel] = {
+            "source": source,
+            "allowed_count": len(allowed),
+            "allowed_areas": sorted(allowed),
+            "priority_areas": sorted(priority_allowed),
+            "priority_areas_requested": priority_raw,
+            "user_design_large_plan_area_requested": design_raw,
+            "user_design_large_plan_area_valid": design_valid,
+            "voyage_limit_areas_requested": limit_raw,
+            "voyage_limit_areas_valid": limit_valid,
+            "strict_boundary": source != "default_all_function_areas",
+        }
+
+    diagnostics = {
+        "strict_area_boundary_enabled": bool(design_active_vessels or limit_active_vessels),
+        "user_design_large_plan_area_active_vessels": design_active_vessels,
+        "voyage_limit_areas_active_vessels": limit_active_vessels,
+        "user_design_large_plan_area_ignored": design_ignored,
+        "voyage_limit_areas_ignored": limit_ignored,
+        "voyage_priority_areas_by_voyage": {
+            voyage_id: sorted(areas)
+            for voyage_id, areas in sorted(priority_by_voyage.items())
+        },
+        "voyage_priority_areas_ignored": priority_ignored,
+        "voyage_priority_areas_outside_allowed": priority_outside_allowed,
+        "area_controls_by_voyage": per_voyage,
+    }
+    return allowed_by_voyage, priority_by_voyage, diagnostics
 
 
 def build_medium_small_bay_controls(
@@ -3155,7 +3250,8 @@ def misplaced_bays_to_exclude(
     occupied["_flow"] = occupied["IYC_STS_CSTATUSCD"].map(lambda value: normalize_flow(value, default="OF"))
     bad = occupied[
         [
-            flow not in area_functions.get(area, set())
+            not (flow == "OF" and normalize_code(area).startswith("E"))
+            and flow not in area_functions.get(area, set())
             for area, flow in zip(occupied["YAA_AREANO"], occupied["_flow"])
         ]
     ].copy()
@@ -3286,7 +3382,7 @@ def build_problem(
     target_voyages = [normalize_voyage(v) for v in target_voyages]
     attribute_rules = read_attribute_rules(input_guandong, target_voyages)
     (
-        allowed_areas_by_voyage,
+        large_allowed_areas_by_voyage,
         _required_areas_by_voyage,
         _priority_areas_by_voyage,
         _area_control_diagnostics,
@@ -3299,30 +3395,55 @@ def build_problem(
         voyage_priority_areas=getattr(input_guandong, "voyage_priority_areas", {}),
         adjust_plan_info=getattr(input_guandong, "adjust_plan_info", {}),
     )
+    strict_allowed_areas_by_voyage, priority_areas_by_voyage, user_area_constraint_summary = build_medium_small_area_controls(
+        vessels=target_voyages,
+        areas=sorted(function_areas),
+        user_design_large_plan_area=getattr(input_guandong, "user_design_large_plan_area", {}),
+        voyage_limit_areas=getattr(input_guandong, "voyage_limit_areas", {}),
+        voyage_priority_areas=getattr(input_guandong, "voyage_priority_areas", {}),
+    )
+    user_area_constraint_summary["large_area_controls"] = _area_control_diagnostics
+    allowed_areas_by_voyage: dict[str, set[str]] = {}
+    for voyage_id in target_voyages:
+        strict_entry = user_area_constraint_summary["area_controls_by_voyage"].get(voyage_id, {})
+        if strict_entry.get("strict_boundary"):
+            allowed_areas_by_voyage[voyage_id] = set(strict_allowed_areas_by_voyage.get(voyage_id, set()))
+        else:
+            allowed_areas_by_voyage[voyage_id] = set(
+                large_allowed_areas_by_voyage.get(voyage_id, sorted(function_areas))
+            )
     vessel_schedules = read_target_vessel_schedules(input_guandong, target_voyages, planning_time, horizon_hours)
     plan_date = planning_time.date().isoformat()
+    target_big_plan_flows = {medium_small_area_flow(flow) for flow in DEFAULT_TARGET_BIG_PLAN_FLOWS}
     input_plan = [
         row for row in big_plan if row.voyage_id in target_voyages and (not row.plan_date or row.plan_date == plan_date)
     ]
     allowed_areas = set().union(*(set(areas) for areas in allowed_areas_by_voyage.values())) if allowed_areas_by_voyage else set(function_areas)
+    skipped_outside_user_scope: Counter[tuple[str, str]] = Counter()
+    skipped_closed_area: Counter[tuple[str, str]] = Counter()
+    skipped_flow_function: Counter[tuple[str, str]] = Counter()
     for row in input_plan:
-        if row.area_no not in set(allowed_areas_by_voyage.get(row.voyage_id, sorted(function_areas))):
+        if row.area_no not in allowed_areas_by_voyage.get(row.voyage_id, set(function_areas)):
+            skipped_outside_user_scope[(row.voyage_id, row.area_no)] += row.planned_boxes
             continue
         if row.area_no in closed:
-            raise ValueError(f"big plan uses closed area {row.area_no} for voyage {row.voyage_id}")
+            skipped_closed_area[(row.voyage_id, row.area_no)] += row.planned_boxes
+            continue
         plan_flow = medium_small_area_flow(row.flow)
+        if plan_flow not in target_big_plan_flows:
+            continue
         functions = area_functions.get(row.area_no, set())
-        if plan_flow != "OF" and "E" in functions:
+        if plan_flow == "OF" and row.area_no.startswith("E"):
+            pass
+        elif plan_flow != "OF" and "E" in functions:
             pass
         elif plan_flow not in functions:
+            skipped_flow_function[(row.voyage_id, row.area_no)] += row.planned_boxes
             continue
         cleaned_plan.append(row)
-        assigned_areas[(row.voyage_id, row.flow)].add(row.area_no)
-    if not cleaned_plan:
-        raise ValueError("no big-plan rows remain after target-voyage, flow, date, and closed-area filtering")
-    target_big_plan_flows = {medium_small_area_flow(flow) for flow in DEFAULT_TARGET_BIG_PLAN_FLOWS}
+        assigned_areas[(row.voyage_id, plan_flow)].add(row.area_no)
     big_plan_caps = medium_demand_caps_from_big_plan(
-        cleaned_plan,
+        input_plan,
         target_voyages,
         planning_time,
         target_big_plan_flows,
@@ -3347,6 +3468,7 @@ def build_problem(
     raw_area_quota: Counter[tuple[str, str, str]] = Counter()
     raw_area_size_quota: Counter[tuple[str, str, str, str]] = Counter()
     raw_all_size_area_quota: Counter[tuple[str, str, str]] = Counter()
+    missing_big_plan_area_pattern: Counter[tuple[str, str, str]] = Counter()
     for row in cleaned_plan:
         plan_flow = medium_small_area_flow(row.flow)
         raw_area_quota[(row.voyage_id, plan_flow, row.area_no)] += row.planned_boxes
@@ -3390,7 +3512,8 @@ def build_problem(
                     }
                 )
                 if not all_size_weights:
-                    raise ValueError(f"big plan has no area pattern for voyage={voyage_id}, flow={flow}, size={size_mode}")
+                    missing_big_plan_area_pattern[(voyage_id, flow, size_mode)] += target_qty
+                    continue
                 big_plan_total = sum(all_size_weights.values())
                 allocations = Counter(all_size_weights) if big_plan_total <= target_qty else allocate_by_weights(dict(all_size_weights), target_qty)
                 for area_no, qty in allocations.items():
@@ -3424,6 +3547,37 @@ def build_problem(
         small_groups,
         bays,
     )
+    user_area_constraint_summary.update(
+        {
+            "allowed_areas_by_voyage": {
+                voyage_id: sorted(areas)
+                for voyage_id, areas in sorted(allowed_areas_by_voyage.items())
+            },
+            "effective_yard_areas": sorted(allowed_areas),
+            "input_big_plan_row_count": len(input_plan),
+            "accepted_big_plan_row_count": len(cleaned_plan),
+            "skipped_big_plan_boxes_outside_user_scope": {
+                f"{voyage_id}|{area_no}": int(qty)
+                for (voyage_id, area_no), qty in sorted(skipped_outside_user_scope.items())
+                if qty > 0
+            },
+            "skipped_big_plan_boxes_closed_area": {
+                f"{voyage_id}|{area_no}": int(qty)
+                for (voyage_id, area_no), qty in sorted(skipped_closed_area.items())
+                if qty > 0
+            },
+            "skipped_big_plan_boxes_flow_function": {
+                f"{voyage_id}|{area_no}": int(qty)
+                for (voyage_id, area_no), qty in sorted(skipped_flow_function.items())
+                if qty > 0
+            },
+            "missing_big_plan_area_pattern_boxes": {
+                f"{voyage_id}|{flow}|{size_mode}": int(qty)
+                for (voyage_id, flow, size_mode), qty in sorted(missing_big_plan_area_pattern.items())
+                if qty > 0
+            },
+        }
+    )
     area_operations = build_area_operations(input_guandong, vessel_schedules)
     berth_distances = read_distance_matrix(input_guandong)
     berth_by_voyage = {
@@ -3449,15 +3603,19 @@ def build_problem(
         berth_distances=berth_distances,
         berth_by_voyage=berth_by_voyage,
         allowed_areas_by_voyage={
-            voyage_id: set(allowed_areas_by_voyage.get(voyage_id, sorted(function_areas)))
+            voyage_id: set(allowed_areas_by_voyage.get(voyage_id, set(function_areas)))
             for voyage_id in target_voyages
         },
         user_voyage_area_allowlist={
-            voyage_id: set(allowed_areas_by_voyage.get(voyage_id, sorted(function_areas)))
+            voyage_id: set(allowed_areas_by_voyage.get(voyage_id, set(function_areas)))
             for voyage_id in target_voyages
         },
         user_voyage_area_blocklist={
-            voyage_id: set(function_areas) - set(allowed_areas_by_voyage.get(voyage_id, sorted(function_areas)))
+            voyage_id: set(function_areas) - set(allowed_areas_by_voyage.get(voyage_id, set(function_areas)))
+            for voyage_id in target_voyages
+        },
+        user_voyage_area_priority={
+            voyage_id: set(priority_areas_by_voyage.get(voyage_id, set()))
             for voyage_id in target_voyages
         },
         user_voyage_area_requirements={
@@ -3467,6 +3625,7 @@ def build_problem(
         user_group_bay_requirements=bay_requirements,
         user_group_bay_blocklist=bay_blocklist,
         user_bay_adjust_rules=bay_adjust_rules,
+        user_area_constraint_summary=user_area_constraint_summary,
         user_bay_constraint_summary=bay_constraint_summary,
         tops_reserved_slot_count=reserved_count,
         tops_closed_bay_count=closed_bay_count,

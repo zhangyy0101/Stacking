@@ -87,7 +87,10 @@ def add_column_generation_arguments(parser: argparse.ArgumentParser) -> None:
         "--total-time-limit",
         type=float,
         default=defaults.total_time_limit,
-        help="Overall medium/small column-generation budget in seconds; use 0 to disable.",
+        help=(
+            "Medium/small column-generation solve budget in seconds; excludes input preprocessing, "
+            "planner initialization, and output writing. Use 0 to disable."
+        ),
     )
     parser.add_argument("--pricing-min-lp-time-limit", type=float, default=defaults.pricing_min_lp_time_limit)
     parser.add_argument("--pricing-iteration-setup-reserve", type=float, default=defaults.pricing_iteration_setup_reserve)
@@ -120,8 +123,25 @@ def add_column_generation_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--required-area-reward", type=float, default=defaults.required_area_reward)
     parser.add_argument("--big-plan-area-deviation-penalty", type=float, default=defaults.big_plan_area_deviation_penalty)
     parser.add_argument("--big-plan-fallback-tier-penalty", type=float, default=defaults.big_plan_fallback_tier_penalty)
+    parser.add_argument(
+        "--export-e-area-max-bays-per-voyage-area",
+        type=int,
+        default=defaults.export_e_area_max_bays_per_voyage_area,
+        help="Max bay starts an export voyage may use inside one E-prefixed area; use -1 to disable.",
+    )
+    parser.add_argument(
+        "--export-e-area-non-40-penalty",
+        type=float,
+        default=defaults.export_e_area_non_40_penalty,
+        help="Soft penalty for placing non-40/45ft export boxes in E-prefixed areas.",
+    )
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--no-scip", action="store_true")
+    parser.add_argument(
+        "--enable-scip-symmetry",
+        action="store_true",
+        help="Enable SCIP symmetry handling; disabled by default because large medium/small LPs may crash native SCIP builds.",
+    )
 
 
 def make_config(args: argparse.Namespace) -> ColumnGenerationConfig:
@@ -201,8 +221,19 @@ def make_config(args: argparse.Namespace) -> ColumnGenerationConfig:
         required_area_reward=args.required_area_reward,
         big_plan_area_deviation_penalty=args.big_plan_area_deviation_penalty,
         big_plan_fallback_tier_penalty=args.big_plan_fallback_tier_penalty,
+        export_e_area_max_bays_per_voyage_area=getattr(
+            args,
+            "export_e_area_max_bays_per_voyage_area",
+            defaults.export_e_area_max_bays_per_voyage_area,
+        ),
+        export_e_area_non_40_penalty=getattr(
+            args,
+            "export_e_area_non_40_penalty",
+            defaults.export_e_area_non_40_penalty,
+        ),
         verbose=not args.quiet,
         use_scip=not args.no_scip,
+        scip_disable_symmetry=not getattr(args, "enable_scip_symmetry", False),
     )
 
 
@@ -445,6 +476,9 @@ def solve_medium_small_problem(
     write_rows(output_path / "medium_plan.csv", result.medium_rows)
     output_write_timings["write_medium_plan_seconds"] = round(perf_counter() - step_start, 3)
     step_start = perf_counter()
+    write_rows(output_path / "unplaced_boxes.csv", result.unplaced_rows)
+    output_write_timings["write_unplaced_boxes_seconds"] = round(perf_counter() - step_start, 3)
+    step_start = perf_counter()
     write_rows(output_path / "small_plan_six_bay_blocks.csv", make_six_bay_block_rows(result.small_rows))
     output_write_timings["write_small_plan_six_bay_blocks_seconds"] = round(perf_counter() - step_start, 3)
     step_start = perf_counter()
@@ -523,6 +557,9 @@ def solve_small_plan_from_medium_adapter(
     step_start = perf_counter()
     write_rows(output_path / "small_plan_medium_summary.csv", result.medium_rows)
     output_write_timings["write_small_plan_medium_summary_seconds"] = round(perf_counter() - step_start, 3)
+    step_start = perf_counter()
+    write_rows(output_path / "unplaced_boxes.csv", result.unplaced_rows)
+    output_write_timings["write_unplaced_boxes_seconds"] = round(perf_counter() - step_start, 3)
     step_start = perf_counter()
     write_rows(output_path / "external_medium_plan_used.csv", external_plan.rows)
     output_write_timings["write_external_medium_plan_used_seconds"] = round(perf_counter() - step_start, 3)

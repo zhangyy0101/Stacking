@@ -104,6 +104,7 @@ class ColumnGenerationConfig:
     post_repair_area_relayout_max_patterns: int = 1
     verbose: bool = True
     use_scip: bool = True
+    scip_disable_symmetry: bool = True
     full_column_pool: bool = False
     demand_mode: str = "original"
     medium_plan_quota: dict[tuple[str, str, str, str, str], int] | None = None
@@ -121,6 +122,8 @@ class ColumnGenerationConfig:
     medium_large_group_target_area_boxes: int = 60
     big_plan_area_deviation_penalty: float = 3.0
     big_plan_fallback_tier_penalty: float = 20.0
+    export_e_area_max_bays_per_voyage_area: int = 2
+    export_e_area_non_40_penalty: float = 300.0
     small_plan_group_area_split_penalty: float = 80.0
     small_plan_group_block_split_penalty: float = 35.0
     small_plan_group_bay_split_penalty: float = 8.0
@@ -138,6 +141,7 @@ class ColumnGenerationResult:
     medium_rows: list[dict]
     small_rows: list[dict]
     diagnostics: dict
+    unplaced_rows: list[dict] = field(default_factory=list)
     columns: list[PlacementColumn] = field(default_factory=list)
 
 
@@ -169,6 +173,7 @@ class ColumnGenerationPlanner:
         self.block_bay_nos: dict[str, tuple[str, ...]] = {}
         self.area_size_height_cap: Counter[tuple[str, str, str]] = Counter()
         self.area_group_cap: Counter[tuple[str, str]] = Counter()
+        self._area_group_cap_computed: set[tuple[str, str]] = set()
         self.quota_by_key: Counter[tuple[str, str, str, str]] = Counter()
         self.group_demand = {group.group_id: int(group.demand) for group in self.groups}
         self.coarse_demand: Counter[tuple[str, str, str, str]] = Counter()
@@ -601,6 +606,10 @@ class ColumnGenerationPlanner:
                 "big_plan_area_deviation": self.config.big_plan_area_deviation_penalty,
                 "big_plan_fallback_tier": self.config.big_plan_fallback_tier_penalty,
             },
+            "export_e_area_controls": {
+                "max_bays_per_voyage_area": self.config.export_e_area_max_bays_per_voyage_area,
+                "non_40_penalty": self.config.export_e_area_non_40_penalty,
+            },
         }
 
         selected: Counter[int]
@@ -634,6 +643,7 @@ class ColumnGenerationPlanner:
         else:
             small_rows = self._make_small_rows(selected)
         medium_rows = self._make_medium_rows_from_selected_columns(selected, plan_level="medium")
+        unplaced_rows = self._unplaced_group_details(unplaced)
         consistency_stats = self._small_medium_consistency_stats(small_rows, medium_rows)
         bay_consistency_stats = self._small_medium_bay_consistency_stats(small_rows, medium_rows)
         medium_fragmentation = self._medium_fragmentation_stats(medium_rows)
@@ -652,16 +662,23 @@ class ColumnGenerationPlanner:
                 "medium_fragmentation": medium_fragmentation,
                 "medium_big_plan_inheritance": self._medium_big_plan_inheritance_stats(medium_rows),
                 "final_medium_inheritance_energy_components": self._medium_inheritance_energy_components(medium_rows),
+                "export_e_area_usage": self._export_e_area_usage(selected),
                 "user_required_area_usage": self._user_required_area_usage(medium_rows, small_rows),
                 "user_area_constraint_violations": self._user_area_constraint_violations(medium_rows, small_rows),
                 "unplaced_boxes": sum(unplaced.values()),
                 "unplaced_by_group": {key: qty for key, qty in sorted(unplaced.items()) if qty > 0},
-                "unplaced_group_details": self._unplaced_group_details(unplaced),
+                "unplaced_group_details": unplaced_rows,
                 **consistency_stats,
                 **bay_consistency_stats,
             }
         )
-        return ColumnGenerationResult(medium_rows=medium_rows, small_rows=small_rows, diagnostics=diagnostics, columns=self._columns)
+        return ColumnGenerationResult(
+            medium_rows=medium_rows,
+            small_rows=small_rows,
+            diagnostics=diagnostics,
+            unplaced_rows=unplaced_rows,
+            columns=self._columns,
+        )
 
     def _repair_or_replace_unplaced_solution(
         self,
@@ -1343,6 +1360,7 @@ class ColumnGenerationPlanner:
             "pricing_stop_reason": "",
             "pricing_iterations_run": 0,
             "total_time_limit": total_time_limit,
+            "total_time_limit_scope": "column_generation_solve_excludes_planner_init_output",
             "staged_repair_reserved_seconds": staged_repair_reserve,
             "staged_repair_reserve_fraction": reserve_fraction,
             "staged_repair_reserve_min_seconds": reserve_min,
@@ -1884,13 +1902,33 @@ class ColumnGenerationPlanner:
         }
 
     def _configure_scip_output(self, model) -> None:
+        self._configure_scip_stability(model)
         if not self.config.verbose:
             try:
                 model.hideOutput()
                 return
             except Exception:
                 pass
-            self._set_scip_param(model, "display/verblevel", 0)
+            self._try_set_scip_param(model, "display/verblevel", 0)
+
+    def _configure_scip_stability(self, model) -> None:
+        if not getattr(self.config, "scip_disable_symmetry", True):
+            return
+        for name, value in (
+            ("misc/usesymmetry", 0),
+            ("propagating/symmetry/maxgenerators", 0),
+            ("propagating/symmetry/symtiming", 0),
+            ("propagating/symmetry/ofsymcomptiming", 0),
+        ):
+            self._try_set_scip_param(model, name, value)
+
+    @staticmethod
+    def _try_set_scip_param(model, name: str, value: object) -> bool:
+        try:
+            ColumnGenerationPlanner._set_scip_param(model, name, value)
+            return True
+        except Exception:
+            return False
 
     @staticmethod
     def _set_scip_param(model, name: str, value: object) -> None:
@@ -2079,6 +2117,7 @@ class ColumnGenerationPlanner:
         coarse_area_block_cols: defaultdict[tuple[str, str, str, str, str, str], list[int]] = defaultdict(list)
         coarse_area_bay_cols: defaultdict[tuple[str, str, str, str, str, str], list[int]] = defaultdict(list)
         voyage_area_cols: defaultdict[tuple[str, str], list[int]] = defaultdict(list)
+        export_e_area_bay_cols: defaultdict[tuple[str, str, str], list[int]] = defaultdict(list)
         edge_45_cols: defaultdict[str, list[int]] = defaultdict(list)
         edge_non45_cols: defaultdict[str, list[int]] = defaultdict(list)
         for idx, col in enumerate(self._columns):
@@ -2103,6 +2142,8 @@ class ColumnGenerationPlanner:
                 coarse_area_block_cols[col.coarse_key + (col.area_no, col.block_id)].append(idx)
             coarse_area_bay_cols[col.coarse_key + (col.area_no, col.bay_key)].append(idx)
             voyage_area_cols[(col.voyage_id, col.area_no)].append(idx)
+            if self._is_export_e_column(col):
+                export_e_area_bay_cols[(col.voyage_id, col.area_no, col.bay_key)].append(idx)
             if col.bay_key in self.area_edge_bays.get(col.area_no, set()):
                 if col.size == "45":
                     edge_45_cols[col.area_no].append(idx)
@@ -2196,6 +2237,13 @@ class ColumnGenerationPlanner:
             key: model.addCons(quicksum(columns[idx] for idx in indices) <= 1.0, name=f"group_bay_{key[0]}_{key[1]}")
             for key, indices in group_bay_cols.items()
         }
+        export_e_area_bay_limit = self._add_export_e_area_bay_limits(
+            quicksum,
+            model,
+            columns,
+            export_e_area_bay_cols,
+            relax=relax,
+        )
         quota_limit = {}
         medium_plan_quota_limit = {}
         for key, items in area_size_cols.items():
@@ -2272,6 +2320,7 @@ class ColumnGenerationPlanner:
             "bay_port_stack_limit": bay_port_stack_limit,
             "bay_stack_total_limit": bay_stack_total_limit,
             "group_bay_limit": group_bay_limit,
+            "export_e_area_bay_limit": export_e_area_bay_limit,
             "quota_limit": quota_limit,
             "medium_plan_quota_limit": medium_plan_quota_limit,
             "required_area_limit": required_area_limit,
@@ -2279,6 +2328,41 @@ class ColumnGenerationPlanner:
             "seed_unplaced_limit": seed_unplaced_limit,
             **relaxed_objective_constraints,
         }
+
+    def _add_export_e_area_bay_limits(
+        self,
+        quicksum,
+        model,
+        columns,
+        export_e_area_bay_cols: dict[tuple[str, str, str], list[int]],
+        relax: bool,
+    ) -> dict[tuple, object]:
+        limit = self._export_e_area_max_bays()
+        if limit is None or not export_e_area_bay_cols:
+            return {}
+        constraints: dict[tuple, object] = {}
+        use_vtype = "C" if relax else "B"
+        use_by_voyage_area: defaultdict[tuple[str, str], list] = defaultdict(list)
+        for (voyage_id, area_no, bay_key), indices in sorted(export_e_area_bay_cols.items()):
+            if not indices:
+                continue
+            use = model.addVar(
+                lb=0.0,
+                ub=1.0,
+                vtype=use_vtype,
+                name=f"use_export_e_{voyage_id}_{area_no}_{bay_key}",
+            )
+            constraints[("bay_use", voyage_id, area_no, bay_key)] = model.addCons(
+                quicksum(columns[idx] for idx in indices) <= len(indices) * use,
+                name=f"export_e_bay_use_{voyage_id}_{area_no}_{bay_key}",
+            )
+            use_by_voyage_area[(voyage_id, area_no)].append(use)
+        for (voyage_id, area_no), use_vars in sorted(use_by_voyage_area.items()):
+            constraints[("area_limit", voyage_id, area_no)] = model.addCons(
+                quicksum(use_vars) <= limit,
+                name=f"export_e_area_bay_limit_{voyage_id}_{area_no}",
+            )
+        return constraints
 
     def _add_relaxed_master_objectives(
         self,
@@ -3523,6 +3607,8 @@ class ColumnGenerationPlanner:
             "used_coarse_area_bay": set(),
             "used_voyage_area": set(),
             "coarse_area_used": Counter(),
+            "export_e_area_bay_count": Counter(),
+            "export_e_area_bays_used": set(),
             "area_edge_has45": set(),
             "area_edge_has_non45": set(),
             "big_plan_quota_used": Counter(),
@@ -3558,8 +3644,9 @@ class ColumnGenerationPlanner:
         enforce_quota: bool = True,
         enforce_medium_plan_quota: bool = True,
     ) -> tuple[int, PlacementColumn] | None:
-        best: tuple[tuple[float, int, int, str], str, int, float] | None = None
+        best: tuple[tuple[int, float, int, int, str], str, int, float] | None = None
         for bay_key, _max_qty, base_cost in self._candidate_bays_for_group(group, scope=stage):
+            area_no = self.bays[bay_key].area_no
             capacity = self._remaining_capacity_for_group_bay(
                 group,
                 bay_key,
@@ -3572,6 +3659,7 @@ class ColumnGenerationPlanner:
                 continue
             qty = min(remaining, capacity)
             score = (
+                self._priority_area_rank(group, area_no),
                 self._repair_column_score(group, bay_key, qty, base_cost, state),
                 0 if qty >= remaining else 1,
                 -qty,
@@ -3772,6 +3860,15 @@ class ColumnGenerationPlanner:
             return 0
         if not self._bay_state_attrs_allow_group(group, footprint, state):
             return 0
+        e_area_limit = self._export_e_area_max_bays()
+        if e_area_limit is not None and self._is_export_e_group_area(group, bay.area_no):
+            e_area_key = (group.voyage_id, bay.area_no)
+            e_bay_key = e_area_key + (bay_key,)
+            if (
+                e_bay_key not in state["export_e_area_bays_used"]
+                and state["export_e_area_bay_count"][e_area_key] >= e_area_limit
+            ):
+                return 0
         is_edge = bay_key in self.area_edge_bays.get(bay.area_no, set())
         if is_edge and group.size == "45" and bay.area_no in state["area_edge_has_non45"]:
             return 0
@@ -3830,6 +3927,12 @@ class ColumnGenerationPlanner:
         state["used_coarse_area_bay"].add(col.coarse_key + (col.area_no, col.bay_key))
         state["used_voyage_area"].add((col.voyage_id, col.area_no))
         state["coarse_area_used"][col.coarse_key + (col.area_no,)] += col.quantity
+        if self._is_export_e_column(col):
+            e_area_key = (col.voyage_id, col.area_no)
+            e_bay_key = e_area_key + (col.bay_key,)
+            if e_bay_key not in state["export_e_area_bays_used"]:
+                state["export_e_area_bays_used"].add(e_bay_key)
+                state["export_e_area_bay_count"][e_area_key] += 1
         if col.bay_key in self.area_edge_bays.get(col.area_no, set()):
             if col.size == "45":
                 state["area_edge_has45"].add(col.area_no)
@@ -3849,6 +3952,8 @@ class ColumnGenerationPlanner:
         group_bay_used: set[tuple[str, str]] = set()
         area_edge_has45: set[str] = set()
         area_edge_has_non45: set[str] = set()
+        export_e_area_bay_count: Counter[tuple[str, str]] = Counter()
+        export_e_area_bays_used: set[tuple[str, str, str]] = set()
         medium_plan_quota = Counter(self.config.medium_plan_quota or {})
         medium_plan_bay_quota = Counter(self.config.medium_plan_bay_quota or {})
         big_plan_quota_used: Counter[tuple[str, str, str, str]] = Counter()
@@ -3891,6 +3996,12 @@ class ColumnGenerationPlanner:
                     medium_plan_bay_quota_used[coarse_bay_key] + col.quantity > medium_plan_bay_quota[coarse_bay_key]
                 ):
                     continue
+                e_area_limit = self._export_e_area_max_bays()
+                if e_area_limit is not None and self._is_export_e_column(col):
+                    e_area_key = (col.voyage_id, col.area_no)
+                    e_bay_key = e_area_key + (col.bay_key,)
+                    if e_bay_key not in export_e_area_bays_used and export_e_area_bay_count[e_area_key] >= e_area_limit:
+                        continue
                 if col.quantity > remaining:
                     continue
                 is_edge = col.bay_key in self.area_edge_bays.get(col.area_no, set())
@@ -3913,6 +4024,12 @@ class ColumnGenerationPlanner:
                 big_plan_quota_used[col.quota_key] += col.quantity
                 medium_plan_quota_used[coarse_area_key] += col.quantity
                 medium_plan_bay_quota_used[coarse_bay_key] += col.quantity
+                if self._is_export_e_column(col):
+                    e_area_key = (col.voyage_id, col.area_no)
+                    e_bay_key = e_area_key + (col.bay_key,)
+                    if e_bay_key not in export_e_area_bays_used:
+                        export_e_area_bays_used.add(e_bay_key)
+                        export_e_area_bay_count[e_area_key] += 1
                 remaining -= col.quantity
             if remaining > 0:
                 unplaced[group.group_id] = remaining
@@ -3937,7 +4054,9 @@ class ColumnGenerationPlanner:
         if self._prefers_concentrated_coarse_key(self._coarse_key(group)):
             out.sort(
                 key=lambda item: (
+                    self._priority_area_rank(group, self.bays[item[0]].area_no),
                     0 if self._user_bay_policy_requires(group, item[0]) else 1,
+                    self._export_e_area_size_rank(group, self.bays[item[0]].area_no),
                     self._area_fallback_tier_for_group(group, self.bays[item[0]].area_no),
                     self._concentrated_area_sort_key(group, self.bays[item[0]].area_no),
                     item[2],
@@ -3948,7 +4067,9 @@ class ColumnGenerationPlanner:
         else:
             out.sort(
                 key=lambda item: (
+                    self._priority_area_rank(group, self.bays[item[0]].area_no),
                     0 if self._user_bay_policy_requires(group, item[0]) else 1,
+                    self._export_e_area_size_rank(group, self.bays[item[0]].area_no),
                     self._area_fallback_tier_for_group(group, self.bays[item[0]].area_no),
                     item[2],
                     -item[1],
@@ -3956,7 +4077,7 @@ class ColumnGenerationPlanner:
                     self.bays[item[0]].bay_order,
                 )
             )
-        out = self._limit_candidate_bays(group, out)
+        out = self._limit_candidate_bays(group, out, scope=scope)
         self._candidate_cache[cache_key] = out
         return out
 
@@ -4023,8 +4144,45 @@ class ColumnGenerationPlanner:
                     )
                 )
             ],
-            key=lambda area_no: (self._area_fallback_tier_for_group(group, area_no), area_no),
+            key=lambda area_no: (
+                self._priority_area_rank(group, area_no),
+                self._export_e_area_size_rank(group, area_no),
+                self._area_fallback_tier_for_group(group, area_no),
+                area_no,
+            ),
         )
+
+    def _priority_area_rank(self, group: SmallBoxGroup, area_no: str) -> int:
+        priority = getattr(self.problem, "user_voyage_area_priority", {}).get(group.voyage_id, set())
+        if not priority:
+            return 0
+        return 0 if area_no in priority else 1
+
+    @staticmethod
+    def _is_e_area(area_no: object) -> bool:
+        return str(area_no or "").strip().upper().startswith("E")
+
+    def _is_export_e_group_area(self, group: SmallBoxGroup, area_no: str) -> bool:
+        return group.status in EXPORT_FLOWS and self._is_e_area(area_no)
+
+    def _is_export_e_column(self, col: PlacementColumn) -> bool:
+        return col.flow in EXPORT_FLOWS and self._is_e_area(col.area_no)
+
+    def _export_e_area_max_bays(self) -> int | None:
+        limit = int(getattr(self.config, "export_e_area_max_bays_per_voyage_area", 2) or 0)
+        if limit < 0:
+            return None
+        return limit
+
+    def _export_e_area_size_rank(self, group: SmallBoxGroup, area_no: str) -> int:
+        if not self._is_export_e_group_area(group, area_no):
+            return 0
+        return 0 if group.size in {"40", "45"} else 1
+
+    def _export_e_area_non_40_penalty(self, group: SmallBoxGroup, area_no: str) -> float:
+        if self._export_e_area_size_rank(group, area_no) <= 0:
+            return 0.0
+        return max(0.0, float(getattr(self.config, "export_e_area_non_40_penalty", 0.0) or 0.0))
 
     def _user_area_policy_allows(self, voyage_id: str, area_no: str) -> bool:
         allow = getattr(self.problem, "user_voyage_area_allowlist", {}).get(voyage_id, set())
@@ -4053,7 +4211,7 @@ class ColumnGenerationPlanner:
             return True
         functions = self.problem.area_functions.get(area_no, set())
         if group.status in EXPORT_FLOWS:
-            return "OF" in functions
+            return "OF" in functions or self._is_e_area(area_no)
         if "E" in functions:
             return True
         return _area_flow(group.status) in functions
@@ -4062,6 +4220,7 @@ class ColumnGenerationPlanner:
         self,
         group: SmallBoxGroup,
         candidates: list[tuple[str, int, float]],
+        scope: str | None = None,
     ) -> list[tuple[str, int, float]]:
         limit = max(0, int(self.config.max_candidate_bays_per_group or 0))
         if limit <= 0 or len(candidates) <= limit:
@@ -4069,6 +4228,19 @@ class ColumnGenerationPlanner:
         required_bays = getattr(self.problem, "user_group_bay_requirements", {}).get(group.group_id, set())
         required = [item for item in candidates if item[0] in required_bays]
         remaining_limit = max(0, limit - len(required))
+        priority_areas = getattr(self.problem, "user_voyage_area_priority", {}).get(group.voyage_id, set())
+        if priority_areas:
+            priority = [
+                item
+                for item in candidates
+                if item[0] not in required_bays and self.bays[item[0]].area_no in priority_areas
+            ]
+            non_priority = [
+                item
+                for item in candidates
+                if item[0] not in required_bays and self.bays[item[0]].area_no not in priority_areas
+            ]
+            return required + priority[:remaining_limit] + non_priority[: max(0, remaining_limit - len(priority))]
         preferred_areas = set(self._area_weights(group))
         if not preferred_areas:
             return required + [item for item in candidates if item[0] not in required_bays][:remaining_limit]
@@ -4114,6 +4286,7 @@ class ColumnGenerationPlanner:
         cost = 0.0
         if not self.block_by_bay.get((bay.area_no, bay_key)):
             cost += self.config.non_preferred_block_penalty
+        cost += self._export_e_area_non_40_penalty(group, bay.area_no)
         if bay.is_fallback_bay:
             cost += self.config.fallback_bay_penalty
         if self._user_bay_policy_requires(group, bay_key):
@@ -4204,12 +4377,6 @@ class ColumnGenerationPlanner:
                     continue
                 for height in heights:
                     self.area_size_height_cap[(bay.area_no, size, height)] += cap
-        for group in self.groups:
-            for bay_key, bay in self.bays.items():
-                cap = self._max_quantity_in_bay(group, bay_key)
-                if cap > 0:
-                    self.area_group_cap[(group.group_id, bay.area_no)] += cap
-
     def _prepare_quota(self) -> None:
         for (voyage_id, flow, area_no, big_size), qty in getattr(self.problem, "area_size_quota", {}).items():
             if qty > 0:
@@ -4263,12 +4430,22 @@ class ColumnGenerationPlanner:
         coarse_key = self._coarse_key(group)
         demand = max(int(self.coarse_demand.get(coarse_key, group.demand)), int(group.demand))
         quota = self.quota_by_key.get(self._quota_key(group, area_no), 0)
-        group_cap = self.area_group_cap.get((group.group_id, area_no), 0)
+        group_cap = self._area_group_capacity(group, area_no)
         height_cap = self.area_size_height_cap.get((area_no, group.size, group.height), 0)
         candidate_cap = group_cap if group_cap > 0 else height_cap
         in_big_plan = self._is_big_plan_area_for_group(group, area_no)
         useful_cap = min(quota, candidate_cap) if in_big_plan and quota > 0 else candidate_cap
         return (0 if in_big_plan else 1, 0 if useful_cap >= demand else 1, -useful_cap, -quota, area_no)
+
+    def _area_group_capacity(self, group: SmallBoxGroup, area_no: str) -> int:
+        key = (group.group_id, area_no)
+        if key not in self._area_group_cap_computed:
+            self.area_group_cap[key] = sum(
+                self._max_quantity_in_bay(group, bay_key)
+                for bay_key in self.bays_by_area.get(area_no, [])
+            )
+            self._area_group_cap_computed.add(key)
+        return int(self.area_group_cap.get(key, 0))
 
     def _coarse_area_target(self, coarse_key: tuple[str, str, str, str], area_no: str) -> float:
         voyage_id, flow, _port, size = coarse_key
@@ -4394,6 +4571,37 @@ class ColumnGenerationPlanner:
             "unmet_required_bays": unmet_required_bays,
             "forbidden_bay_usage": forbidden_bays,
         }
+
+    def _export_e_area_usage(self, selected: Counter[int]) -> list[dict]:
+        bay_usage: defaultdict[tuple[str, str], set[str]] = defaultdict(set)
+        box_usage: Counter[tuple[str, str]] = Counter()
+        size_usage: defaultdict[tuple[str, str], Counter[str]] = defaultdict(Counter)
+        for idx, chosen in selected.items():
+            if chosen <= 0 or idx < 0 or idx >= len(self._columns):
+                continue
+            col = self._columns[idx]
+            if not self._is_export_e_column(col):
+                continue
+            key = (col.voyage_id, col.area_no)
+            bay_usage[key].add(col.bay_key)
+            boxes = int(col.quantity) * int(chosen)
+            box_usage[key] += boxes
+            size_usage[key][col.size] += boxes
+        limit = self._export_e_area_max_bays()
+        return [
+            {
+                "voyage_id": voyage_id,
+                "area_no": area_no,
+                "used_bays": len(bays),
+                "max_bays": "" if limit is None else int(limit),
+                "planned_boxes": int(box_usage[(voyage_id, area_no)]),
+                "planned_20": int(size_usage[(voyage_id, area_no)].get("20", 0)),
+                "planned_40": int(size_usage[(voyage_id, area_no)].get("40", 0)),
+                "planned_45": int(size_usage[(voyage_id, area_no)].get("45", 0)),
+                "bay_keys": sorted(bays),
+            }
+            for (voyage_id, area_no), bays in sorted(bay_usage.items())
+        ]
 
     def _unplaced_group_details(self, unplaced: Counter[str]) -> list[dict]:
         details = []

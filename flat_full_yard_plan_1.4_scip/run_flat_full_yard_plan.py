@@ -182,6 +182,7 @@ def main() -> None:
     medium_plan_path = medium_small_output_dir / "medium_plan.csv"
     small_plan_path = medium_small_output_dir / "small_plan.csv"
     small_plan_six_bay_blocks_path = medium_small_output_dir / "small_plan_six_bay_blocks.csv"
+    unplaced_boxes_path = medium_small_output_dir / "unplaced_boxes.csv"
     big_plan_used_path = medium_small_output_dir / "big_plan_used.csv"
     generated_columns_path = medium_small_output_dir / "generated_columns.csv"
     medium_small_diagnostics_path = medium_small_output_dir / "diagnostics.json"
@@ -201,6 +202,7 @@ def main() -> None:
         "medium_plan": str(medium_plan_path),
         "small_plan": str(small_plan_path),
         "small_plan_six_bay_blocks": str(small_plan_six_bay_blocks_path),
+        "unplaced_boxes": str(unplaced_boxes_path),
         "big_plan_used": str(big_plan_used_path),
         "generated_columns": str(generated_columns_path),
         "medium_small_diagnostics": str(medium_small_diagnostics_path),
@@ -220,6 +222,7 @@ def main() -> None:
         "medium_algorithm": medium_diagnostics.get("algorithm"),
         "medium_master_status": medium_diagnostics.get("master_status"),
         "medium_unplaced_boxes": medium_diagnostics.get("unplaced_boxes"),
+        "medium_unplaced_row_count": len(result.unplaced_rows),
         "medium_row_count": len(result.medium_rows),
         "small_row_count": len(result.small_rows),
     }
@@ -228,6 +231,7 @@ def main() -> None:
     print("\nPipeline complete.")
     print(f"large_plan: {large_output_dir}")
     print(f"medium_small_plan: {medium_small_output_dir}")
+    print(f"unplaced_boxes: {unplaced_boxes_path}")
     print(f"summary: {run_dir / 'pipeline_summary.json'}")
 
 
