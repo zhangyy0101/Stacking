@@ -305,6 +305,8 @@ class ProblemData:
     voyage_windows: dict[str, tuple[datetime, datetime]]
     area_operations: dict[str, list[AreaOperation]]
     target_voyages: list[str]
+    existing_coarse_area_load: dict[tuple[str, str, str, str, str], int] = field(default_factory=dict)
+    existing_coarse_bay_load: dict[tuple[str, str, str, str, str, str], int] = field(default_factory=dict)
     berth_distances: dict[tuple[str, str], float] = field(default_factory=dict)
     berth_by_voyage: dict[str, str] = field(default_factory=dict)
     allowed_areas_by_voyage: dict[str, set[str]] = field(default_factory=dict)
@@ -2436,6 +2438,88 @@ def read_yard_by_voyage_port_size(
     return dict(out)
 
 
+def existing_coarse_group_loads(
+    input_guandong: InputAdapterGd,
+    planning_time: datetime,
+    target_voyages: set[str],
+    valid_bay_keys: set[str],
+) -> tuple[Counter[tuple[str, str, str, str, str]], Counter[tuple[str, str, str, str, str, str]]]:
+    """Count current yard boxes for target voyages by the medium/small coarse key.
+
+    The planner's coarse key is `(voyage, flow, port_label, size)`.  Current
+    yard boxes are not part of the new demand, but their location is useful as
+    a soft anchor for placing the same coarse group nearby.
+    """
+    frame = getattr(input_guandong, "bay_slots_detail", None)
+    area_load: Counter[tuple[str, str, str, str, str]] = Counter()
+    bay_load: Counter[tuple[str, str, str, str, str, str]] = Counter()
+    if (
+        not target_voyages
+        or not valid_bay_keys
+        or not isinstance(frame, pd.DataFrame)
+        or frame.empty
+        or "HAS_CONTAINER" not in frame.columns
+    ):
+        return area_load, bay_load
+
+    occupied = frame.loc[frame["HAS_CONTAINER"].fillna(0).astype(int).eq(1)].copy()
+    if occupied.empty:
+        return area_load, bay_load
+    if "IYC_INYTM" in occupied.columns:
+        in_time = pd.to_datetime(occupied["IYC_INYTM"], errors="coerce")
+        occupied = occupied.loc[in_time.isna() | (in_time <= pd.Timestamp(planning_time))]
+    if occupied.empty:
+        return area_load, bay_load
+
+    occupied["_area"] = occupied.get("YAA_AREANO", pd.Series(index=occupied.index, dtype=object)).map(normalize_code)
+    occupied["_bay_no"] = occupied.get("YBY_BAYNO", pd.Series(index=occupied.index, dtype=object)).map(normalize_bay)
+    occupied["_bay_key"] = occupied["_area"] + "|" + occupied["_bay_no"]
+    occupied = occupied.loc[occupied["_bay_key"].isin(valid_bay_keys)].copy()
+    if occupied.empty:
+        return area_load, bay_load
+
+    occupied["_container_key"] = [container_identity(row, index) for index, row in occupied.iterrows()]
+    voyage_columns = []
+    if "IYC_EVOY_ID" in occupied.columns:
+        voyage_columns.append("IYC_EVOY_ID")
+    if "IYC_IVOY_ID" in occupied.columns:
+        voyage_columns.append("IYC_IVOY_ID")
+    seen_voyage_containers: set[tuple[str, str]] = set()
+    for voyage_column in voyage_columns:
+        work = occupied.copy()
+        work["_voyage"] = work[voyage_column].map(normalize_voyage)
+        work = work.loc[work["_voyage"].isin(target_voyages)].copy()
+        if work.empty:
+            continue
+        keep_mask = []
+        for voyage_id, container_key in zip(work["_voyage"], work["_container_key"]):
+            key = (str(voyage_id), str(container_key))
+            keep = key not in seen_voyage_containers
+            keep_mask.append(keep)
+            if keep:
+                seen_voyage_containers.add(key)
+        work = work.loc[keep_mask].copy()
+        if work.empty:
+            continue
+        for row in work.to_dict("records"):
+            voyage_id = str(row.get("_voyage", ""))
+            flow = normalize_medium_small_flow(row.get("IYC_STS_CSTATUSCD"), default="OF")
+            size = normalize_size_small(row.get("IYC_CSZ_CSIZECD"))
+            port = normalize_text(row.get("IYC_POT_UNLDPORT"), "UNK")
+            if flow == "OF":
+                port_label = port
+            else:
+                _base_attrs, _base_values, port_label = import_base_group_attributes(row, size, port)
+            coarse_key = (voyage_id, flow, str(port_label), size)
+            area_no = str(row.get("_area", ""))
+            bay_key = str(row.get("_bay_key", ""))
+            if not area_no or not bay_key:
+                continue
+            area_load[coarse_key + (area_no,)] += 1
+            bay_load[coarse_key + (area_no, bay_key)] += 1
+    return area_load, bay_load
+
+
 def container_identity(row: pd.Series, index: object) -> str:
     number = normalize_code(row.get("IYC_CNTRNO"))
     if number:
@@ -2770,10 +2854,14 @@ def load_port_demand_groups(
         base_attrs = {
             "status": row.flow,
             "flow": row.flow,
+            "IYC_STS_CSTATUSCD": row.flow,
             "size": row.size_mode,
             "size_mode": row.size_mode,
+            "IYC_CSZ_CSIZECD": row.size_mode,
             "port": row.port,
+            "IYC_POT_UNLDPORT": row.port,
             "height": "UNK",
+            "IYC_CHEIGHTCD": "UNK",
             "weight_class": "UNK",
             "weight": "UNK",
             "special_stow_code": "",
@@ -3250,8 +3338,7 @@ def misplaced_bays_to_exclude(
     occupied["_flow"] = occupied["IYC_STS_CSTATUSCD"].map(lambda value: normalize_flow(value, default="OF"))
     bad = occupied[
         [
-            not (flow == "OF" and normalize_code(area).startswith("E"))
-            and flow not in area_functions.get(area, set())
+            flow not in area_functions.get(area, set())
             for area, flow in zip(occupied["YAA_AREANO"], occupied["_flow"])
         ]
     ].copy()
@@ -3432,35 +3519,25 @@ def build_problem(
         plan_flow = medium_small_area_flow(row.flow)
         if plan_flow not in target_big_plan_flows:
             continue
-        functions = area_functions.get(row.area_no, set())
-        if plan_flow == "OF" and row.area_no.startswith("E"):
-            pass
-        elif plan_flow != "OF" and "E" in functions:
-            pass
-        elif plan_flow not in functions:
+        if plan_flow not in area_functions.get(row.area_no, set()):
             skipped_flow_function[(row.voyage_id, row.area_no)] += row.planned_boxes
             continue
         cleaned_plan.append(row)
         assigned_areas[(row.voyage_id, plan_flow)].add(row.area_no)
-    big_plan_caps = medium_demand_caps_from_big_plan(
-        input_plan,
-        target_voyages,
-        planning_time,
-        target_big_plan_flows,
-    )
+    # Medium/small demand uses actual demand; big-plan rows below remain area inheritance targets.
     groups, _demand_rows = load_port_demand_groups(
         input_guandong,
         target_voyages,
         planning_time,
         attribute_rules,
-        big_plan_caps=big_plan_caps,
+        big_plan_caps=None,
     )
     small_groups = load_small_doc_groups(
         input_guandong,
         target_voyages,
         attribute_rules,
         planning_time,
-        big_plan_caps=big_plan_caps,
+        big_plan_caps=None,
     )
     demand_by_voyage_size: Counter[tuple[str, str, str]] = Counter()
     for group in groups:
@@ -3541,6 +3618,12 @@ def build_problem(
         misplaced_bay_exclusion_ratio,
         attribute_rules,
     )
+    existing_coarse_area_load, existing_coarse_bay_load = existing_coarse_group_loads(
+        input_guandong,
+        planning_time,
+        set(target_voyages),
+        set(bays),
+    )
     bay_requirements, bay_blocklist, bay_adjust_rules, bay_constraint_summary = build_medium_small_bay_controls(
         input_guandong,
         groups,
@@ -3600,6 +3683,8 @@ def build_problem(
         voyage_windows=voyage_windows,
         area_operations=area_operations,
         target_voyages=target_voyages,
+        existing_coarse_area_load=dict(existing_coarse_area_load),
+        existing_coarse_bay_load=dict(existing_coarse_bay_load),
         berth_distances=berth_distances,
         berth_by_voyage=berth_by_voyage,
         allowed_areas_by_voyage={
@@ -3649,17 +3734,11 @@ def load_medium_small_inputs(
         big_plan_rows = read_big_plan(big_plan)
     else:
         big_plan_rows = list(big_plan)
-    big_plan_caps = medium_demand_caps_from_big_plan(
-        big_plan_rows,
-        list(voyages),
-        planning_time,
-        {medium_small_area_flow(flow) for flow in DEFAULT_TARGET_BIG_PLAN_FLOWS},
-    )
     demand_rows = calculate_medium_demands(
         input_guandong,
         list(voyages),
         planning_time,
-        big_plan_caps=big_plan_caps,
+        big_plan_caps=None,
     )
     problem = build_problem(
         input_guandong,

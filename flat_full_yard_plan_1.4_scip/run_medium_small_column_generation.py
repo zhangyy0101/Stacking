@@ -27,7 +27,7 @@ from medium_small.bridge import (
 from api.planning_api import YardPlanAlgorithmConfig, solve_medium_small_plan_df
 
 
-DEFAULT_ADAPTER_JSON = SCRIPT_DIR / "data_examples" / "input_data.json"
+DEFAULT_ADAPTER_JSON = SCRIPT_DIR / "data" / "input" / "input_data.json"
 
 
 def run_medium_small_plan(

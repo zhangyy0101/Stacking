@@ -73,35 +73,29 @@ class YardPlanAlgorithmConfig:
 
 def solve_large_plan_df(
     input_adapter: InputAdapterGd,
-    previous_large_plan_df: pd.DataFrame | None = None,
     config: YardPlanAlgorithmConfig | None = None,
 ) -> pd.DataFrame:
     config = config or YardPlanAlgorithmConfig()
     planning_time = _planning_timestamp(input_adapter, config)
-    original_history = getattr(input_adapter, "history_plan_info", None)
-    input_adapter.history_plan_info = _safe_frame(previous_large_plan_df)
-    try:
-        artifacts, _state = adapter_data_io.build_large_inputs(
-            input_adapter,
-            planning_time,
-            disable_default_flow_aliases=config.disable_default_flow_aliases,
-            config=config.large,
-        )
-        solution = solve_daily_rolling_yard_plan(
+    artifacts, _state = adapter_data_io.build_large_inputs(
+        input_adapter,
+        planning_time,
+        disable_default_flow_aliases=config.disable_default_flow_aliases,
+        config=config.large,
+    )
+    solution = solve_daily_rolling_yard_plan(
+        artifacts.data,
+        time_limit=config.large_time_limit,
+        mip_gap=config.large_mip_gap,
+        verbose=config.large_verbose,
+    )
+    return pd.DataFrame(
+        adapter_data_io.allocation_output_rows(
+            solution,
             artifacts.data,
-            time_limit=config.large_time_limit,
-            mip_gap=config.large_mip_gap,
-            verbose=config.large_verbose,
+            planning_time=planning_time,
         )
-        return pd.DataFrame(
-            adapter_data_io.allocation_output_rows(
-                solution,
-                artifacts.data,
-                planning_time=planning_time,
-            )
-        )
-    finally:
-        input_adapter.history_plan_info = original_history
+    )
 
 
 def solve_medium_small_plan_df(
@@ -158,11 +152,10 @@ def solve_small_plan_df(
 
 def solve_full_yard_plan_df(
     input_adapter: InputAdapterGd,
-    previous_large_plan_df: pd.DataFrame | None = None,
     config: YardPlanAlgorithmConfig | None = None,
 ) -> dict[str, pd.DataFrame]:
     config = config or YardPlanAlgorithmConfig()
-    large_result_df = solve_large_plan_df(input_adapter, previous_large_plan_df, config)
+    large_result_df = solve_large_plan_df(input_adapter, config)
     medium_small = solve_medium_small_plan_df(input_adapter, large_result_df, config)
     return {
         "large_plan": large_result_df,
@@ -170,10 +163,6 @@ def solve_full_yard_plan_df(
         "small_plan": medium_small["small_plan"],
         "unplaced_boxes": medium_small["unplaced_boxes"],
     }
-
-
-def _safe_frame(frame: pd.DataFrame | None) -> pd.DataFrame:
-    return frame.copy() if isinstance(frame, pd.DataFrame) else pd.DataFrame()
 
 
 def _planning_timestamp(input_adapter: InputAdapterGd, config: YardPlanAlgorithmConfig) -> pd.Timestamp:

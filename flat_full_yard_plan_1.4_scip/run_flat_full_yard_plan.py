@@ -16,7 +16,7 @@ REPO_ROOT = SCRIPT_DIR.parent
 for path in (SCRIPT_DIR, REPO_ROOT):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
-DEFAULT_ADAPTER_JSON = SCRIPT_DIR / "data_examples" / "input_data.json"
+DEFAULT_ADAPTER_JSON = SCRIPT_DIR / "data" / "input" / "input_data.json"
 
 from adapters import input_adapter_standard as adapter_data_io
 from adapters.input_adapter_gd import InputAdapterGd
@@ -37,10 +37,9 @@ else:
 
 def run_full_yard_plan(
     input_adapter: InputAdapterGd,
-    previous_large_plan_df: pd.DataFrame | None = None,
     config: YardPlanAlgorithmConfig | None = None,
 ) -> dict[str, pd.DataFrame]:
-    return solve_full_yard_plan_df(input_adapter, previous_large_plan_df, config)
+    return solve_full_yard_plan_df(input_adapter, config)
 from medium_small.bridge import (
     add_column_generation_arguments,
     build_problem_from_large_plan_records_adapter,

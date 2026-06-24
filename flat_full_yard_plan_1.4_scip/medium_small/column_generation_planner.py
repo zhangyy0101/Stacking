@@ -112,6 +112,11 @@ class ColumnGenerationConfig:
     repair_can_exceed_medium_plan_quota: bool = False
     unplaced_penalty: float = 100_000.0
     required_area_reward: float = 1_000.0
+    existing_coarse_bay_reward: float = 48.0
+    existing_coarse_neighbor_bay_reward: float = 24.0
+    existing_other_coarse_bay_penalty: float = 48.0
+    existing_other_coarse_neighbor_bay_penalty: float = 12.0
+    existing_coarse_neighbor_max_bay_distance: int = 12
     group_area_balance_penalty: float = 18.0
     medium_concentrated_group_threshold: int = 26
     medium_small_group_area_split_penalty: float = 2400.0
@@ -175,6 +180,31 @@ class ColumnGenerationPlanner:
         self.area_group_cap: Counter[tuple[str, str]] = Counter()
         self._area_group_cap_computed: set[tuple[str, str]] = set()
         self.quota_by_key: Counter[tuple[str, str, str, str]] = Counter()
+        self.existing_coarse_area_load: Counter[tuple[str, str, str, str, str]] = Counter(
+            {
+                tuple(key): int(value)
+                for key, value in getattr(problem, "existing_coarse_area_load", {}).items()
+                if int(value) > 0
+            }
+        )
+        self.existing_coarse_bay_load: Counter[tuple[str, str, str, str, str, str]] = Counter(
+            {
+                tuple(key): int(value)
+                for key, value in getattr(problem, "existing_coarse_bay_load", {}).items()
+                if int(value) > 0
+            }
+        )
+        self.existing_coarse_bays: defaultdict[tuple[str, str, str, str], set[str]] = defaultdict(set)
+        self.existing_coarse_area_bays: defaultdict[tuple[str, str, str, str, str], set[str]] = defaultdict(set)
+        self.existing_area_coarse_bays: defaultdict[tuple[str, tuple[str, str, str, str]], set[str]] = defaultdict(set)
+        self.existing_bay_coarse_load: defaultdict[str, Counter[tuple[str, str, str, str]]] = defaultdict(Counter)
+        for (*coarse_key, area_no, bay_key), value in self.existing_coarse_bay_load.items():
+            if value > 0:
+                coarse_tuple = tuple(coarse_key)
+                self.existing_coarse_bays[coarse_tuple].add(str(bay_key))
+                self.existing_coarse_area_bays[coarse_tuple + (str(area_no),)].add(str(bay_key))
+                self.existing_area_coarse_bays[(str(area_no), coarse_tuple)].add(str(bay_key))
+                self.existing_bay_coarse_load[str(bay_key)][coarse_tuple] += int(value)
         self.group_demand = {group.group_id: int(group.demand) for group in self.groups}
         self.coarse_demand: Counter[tuple[str, str, str, str]] = Counter()
         self.voyage_flow_size_demand: Counter[tuple[str, str, str]] = Counter()
@@ -475,9 +505,21 @@ class ColumnGenerationPlanner:
                     text = str(attr)
                     if text and text not in attrs:
                         attrs.append(text)
+        fallback_values = {
+            "status": flow,
+            "flow": flow,
+            "IYC_STS_CSTATUSCD": flow,
+            "size": size,
+            "size_mode": size,
+            "IYC_CSZ_CSIZECD": size,
+            "port": port,
+            "IYC_POT_UNLDPORT": port,
+            "height": height,
+            "IYC_CHEIGHTCD": height,
+        }
         out: dict[str, str] = {}
         for attr in attrs:
-            out[attr] = "MIXED"
+            out[attr] = fallback_values.get(attr, "MIXED")
         return out
 
     @staticmethod
@@ -599,6 +641,17 @@ class ColumnGenerationPlanner:
                 "medium_large_group_small_area": self.config.medium_large_group_small_area_penalty,
                 "medium_large_group_area_open": self.config.medium_large_group_area_open_penalty,
                 "medium_large_group_target_area_boxes": self.config.medium_large_group_target_area_boxes,
+                "existing_same_coarse_bay_reward": self.config.existing_coarse_bay_reward,
+                "existing_same_coarse_neighbor_bay_reward": self.config.existing_coarse_neighbor_bay_reward,
+                "existing_other_coarse_bay_penalty": self.config.existing_other_coarse_bay_penalty,
+                "existing_other_coarse_neighbor_bay_penalty": self.config.existing_other_coarse_neighbor_bay_penalty,
+                "existing_coarse_neighbor_max_bay_distance": self.config.existing_coarse_neighbor_max_bay_distance,
+            },
+            "existing_coarse_anchors": {
+                "mode": "stage_scope_bay_proximity",
+                "area_key_count": len(self.existing_coarse_area_load),
+                "bay_key_count": len(self.existing_coarse_bay_load),
+                "box_count": int(sum(self.existing_coarse_bay_load.values())),
             },
             "inheritance_penalties": {
                 "unplaced": self.config.unplaced_penalty,
@@ -775,6 +828,11 @@ class ColumnGenerationPlanner:
     def _area_relayout_concentration_metrics(self, selected: Counter[int]) -> dict[str, float | int]:
         fine_area_bays: set[tuple[str, str, str]] = set()
         coarse_area_bays: Counter[tuple[str, str, str, str, str, str]] = Counter()
+        existing_anchor_score = 0.0
+        existing_same_coarse_bay_boxes = 0
+        existing_same_coarse_neighbor_boxes = 0
+        existing_other_coarse_bay_boxes = 0
+        existing_other_coarse_neighbor_boxes = 0
         for idx, chosen in selected.items():
             if chosen <= 0 or idx < 0 or idx >= len(self._columns):
                 continue
@@ -782,6 +840,16 @@ class ColumnGenerationPlanner:
             qty = int(chosen) * int(col.quantity)
             fine_area_bays.add((col.group_id, col.area_no, col.bay_key))
             coarse_area_bays[col.coarse_key + (col.area_no, col.bay_key)] += qty
+            anchor_score, anchor_category = self._existing_anchor_relayout_component(col, int(chosen))
+            existing_anchor_score += anchor_score
+            if anchor_category == "same_bay":
+                existing_same_coarse_bay_boxes += qty
+            elif anchor_category == "same_neighbor":
+                existing_same_coarse_neighbor_boxes += qty
+            elif anchor_category == "other_bay":
+                existing_other_coarse_bay_boxes += qty
+            elif anchor_category == "other_neighbor":
+                existing_other_coarse_neighbor_boxes += qty
 
         fine_area_pairs = {(group_id, area_no) for group_id, area_no, _bay_key in fine_area_bays}
         coarse_area_pairs = {key[:5] for key in coarse_area_bays}
@@ -799,6 +867,7 @@ class ColumnGenerationPlanner:
             + 24.0 * coarse_tail_boxes
             + 10.0 * len(fine_area_bays)
             + 4.0 * len(coarse_area_bays)
+            + existing_anchor_score
         )
         return {
             "score": round(score, 6),
@@ -809,6 +878,11 @@ class ColumnGenerationPlanner:
             "coarse_area_pairs": len(coarse_area_pairs),
             "coarse_excess_bays": coarse_excess_bays,
             "coarse_tail_boxes": coarse_tail_boxes,
+            "existing_anchor_score": round(existing_anchor_score, 6),
+            "existing_same_coarse_bay_boxes": existing_same_coarse_bay_boxes,
+            "existing_same_coarse_neighbor_boxes": existing_same_coarse_neighbor_boxes,
+            "existing_other_coarse_bay_boxes": existing_other_coarse_bay_boxes,
+            "existing_other_coarse_neighbor_boxes": existing_other_coarse_neighbor_boxes,
         }
 
     def _build_area_relayout_solution(
@@ -1018,8 +1092,39 @@ class ColumnGenerationPlanner:
         score -= 12.0 * int(col.quantity)
         if int(remaining) - int(col.quantity) > 0:
             score += 80.0
+        score += self._existing_anchor_relayout_component(col)[0]
         score += 0.01 * self.bays[col.bay_key].bay_order
         return score
+
+    def _existing_anchor_relayout_component(
+        self,
+        col: PlacementColumn,
+        quantity_multiplier: int = 1,
+    ) -> tuple[float, str | None]:
+        group = self.groups_by_id.get(col.group_id)
+        if group is None:
+            return 0.0, None
+        box_multiplier = max(1, int(quantity_multiplier)) * max(1, int(col.quantity))
+        existing_bay_load = self._existing_coarse_bay_load_for_group(group, col.bay_key)
+        if existing_bay_load > 0:
+            score = -float(self.config.existing_coarse_bay_reward) * min(5, existing_bay_load) * box_multiplier
+            return score, "same_bay"
+
+        same_distance = self._existing_same_coarse_bay_distance(group, col.bay_key)
+        same_reward = self._existing_neighbor_reward(same_distance) if same_distance is not None else 0.0
+        if same_reward > 0:
+            return -same_reward * box_multiplier, "same_neighbor"
+
+        existing_other_load = self._existing_other_coarse_bay_load_for_group(group, col.bay_key)
+        if existing_other_load > 0:
+            score = float(self.config.existing_other_coarse_bay_penalty) * min(5, existing_other_load) * box_multiplier
+            return score, "other_bay"
+
+        other_distance = self._existing_other_coarse_bay_distance(group, col.bay_key)
+        other_penalty = self._existing_other_neighbor_penalty(other_distance) if other_distance is not None else 0.0
+        if other_penalty > 0:
+            return other_penalty * box_multiplier, "other_neighbor"
+        return 0.0, None
 
     def _apply_column_to_area_relayout_state(self, col: PlacementColumn, relayout_state: dict) -> None:
         group_bay_key = (col.group_id, col.area_no, col.bay_key)
@@ -3503,7 +3608,6 @@ class ColumnGenerationPlanner:
             ("stage1b", False, True),
             ("stage2", False, True),
             ("stage3", False, False),
-            ("stage4", False, False),
         ]
         base_enforce_medium_plan_quota = self._repair_enforces_medium_plan_quota()
         stats: list[dict] = []
@@ -3564,7 +3668,6 @@ class ColumnGenerationPlanner:
             "stage1b": "same_group_big_plan_area",
             "stage2": "any_big_plan_area",
             "stage3": "compatible_yard_area",
-            "stage4": "fallback_yard_area",
         }.get(stage, stage)
 
     def _selection_state(self, selected: Counter[int]) -> tuple[Counter[int], dict, Counter[str]]:
@@ -4056,6 +4159,7 @@ class ColumnGenerationPlanner:
                 key=lambda item: (
                     self._priority_area_rank(group, self.bays[item[0]].area_no),
                     0 if self._user_bay_policy_requires(group, item[0]) else 1,
+                    self._existing_coarse_bay_rank(group, item[0]),
                     self._export_e_area_size_rank(group, self.bays[item[0]].area_no),
                     self._area_fallback_tier_for_group(group, self.bays[item[0]].area_no),
                     self._concentrated_area_sort_key(group, self.bays[item[0]].area_no),
@@ -4069,6 +4173,7 @@ class ColumnGenerationPlanner:
                 key=lambda item: (
                     self._priority_area_rank(group, self.bays[item[0]].area_no),
                     0 if self._user_bay_policy_requires(group, item[0]) else 1,
+                    self._existing_coarse_bay_rank(group, item[0]),
                     self._export_e_area_size_rank(group, self.bays[item[0]].area_no),
                     self._area_fallback_tier_for_group(group, self.bays[item[0]].area_no),
                     item[2],
@@ -4117,32 +4222,14 @@ class ColumnGenerationPlanner:
 
     def _candidate_areas_for_group(self, group: SmallBoxGroup, scope: str | None = None) -> list[str]:
         scope = scope or self._candidate_scope
-        big_size = self._big_plan_size(group.size)
-
-        def in_scope(area_no: str) -> bool:
-            if scope in {"stage0", "stage1a"}:
-                return self.quota_by_key.get((group.voyage_id, group.status, area_no, big_size), 0) > 0
-            if scope == "stage1b":
-                return self._is_big_plan_area_for_group(group, area_no)
-            if scope == "stage2":
-                return self._is_any_big_plan_area(area_no)
-            return True
 
         return sorted(
             [
                 area_no
                 for area_no in self.bays_by_area
-                if in_scope(area_no)
+                if self._candidate_area_base_scope(group, area_no, scope)
                 and self._user_area_policy_allows(group.voyage_id, area_no)
-                and (
-                    (scope == "stage4" and group.status not in EXPORT_FLOWS)
-                    or
-                    self._area_supports_group_flow(group, area_no)
-                    or (
-                        group.status in EXPORT_FLOWS
-                        and self._user_area_policy_forces_support(group.voyage_id, area_no)
-                    )
-                )
+                and self._area_supports_group_flow(group, area_no)
             ],
             key=lambda area_no: (
                 self._priority_area_rank(group, area_no),
@@ -4151,6 +4238,16 @@ class ColumnGenerationPlanner:
                 area_no,
             ),
         )
+
+    def _candidate_area_base_scope(self, group: SmallBoxGroup, area_no: str, scope: str) -> bool:
+        big_size = self._big_plan_size(group.size)
+        if scope in {"stage0", "stage1a"}:
+            return self.quota_by_key.get((group.voyage_id, group.status, area_no, big_size), 0) > 0
+        if scope == "stage1b":
+            return self._is_big_plan_area_for_group(group, area_no)
+        if scope == "stage2":
+            return self._is_any_big_plan_area(area_no)
+        return True
 
     def _priority_area_rank(self, group: SmallBoxGroup, area_no: str) -> int:
         priority = getattr(self.problem, "user_voyage_area_priority", {}).get(group.voyage_id, set())
@@ -4193,11 +4290,6 @@ class ColumnGenerationPlanner:
             return False
         return True
 
-    def _user_area_policy_forces_support(self, voyage_id: str, area_no: str) -> bool:
-        allow = getattr(self.problem, "user_voyage_area_allowlist", {}).get(voyage_id, set())
-        required = getattr(self.problem, "user_voyage_area_requirements", {}).get(voyage_id, set())
-        return area_no in allow or area_no in required
-
     def _user_bay_policy_allows(self, group: SmallBoxGroup, bay_key: str) -> bool:
         blocked = getattr(self.problem, "user_group_bay_blocklist", {}).get(group.group_id, set())
         return bay_key not in blocked
@@ -4210,10 +4302,6 @@ class ColumnGenerationPlanner:
         if self._is_big_plan_area_for_group(group, area_no):
             return True
         functions = self.problem.area_functions.get(area_no, set())
-        if group.status in EXPORT_FLOWS:
-            return "OF" in functions or self._is_e_area(area_no)
-        if "E" in functions:
-            return True
         return _area_flow(group.status) in functions
 
     def _limit_candidate_bays(
@@ -4291,6 +4379,20 @@ class ColumnGenerationPlanner:
             cost += self.config.fallback_bay_penalty
         if self._user_bay_policy_requires(group, bay_key):
             cost -= float(self.config.required_area_reward)
+        existing_bay_load = self._existing_coarse_bay_load_for_group(group, bay_key)
+        if existing_bay_load > 0:
+            cost -= float(self.config.existing_coarse_bay_reward) * min(5, existing_bay_load)
+        else:
+            same_distance = self._existing_same_coarse_bay_distance(group, bay_key)
+            if same_distance is not None:
+                cost -= self._existing_neighbor_reward(same_distance)
+            else:
+                existing_other_load = self._existing_other_coarse_bay_load_for_group(group, bay_key)
+                if existing_other_load > 0:
+                    cost += float(self.config.existing_other_coarse_bay_penalty) * min(5, existing_other_load)
+                other_distance = self._existing_other_coarse_bay_distance(group, bay_key)
+                if other_distance is not None:
+                    cost += self._existing_other_neighbor_penalty(other_distance)
         if group.special_stow or group.pre_stow:
             cost -= 1.0
         return cost
@@ -4411,6 +4513,65 @@ class ColumnGenerationPlanner:
 
     def _coarse_key(self, group: SmallBoxGroup) -> tuple[str, str, str, str]:
         return group.voyage_id, group.status, group.port, group.size
+
+    def _existing_coarse_bay_load_for_group(self, group: SmallBoxGroup, bay_key: str) -> int:
+        bay = self.bays.get(bay_key)
+        if bay is None:
+            return 0
+        return int(self.existing_coarse_bay_load.get(self._coarse_key(group) + (bay.area_no, bay_key), 0))
+
+    def _existing_same_coarse_bay_distance(self, group: SmallBoxGroup, bay_key: str) -> int | None:
+        bay = self.bays.get(bay_key)
+        if bay is None:
+            return None
+        anchor_bays = self.existing_coarse_area_bays.get(self._coarse_key(group) + (bay.area_no,), set())
+        if not anchor_bays:
+            return None
+        distances = [abs(self.bays[key].bay_order - bay.bay_order) for key in anchor_bays if key in self.bays]
+        return min(distances) if distances else None
+
+    def _existing_other_coarse_bay_distance(self, group: SmallBoxGroup, bay_key: str) -> int | None:
+        bay = self.bays.get(bay_key)
+        if bay is None:
+            return None
+        coarse_key = self._coarse_key(group)
+        distances: list[int] = []
+        for (area_no, existing_coarse_key), anchor_bays in self.existing_area_coarse_bays.items():
+            if area_no != bay.area_no or existing_coarse_key == coarse_key:
+                continue
+            distances.extend(abs(self.bays[key].bay_order - bay.bay_order) for key in anchor_bays if key in self.bays)
+        return min(distances) if distances else None
+
+    def _existing_neighbor_reward(self, distance: int) -> float:
+        max_distance = max(0, int(getattr(self.config, "existing_coarse_neighbor_max_bay_distance", 0) or 0))
+        if max_distance <= 0 or distance > max_distance:
+            return 0.0
+        scale = (max_distance - int(distance) + 1) / (max_distance + 1)
+        return float(self.config.existing_coarse_neighbor_bay_reward) * scale
+
+    def _existing_other_neighbor_penalty(self, distance: int) -> float:
+        max_distance = max(0, int(getattr(self.config, "existing_coarse_neighbor_max_bay_distance", 0) or 0))
+        if max_distance <= 0 or distance > max_distance:
+            return 0.0
+        scale = (max_distance - int(distance) + 1) / (max_distance + 1)
+        return float(self.config.existing_other_coarse_neighbor_bay_penalty) * scale
+
+    def _existing_other_coarse_bay_load_for_group(self, group: SmallBoxGroup, bay_key: str) -> int:
+        coarse_key = self._coarse_key(group)
+        return sum(
+            int(value)
+            for existing_coarse_key, value in self.existing_bay_coarse_load.get(bay_key, Counter()).items()
+            if existing_coarse_key != coarse_key
+        )
+
+    def _existing_coarse_bay_rank(self, group: SmallBoxGroup, bay_key: str) -> tuple[int, int, int]:
+        bay_load = self._existing_coarse_bay_load_for_group(group, bay_key)
+        if bay_load > 0:
+            return (0, 0, -bay_load)
+        distance = self._existing_same_coarse_bay_distance(group, bay_key)
+        if distance is not None:
+            return (1, int(distance), 0)
+        return (2, 0, 0)
 
     def _big_plan_size(self, size: str) -> str:
         return "40" if size == "45" else size if size in {"20", "40"} else "40"

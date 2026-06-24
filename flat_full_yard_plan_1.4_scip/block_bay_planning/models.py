@@ -240,6 +240,8 @@ class ProblemData:
     voyage_windows: dict[str, tuple[datetime, datetime]]
     area_operations: dict[str, list[AreaOperation]]
     target_voyages: list[str]
+    existing_coarse_area_load: dict[tuple[str, str, str, str, str], int] = field(default_factory=dict)
+    existing_coarse_bay_load: dict[tuple[str, str, str, str, str, str], int] = field(default_factory=dict)
     berth_distances: dict[tuple[str, str], float] = field(default_factory=dict)
     berth_by_voyage: dict[str, str] = field(default_factory=dict)
     tops_reserved_slot_count: int = 0
