@@ -543,11 +543,32 @@ def medium_small_area_flow(flow: Any) -> str:
     return "OZ"
 
 
+def area_allows_flow(area: Any, flow: Any, area_functions: Mapping[str, set[str]]) -> bool:
+    area_code = normalize_code(area)
+    flow_code = normalize_code(flow)
+    if not area_code or not flow_code:
+        return False
+    return flow_code in area_functions.get(area_code, set())
+
+
 def normalize_export_snapshot_flow(value: Any, aliases: Mapping[str, str] | None = None) -> str:
-    flow = normalize_flow(value, aliases, default=UNKNOWN_EXPORT_SNAPSHOT_FLOW_FALLBACK)
-    if flow and flow not in KNOWN_EXPORT_SNAPSHOT_FLOWS:
-        return UNKNOWN_EXPORT_SNAPSHOT_FLOW_FALLBACK
-    return flow
+    return "OF"
+
+
+def has_import_voyage(value: Any) -> bool:
+    return bool(normalize_voyage(value))
+
+
+def planning_excluded_mask(rows: pd.DataFrame) -> pd.Series:
+    if rows.empty or "planning_excluded" not in rows.columns:
+        return pd.Series(False, index=rows.index)
+    return rows["planning_excluded"].fillna(False).astype(bool)
+
+
+def planning_included_rows(rows: pd.DataFrame) -> pd.DataFrame:
+    if rows.empty:
+        return rows.copy()
+    return rows.loc[~planning_excluded_mask(rows)].copy()
 
 
 def normalize_voyage_list(values: Sequence[str] | None) -> list[str]:
@@ -1519,6 +1540,10 @@ def extract_current_snapshot_rows(
     rows["cntr_id"] = rows["IYC_CNTRID"].map(normalize_code)
     rows["size"] = rows["IYC_CSZ_CSIZECD"].map(normalize_size_large)
     export_mask = rows["direction"].eq("E")
+    transshipment_mask = export_mask & rows["i_voy"].map(has_import_voyage)
+    rows["planning_excluded"] = transshipment_mask
+    rows["planning_exclusion_reason"] = ""
+    rows.loc[transshipment_mask, "planning_exclusion_reason"] = "export_snapshot_has_import_voyage"
     rows.loc[export_mask, "flow"] = rows.loc[export_mask, "IYC_STS_CSTATUSCD"].map(
         lambda value: normalize_export_snapshot_flow(value, flow_aliases)
     )
@@ -1544,6 +1569,7 @@ def identify_bad_bays(
 ) -> set[tuple[str, str]]:
     if current_snapshot.empty:
         return set()
+    current_snapshot = planning_included_rows(current_snapshot)
     current_snapshot = current_snapshot[current_snapshot.get("direction", "").eq("E")].copy()
     if current_snapshot.empty:
         return set()
@@ -1558,7 +1584,7 @@ def identify_bad_bays(
         area = normalize_code(row.get("area_no"))
         bay = normalize_bay(row.get("bay_no"))
         flow = normalize_code(row.get("flow"))
-        if area and bay and flow and flow not in area_functions.get(area, set()):
+        if area and bay and flow and not area_allows_flow(area, flow, area_functions):
             bad_counts[(area, bay)] += 1
     bad_bays: set[tuple[str, str]] = set()
     for key, count in bad_counts.items():
@@ -1584,7 +1610,7 @@ def build_snapshot_count_params(
     q40: dict[tuple[str, str, str], float] = {}
     if current_snapshot.empty:
         return l20, l40, q20, q40
-    unique_containers = current_snapshot.copy()
+    unique_containers = planning_included_rows(current_snapshot)
     unique_containers = unique_containers[unique_containers["cntr_id"].notna()].copy()
     unique_containers = unique_containers.sort_values(["cntr_id", "area_no", "bay_no"]).drop_duplicates(
         "cntr_id",
@@ -1595,7 +1621,7 @@ def build_snapshot_count_params(
     for (vessel, flow, area, size), qty in grouped.items():
         if not vessel or not flow or not area or area not in areas:
             continue
-        target = (l20 if size == "20" else l40) if flow in area_functions.get(area, set()) else (q20 if size == "20" else q40)
+        target = (l20 if size == "20" else l40) if area_allows_flow(area, flow, area_functions) else (q20 if size == "20" else q40)
         target[(str(vessel), str(flow), str(area))] = target.get((str(vessel), str(flow), str(area)), 0.0) + float(qty)
     return l20, l40, q20, q40
 
@@ -1748,11 +1774,18 @@ def build_demand_params(
             doc = doc[doc["e_voy"].eq(vessel)].copy()
         else:
             doc = pd.DataFrame(columns=["cntr_id", "e_voy", "i_voy", "size", "raw_flow", "flow"])
-        snap = current_snapshot[current_snapshot["voy_id"].eq(vessel)].copy()
+        snap_all = current_snapshot[current_snapshot["voy_id"].eq(vessel)].copy()
+        snap_excluded = snap_all.loc[planning_excluded_mask(snap_all)].copy()
+        snap = planning_included_rows(snap_all)
         unique_snap = unique_snapshot_rows(snap)
+        unique_snap_all = unique_snapshot_rows(snap_all)
+        excluded_snapshot_ids = set(snap_excluded["cntr_id"].dropna().astype(str))
+        doc["flow"] = "OF"
+        doc_excluded = doc[doc["cntr_id"].astype(str).isin(excluded_snapshot_ids)].copy()
+        doc = doc[~doc["cntr_id"].astype(str).isin(excluded_snapshot_ids)].copy()
         covered_snap = unique_snap[unique_snap["area_no"].isin(covered_area_set)].copy() if covered_area_set else unique_snap
         doc_unique = valid_doc_rows(doc)
-        snapshot_ids = set(unique_snap["cntr_id"].astype(str))
+        snapshot_ids = set(unique_snap_all["cntr_id"].astype(str))
         doc_new = doc_unique[~doc_unique["cntr_id"].astype(str).isin(snapshot_ids)].copy()
         merged = merge_snapshot_and_doc(doc, unique_snap)
         detail20 = float((merged["size"] == "20").sum())
@@ -1768,14 +1801,18 @@ def build_demand_params(
             d40[(vessel, "OF")] = d40.get((vessel, "OF"), 0.0) + extra40
         diagnostics[vessel] = {
             "type": "export",
-            "doc_rows": int(len(doc)),
-            "snapshot_rows": int(len(snap)),
+            "doc_rows": int(len(doc) + len(doc_excluded)),
+            "doc_planning_rows": int(len(doc)),
+            "doc_snapshot_transshipment_rows_excluded": int(len(doc_excluded)),
+            "snapshot_rows": int(len(snap_all)),
+            "snapshot_transshipment_rows_excluded": int(len(snap_excluded)),
             "snapshot_unique_rows": int(len(unique_snap)),
             "covered_snapshot_rows": int(len(covered_snap)),
             "doc_new_rows": int(len(doc_new)),
             "dedup_rows": int(len(merged)),
             "prediction20": float(pred20),
             "prediction40": float(pred40),
+            "known_rows_for_prediction_offset": int(len(merged)),
             "extra_prediction20_to_OF": float(extra20),
             "extra_prediction40_to_OF": float(extra40),
         }
@@ -1786,7 +1823,7 @@ def build_demand_params(
             doc = doc[doc["i_voy"].eq(vessel)].copy()
         else:
             doc = pd.DataFrame(columns=["cntr_id", "e_voy", "i_voy", "size", "raw_flow", "flow"])
-        snap = current_snapshot[current_snapshot["voy_id"].eq(vessel)].copy()
+        snap = planning_included_rows(current_snapshot[current_snapshot["voy_id"].eq(vessel)].copy())
         unique_snap = unique_snapshot_rows(snap)
         covered_snap = unique_snap[unique_snap["area_no"].isin(covered_area_set)].copy() if covered_area_set else unique_snap
         doc_unique = valid_doc_rows(doc)
@@ -2043,7 +2080,7 @@ def build_availability_flags(
     for vessel in vessels:
         for flow in flows:
             for area in areas:
-                func_ok = flow in area_functions.get(area, set())
+                func_ok = area_allows_flow(area, flow, area_functions)
                 e20[(vessel, flow, area)] = int(
                     func_ok and cbar20_direct.get((vessel, area), 0.0) > 0 and cbar20.get((vessel, area), 0.0) > 0
                 )
@@ -2170,7 +2207,7 @@ def build_large_inputs(
         | {flow for _, flow, _ in q20}
         | {flow for _, flow, _ in q40}
     )
-    u = {(a, f): int(f in area_functions.get(a, set())) for a in areas for f in flows}
+    u = {(a, f): int(area_allows_flow(a, f, area_functions)) for a in areas for f in flows}
     e20, e40 = build_availability_flags(all_vessels, flows, areas, area_functions, cbar20, cbar20_direct, cbar40)
     p20, p40, old_flags, previous_rows = state.build_previous_plan_params(planning_time, all_vessels)
     model_data = LargePlanningData(
@@ -2297,7 +2334,7 @@ def count_flow_function_mismatch_rows(allocation: pd.DataFrame, area_functions: 
     rows = allocation[pd.to_numeric(allocation[qty_column], errors="coerce").fillna(0.0) > 1e-6].copy()
     if rows.empty:
         return 0
-    return int(rows.apply(lambda row: row["flow"] not in area_functions.get(row["area_no"], set()), axis=1).sum())
+    return int(rows.apply(lambda row: not area_allows_flow(row["area_no"], row["flow"], area_functions), axis=1).sum())
 
 
 def write_large_outputs(output_dir: Path, artifacts: PlanningInputArtifacts, solution: Any, state_rows: pd.DataFrame) -> None:
@@ -3338,7 +3375,7 @@ def misplaced_bays_to_exclude(
     occupied["_flow"] = occupied["IYC_STS_CSTATUSCD"].map(lambda value: normalize_flow(value, default="OF"))
     bad = occupied[
         [
-            flow not in area_functions.get(area, set())
+            not area_allows_flow(area, flow, area_functions)
             for area, flow in zip(occupied["YAA_AREANO"], occupied["_flow"])
         ]
     ].copy()
@@ -3519,7 +3556,7 @@ def build_problem(
         plan_flow = medium_small_area_flow(row.flow)
         if plan_flow not in target_big_plan_flows:
             continue
-        if plan_flow not in area_functions.get(row.area_no, set()):
+        if not area_allows_flow(row.area_no, plan_flow, area_functions):
             skipped_flow_function[(row.voyage_id, row.area_no)] += row.planned_boxes
             continue
         cleaned_plan.append(row)

@@ -941,10 +941,7 @@ def normalize_flow(value: Any, aliases: Mapping[str, str]) -> Optional[str]:
 
 
 def normalize_export_snapshot_flow(value: Any, aliases: Mapping[str, str]) -> Optional[str]:
-    flow = normalize_flow(value, aliases)
-    if flow and flow not in KNOWN_EXPORT_SNAPSHOT_FLOWS:
-        return UNKNOWN_EXPORT_SNAPSHOT_FLOW_FALLBACK
-    return flow
+    return "OF"
 
 
 def medium_small_area_flow(flow: Any) -> str:
@@ -964,6 +961,22 @@ def area_allows_flow(area: Any, flow: Any, area_functions: Mapping[str, set[str]
     if not area_code or not flow_code:
         return False
     return flow_code in area_functions.get(area_code, set())
+
+
+def has_import_voyage(value: Any) -> bool:
+    return bool(normalize_code(value))
+
+
+def planning_excluded_mask(rows: pd.DataFrame) -> pd.Series:
+    if rows.empty or "planning_excluded" not in rows.columns:
+        return pd.Series(False, index=rows.index)
+    return rows["planning_excluded"].fillna(False).astype(bool)
+
+
+def planning_included_rows(rows: pd.DataFrame) -> pd.DataFrame:
+    if rows.empty:
+        return rows.copy()
+    return rows.loc[~planning_excluded_mask(rows)].copy()
 
 
 def normalize_bay(value: Any) -> Optional[str]:
@@ -1227,10 +1240,14 @@ def extract_current_snapshot_rows(
             vessel = row["e_voy"]
             direction = "E"
             flow = normalize_export_snapshot_flow(row["raw_flow"], flow_aliases)
+            planning_excluded = has_import_voyage(row.get("i_voy"))
+            planning_exclusion_reason = "export_snapshot_has_import_voyage" if planning_excluded else ""
         elif row["i_voy"] in import_set:
             vessel = row["i_voy"]
             direction = "I"
-            flow = normalize_flow(row["raw_flow"], flow_aliases)
+            flow = medium_small_area_flow(normalize_flow(row["raw_flow"], flow_aliases))
+            planning_excluded = False
+            planning_exclusion_reason = ""
         if not vessel:
             continue
         rows.append(
@@ -1239,6 +1256,8 @@ def extract_current_snapshot_rows(
                 "voy_id": vessel,
                 "direction": direction,
                 "flow": flow,
+                "planning_excluded": planning_excluded,
+                "planning_exclusion_reason": planning_exclusion_reason,
             }
         )
     return pd.DataFrame(rows)
@@ -1281,7 +1300,7 @@ def identify_bad_bays(
     if current_snapshot.empty:
         return bad_bays
 
-    rows = current_snapshot.copy()
+    rows = planning_included_rows(current_snapshot)
     rows = rows[
         rows["direction"].eq("E")
         & rows["cntr_id"].notna()
@@ -1340,7 +1359,7 @@ def build_snapshot_count_params(
     if current_snapshot.empty:
         return l20, l40, q20, q40
 
-    unique_containers = current_snapshot.copy()
+    unique_containers = planning_included_rows(current_snapshot)
     unique_containers = unique_containers[unique_containers["cntr_id"].notna()].copy()
     unique_containers = unique_containers.sort_values(["cntr_id", "area_no", "bay_no"]).drop_duplicates("cntr_id", keep="first")
 
@@ -1458,7 +1477,13 @@ def build_demand_params(
         else:
             doc = empty_normalized_container_frame()
         snap_all = current_snapshot[current_snapshot["voy_id"].eq(vessel)].copy()
-        snap = snap_all[snap_all["area_no"].isin(model_areas)].copy()
+        snap_excluded = snap_all.loc[planning_excluded_mask(snap_all)].copy()
+        snap_planning = planning_included_rows(snap_all)
+        snap = snap_planning[snap_planning["area_no"].isin(model_areas)].copy()
+        excluded_snapshot_ids = valid_container_ids(snap_excluded)
+        doc["flow"] = "OF"
+        doc_excluded = doc[doc["cntr_id"].isin(excluded_snapshot_ids)].copy()
+        doc = doc[~doc["cntr_id"].isin(excluded_snapshot_ids)].copy()
         existing_ids = valid_container_ids(snap_all)
         if existing_ids:
             doc = doc[~doc["cntr_id"].isin(existing_ids)].copy()
@@ -1466,11 +1491,7 @@ def build_demand_params(
         add_grouped_demand(merged, vessel, d20, d40)
 
         pred20, pred40 = read_prediction_counts(predict_path) if predict_path.exists() else (0.0, 0.0)
-        known_for_prediction = merge_snapshot_and_doc(
-            normalize_export_doc_for_prediction(doc_path, vessel, flow_aliases),
-            snap_all,
-        )
-        detail20, detail40 = count_size_totals(known_for_prediction)
+        detail20, detail40 = count_size_totals(merged)
         extra20 = max(0.0, pred20 - detail20)
         extra40 = max(0.0, pred40 - detail40)
         if extra20:
@@ -1481,12 +1502,16 @@ def build_demand_params(
             "type": "export",
             "doc_path": str(doc_path) if doc_path.exists() else None,
             "predict_path": str(predict_path) if predict_path.exists() else None,
-            "doc_rows": int(len(doc)),
+            "doc_rows": int(len(doc) + len(doc_excluded)),
+            "doc_planning_rows": int(len(doc)),
+            "doc_snapshot_transshipment_rows_excluded": int(len(doc_excluded)),
             "snapshot_rows": int(len(snap_all)),
+            "snapshot_transshipment_rows_excluded": int(len(snap_excluded)),
             "snapshot_rows_in_model_areas": int(len(snap)),
             "dedup_rows": int(len(merged)),
             "prediction20": float(pred20),
             "prediction40": float(pred40),
+            "known_rows_for_prediction_offset": int(len(merged)),
             "detail20_before_prediction_extra": float(detail20),
             "detail40_before_prediction_extra": float(detail40),
             "extra_prediction20_to_OF": float(extra20),
@@ -1499,7 +1524,8 @@ def build_demand_params(
         doc = normalize_container_frame(pd.read_parquet(doc_path), flow_aliases)
         doc = doc[doc["i_voy"].eq(vessel)].copy()
         snap_all = current_snapshot[current_snapshot["voy_id"].eq(vessel)].copy()
-        snap = snap_all[snap_all["area_no"].isin(model_areas)].copy()
+        snap_planning = planning_included_rows(snap_all)
+        snap = snap_planning[snap_planning["area_no"].isin(model_areas)].copy()
         existing_ids = valid_container_ids(snap_all)
         if existing_ids:
             doc = doc[~doc["cntr_id"].isin(existing_ids)].copy()
