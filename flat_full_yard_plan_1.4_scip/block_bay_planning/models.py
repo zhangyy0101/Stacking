@@ -157,6 +157,8 @@ class Bay:
     existing_ports_by_row: dict[str, set[str]] = field(default_factory=dict)
     existing_attrs: dict[str, set[str]] = field(default_factory=dict)
     existing_attrs_by_row: dict[str, dict[str, set[str]]] = field(default_factory=dict)
+    existing_attrs_by_voyage: dict[str, dict[str, set[str]]] = field(default_factory=dict)
+    existing_attrs_by_row_by_voyage: dict[str, dict[str, dict[str, set[str]]]] = field(default_factory=dict)
     fallback_reasons: set[str] = field(default_factory=set)
     locked: bool = False
 
@@ -240,8 +242,8 @@ class ProblemData:
     voyage_windows: dict[str, tuple[datetime, datetime]]
     area_operations: dict[str, list[AreaOperation]]
     target_voyages: list[str]
-    existing_coarse_area_load: dict[tuple[str, str, str, str, str], int] = field(default_factory=dict)
-    existing_coarse_bay_load: dict[tuple[str, str, str, str, str, str], int] = field(default_factory=dict)
+    existing_coarse_area_load: dict[tuple[str, ...], int] = field(default_factory=dict)
+    existing_coarse_bay_load: dict[tuple[str, ...], int] = field(default_factory=dict)
     berth_distances: dict[tuple[str, str], float] = field(default_factory=dict)
     berth_by_voyage: dict[str, str] = field(default_factory=dict)
     tops_reserved_slot_count: int = 0

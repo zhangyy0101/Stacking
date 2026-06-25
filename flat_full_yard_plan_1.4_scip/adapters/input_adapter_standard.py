@@ -234,6 +234,8 @@ class Bay:
     existing_ports_by_row: dict[str, set[str]] = field(default_factory=dict)
     existing_attrs: dict[str, set[str]] = field(default_factory=dict)
     existing_attrs_by_row: dict[str, dict[str, set[str]]] = field(default_factory=dict)
+    existing_attrs_by_voyage: dict[str, dict[str, set[str]]] = field(default_factory=dict)
+    existing_attrs_by_row_by_voyage: dict[str, dict[str, dict[str, set[str]]]] = field(default_factory=dict)
     fallback_reasons: set[str] = field(default_factory=set)
     locked: bool = False
 
@@ -305,8 +307,8 @@ class ProblemData:
     voyage_windows: dict[str, tuple[datetime, datetime]]
     area_operations: dict[str, list[AreaOperation]]
     target_voyages: list[str]
-    existing_coarse_area_load: dict[tuple[str, str, str, str, str], int] = field(default_factory=dict)
-    existing_coarse_bay_load: dict[tuple[str, str, str, str, str, str], int] = field(default_factory=dict)
+    existing_coarse_area_load: dict[tuple[str, ...], int] = field(default_factory=dict)
+    existing_coarse_bay_load: dict[tuple[str, ...], int] = field(default_factory=dict)
     berth_distances: dict[tuple[str, str], float] = field(default_factory=dict)
     berth_by_voyage: dict[str, str] = field(default_factory=dict)
     allowed_areas_by_voyage: dict[str, set[str]] = field(default_factory=dict)
@@ -648,6 +650,10 @@ def attribute_output_name(attr: object) -> str:
     return "" if attr is None else str(attr).strip()
 
 
+def is_size_no_mix_attribute(attr: object) -> bool:
+    return attribute_output_name(attr).upper() in {"IYC_CSZ_CSIZECD", "SIZE", "SIZE_MODE"}
+
+
 def is_weight_attribute(attr: object) -> bool:
     raw = attribute_output_name(attr)
     return raw in WEIGHT_ATTRIBUTE_NAMES or raw.lower() in {item.lower() for item in WEIGHT_ATTRIBUTE_NAMES}
@@ -803,7 +809,10 @@ def read_attribute_rules(input_guandong: InputAdapterGd, voyages: Sequence[str])
 
 def small_groupby_columns(attribute_rules: AttributeRules, voyage_id: str) -> tuple[str, ...]:
     attrs: list[str] = []
+    attrs.extend(attribute_rules.coarse_for(voyage_id))
     attrs.extend(attribute_rules.fine_for(voyage_id))
+    # Keep no-mix attributes on the planning groups so bay/row compatibility
+    # can be evaluated even when they are not part of the user fine group.
     attrs.extend(attribute_rules.bay_no_mix_for(voyage_id))
     attrs.extend(attribute_rules.row_no_mix_for(voyage_id))
     if getattr(attribute_rules, "weight_group_enabled_for", lambda _voyage_id: False)(voyage_id):
@@ -819,6 +828,15 @@ def small_groupby_columns(attribute_rules: AttributeRules, voyage_id: str) -> tu
 def medium_groupby_attributes(attribute_rules: AttributeRules, voyage_id: str) -> tuple[str, ...]:
     attrs: list[str] = []
     attrs.extend(attribute_rules.coarse_for(voyage_id))
+    out: list[str] = []
+    for attr in attrs:
+        name = attribute_output_name(attr)
+        if name and name not in out:
+            out.append(name)
+    return tuple(out)
+
+
+def unique_attribute_names(attrs: Sequence[object]) -> tuple[str, ...]:
     out: list[str] = []
     for attr in attrs:
         name = attribute_output_name(attr)
@@ -846,14 +864,13 @@ def import_small_groupby_columns(attribute_rules: AttributeRules, voyage_id: str
     base_attrs, _base_values, _port_label = import_base_group_attributes(row, size_mode, port)
     attrs: list[str] = list(base_attrs)
     attrs.extend(attribute_rules.fine_for(voyage_id))
+    # These are not part of the user fine group; they are carried only so the
+    # no-mix constraints have a concrete value to compare.
+    attrs.extend(attribute_rules.bay_no_mix_for(voyage_id))
+    attrs.extend(attribute_rules.row_no_mix_for(voyage_id))
     if getattr(attribute_rules, "weight_group_enabled_for", lambda _voyage_id: False)(voyage_id):
         attrs.append("IYC_CWEIGHT")
-    columns: list[str] = []
-    for attr in attrs:
-        column = attribute_output_name(attr)
-        if column and column not in columns:
-            columns.append(column)
-    return tuple(columns)
+    return unique_attribute_names(attrs)
 
 
 def normalized_doc_record(row: Mapping[str, Any], flow: str, size_mode: str, port: str) -> dict[str, Any]:
@@ -2495,16 +2512,17 @@ def existing_coarse_group_loads(
     planning_time: datetime,
     target_voyages: set[str],
     valid_bay_keys: set[str],
-) -> tuple[Counter[tuple[str, str, str, str, str]], Counter[tuple[str, str, str, str, str, str]]]:
-    """Count current yard boxes for target voyages by the medium/small coarse key.
+    attribute_rules: AttributeRules | None = None,
+) -> tuple[Counter[tuple[str, ...]], Counter[tuple[str, ...]]]:
+    """Count current yard boxes for target voyages by the configured coarse key.
 
-    The planner's coarse key is `(voyage, flow, port_label, size)`.  Current
-    yard boxes are not part of the new demand, but their location is useful as
-    a soft anchor for placing the same coarse group nearby.
+    Current yard boxes are not part of the new demand, but their location is
+    useful as a soft anchor for placing the same configured coarse group nearby.
     """
+    attribute_rules = attribute_rules or read_attribute_rules(input_guandong, sorted(target_voyages))
     frame = getattr(input_guandong, "bay_slots_detail", None)
-    area_load: Counter[tuple[str, str, str, str, str]] = Counter()
-    bay_load: Counter[tuple[str, str, str, str, str, str]] = Counter()
+    area_load: Counter[tuple[str, ...]] = Counter()
+    bay_load: Counter[tuple[str, ...]] = Counter()
     if (
         not target_voyages
         or not valid_bay_keys
@@ -2559,11 +2577,10 @@ def existing_coarse_group_loads(
             flow = normalize_medium_small_flow(row.get("IYC_STS_CSTATUSCD"), default="OF")
             size = normalize_size_small(row.get("IYC_CSZ_CSIZECD"))
             port = normalize_text(row.get("IYC_POT_UNLDPORT"), "UNK")
-            if flow == "OF":
-                port_label = port
-            else:
-                _base_attrs, _base_values, port_label = import_base_group_attributes(row, size, port)
-            coarse_key = (voyage_id, flow, str(port_label), size)
+            record = normalized_doc_record(row, flow, size, port)
+            record["IYC_EVOY_ID"] = normalize_voyage(row.get("IYC_EVOY_ID"))
+            record["IYC_IVOY_ID"] = normalize_voyage(row.get("IYC_IVOY_ID"))
+            coarse_key = configured_coarse_anchor_key(record, voyage_id, attribute_rules)
             area_no = str(row.get("_area", ""))
             bay_key = str(row.get("_bay_key", ""))
             if not area_no or not bay_key:
@@ -2571,6 +2588,26 @@ def existing_coarse_group_loads(
             area_load[coarse_key + (area_no,)] += 1
             bay_load[coarse_key + (area_no, bay_key)] += 1
     return area_load, bay_load
+
+
+def configured_coarse_anchor_key(
+    row: Mapping[str, Any],
+    voyage_id: str,
+    attribute_rules: AttributeRules,
+) -> tuple[str, ...]:
+    flow = normalize_medium_small_flow(row.get("IYC_STS_CSTATUSCD"), default="OF")
+    size = normalize_size_small(row.get("IYC_CSZ_CSIZECD"))
+    port = normalize_text(row.get("IYC_POT_UNLDPORT"), "UNK")
+    if flow == "OF":
+        attrs = medium_groupby_attributes(attribute_rules, voyage_id)
+    else:
+        attrs, _values, _port_label = import_base_group_attributes(row, size, port)
+    values = dynamic_attributes_from_row(
+        row,
+        attrs,
+        levels=attribute_rules.weight_levels_for(voyage_id),
+    )
+    return (str(voyage_id), *(f"{attr}={values.get(attr, 'MIXED')}" for attr in attrs))
 
 
 def container_identity(row: pd.Series, index: object) -> str:
@@ -3133,12 +3170,34 @@ def build_bays(
     )
     frame = drop_bays(frame, excluded_bays)
 
-    available = available_or_released_slots(frame, vessel_schedules, planning_time)
+    large_bay_partner_by_bay = large_bay_partner_lookup_by_bay(frame)
+    existing_large_pairs_by_member = existing_large_pair_members_by_bay(
+        frame,
+        vessel_schedules,
+        planning_time,
+    )
+    large_shadow_slots = active_large_container_shadow_slots(
+        frame,
+        vessel_schedules,
+        planning_time,
+        large_bay_partner_by_bay,
+        existing_large_pairs_by_member,
+    )
+    available = drop_shadow_slots(
+        available_or_released_slots(frame, vessel_schedules, planning_time),
+        large_shadow_slots,
+    )
     cap_by_size = capacity_by_bay_size(available)
     physical_cap = physical_capacity_by_bay(available)
     row_cap_by_size = capacity_by_bay_row_size(available)
     row_physical_cap = physical_capacity_by_bay_row(available)
-    existing_attrs = existing_bay_attributes(frame, vessel_schedules, planning_time, attribute_rules)
+    existing_attrs = existing_bay_attributes(
+        frame,
+        vessel_schedules,
+        planning_time,
+        attribute_rules,
+        large_bay_partner_by_bay=large_bay_partner_by_bay,
+    )
     bays: dict[str, Bay] = {}
     by_area: defaultdict[str, list[str]] = defaultdict(list)
     large_bay_partner: dict[tuple[str, str], str] = {}
@@ -3148,7 +3207,15 @@ def build_bays(
     block_lookup: dict[str, tuple[str, tuple[str, ...], bool]] = {}
     for area_no, bay_keys in by_area.items():
         bay_nos = [key.split("|", 1)[1] for key in bay_keys]
-        large_bay_partner.update(apply_large_bay_pair_capacities(area_no, bay_nos, cap_by_size, physical_cap))
+        large_bay_partner.update(
+            apply_large_bay_pair_capacities(
+                area_no,
+                bay_nos,
+                cap_by_size,
+                physical_cap,
+                existing_large_pairs_by_member,
+            )
+        )
         big_starts = {
             bay
             for bay in bay_nos
@@ -3199,6 +3266,17 @@ def build_bays(
             existing_attrs_by_row={
                 str(row_no): {str(k): set(v) for k, v in row_attrs.items()}
                 for row_no, row_attrs in attrs.get("attributes_by_row", {}).items()
+            },
+            existing_attrs_by_voyage={
+                str(voyage): {str(k): set(v) for k, v in voyage_attrs.items()}
+                for voyage, voyage_attrs in attrs.get("attributes_by_voyage", {}).items()
+            },
+            existing_attrs_by_row_by_voyage={
+                str(row_no): {
+                    str(voyage): {str(k): set(v) for k, v in voyage_attrs.items()}
+                    for voyage, voyage_attrs in row_voyage_attrs.items()
+                }
+                for row_no, row_voyage_attrs in attrs.get("attributes_by_row_by_voyage", {}).items()
             },
         )
     return bays, len(reserved_slots), len(closed_bays), len(excluded_bays)
@@ -3257,16 +3335,8 @@ def drop_bays(frame: pd.DataFrame, excluded_bays: set[tuple[str, str]]) -> pd.Da
 
 
 def active_occupied(frame: pd.DataFrame, vessel_schedules: dict[str, VoyageSchedule], planning_time: datetime) -> pd.DataFrame:
-    occupied = frame[frame["HAS_CONTAINER"].fillna(0).astype(int).eq(1)].copy()
-    if occupied.empty:
-        return occupied
-    occupied["_voyage"] = occupied["IYC_EVOY_ID"].map(normalize_voyage)
-    keep = []
-    for row in occupied.to_dict("records"):
-        voyage = row.get("_voyage")
-        schedule = vessel_schedules.get(voyage)
-        keep.append(schedule is None or schedule.departure_time > planning_time)
-    return occupied.loc[keep].copy()
+    """Current physical yard occupancy; vessel schedule arguments are kept for caller compatibility."""
+    return frame[frame["HAS_CONTAINER"].fillna(0).astype(int).eq(1)].copy()
 
 
 def available_or_released_slots(
@@ -3274,16 +3344,167 @@ def available_or_released_slots(
     vessel_schedules: dict[str, VoyageSchedule],
     planning_time: datetime,
 ) -> pd.DataFrame:
-    empty = frame[frame["HAS_CONTAINER"].fillna(0).astype(int).eq(0)].copy()
-    occupied = frame[frame["HAS_CONTAINER"].fillna(0).astype(int).eq(1)].copy()
-    if occupied.empty:
-        return empty
-    occupied["_voyage"] = occupied["IYC_EVOY_ID"].map(normalize_voyage)
-    released = []
+    """Current physical empty slots only; planned departures do not release snapshot containers."""
+    return frame[frame["HAS_CONTAINER"].fillna(0).astype(int).eq(0)].copy()
+
+
+def slot_identity(row: Mapping[str, Any], area_no: str | None = None, bay_no: str | None = None) -> tuple[str, str, str, str, str]:
+    return (
+        normalize_code(area_no if area_no is not None else row.get("YAA_AREANO")),
+        normalize_bay(bay_no if bay_no is not None else row.get("YBY_BAYNO")),
+        normalize_row(row.get("YST_ROWNO")),
+        normalize_row(row.get("YST_TIERNO")),
+        normalize_row(row.get("YST_SLOTNO")),
+    )
+
+
+def slot_identities(frame: pd.DataFrame) -> list[tuple[str, str, str, str, str]]:
+    if frame.empty:
+        return []
+    areas = frame.get("YAA_AREANO", pd.Series(index=frame.index, dtype=object)).map(normalize_code)
+    bays = frame.get("YBY_BAYNO", pd.Series(index=frame.index, dtype=object)).map(normalize_bay)
+    rows = frame.get("YST_ROWNO", pd.Series(index=frame.index, dtype=object)).map(normalize_row)
+    tiers = frame.get("YST_TIERNO", pd.Series(index=frame.index, dtype=object)).map(normalize_row)
+    slots = frame.get("YST_SLOTNO", pd.Series(index=frame.index, dtype=object)).map(normalize_row)
+    return list(zip(areas, bays, rows, tiers, slots))
+
+
+def large_bay_partner_lookup_by_bay(frame: pd.DataFrame) -> dict[tuple[str, str], str]:
+    if frame.empty:
+        return {}
+    bay_numbers = (
+        frame[["YAA_AREANO", "YBY_BAYNO"]]
+        .drop_duplicates()
+        .assign(
+            YAA_AREANO=lambda data: data["YAA_AREANO"].map(normalize_code),
+            YBY_BAYNO=lambda data: data["YBY_BAYNO"].map(normalize_bay),
+        )
+        .drop_duplicates()
+    )
+    out: dict[tuple[str, str], str] = {}
+    for area_no, area_frame in bay_numbers.groupby("YAA_AREANO", sort=False):
+        ordered = sorted((str(value) for value in area_frame["YBY_BAYNO"] if str(value)), key=bay_sort_key)
+        bay_set = set(ordered)
+        for bay_no in ordered:
+            try:
+                next_bay = str(int(bay_no) + 2).zfill(max(2, len(bay_no)))
+                prev_bay = str(int(bay_no) - 2).zfill(max(2, len(bay_no)))
+            except ValueError:
+                continue
+            if next_bay in bay_set and are_consecutive_small_bays(bay_no, next_bay):
+                out[(str(area_no), bay_no)] = next_bay
+            elif prev_bay in bay_set and are_consecutive_small_bays(prev_bay, bay_no):
+                out[(str(area_no), bay_no)] = prev_bay
+    return out
+
+
+def infer_large_pair_for_slot(row: Mapping[str, Any], bay_set_by_area: Mapping[str, set[str]]) -> tuple[str, str, str] | None:
+    area_no = normalize_code(row.get("YAA_AREANO"))
+    bay_no = normalize_bay(row.get("YBY_BAYNO"))
+    if not area_no or not bay_no:
+        return None
+    bay_set = bay_set_by_area.get(area_no, set())
+    try:
+        next_bay = str(int(bay_no) + 2).zfill(max(2, len(bay_no)))
+        prev_bay = str(int(bay_no) - 2).zfill(max(2, len(bay_no)))
+    except ValueError:
+        return None
+    _enable20, enable40 = parse_enable_size_flags(row.get("YBY_ENABLECSIZECD"))
+    if enable40 and next_bay in bay_set and are_consecutive_small_bays(bay_no, next_bay):
+        return area_no, bay_no, next_bay
+    if prev_bay in bay_set and are_consecutive_small_bays(prev_bay, bay_no):
+        return area_no, prev_bay, bay_no
+    if next_bay in bay_set and are_consecutive_small_bays(bay_no, next_bay):
+        return area_no, bay_no, next_bay
+    return None
+
+
+def existing_large_pair_members_by_bay(
+    frame: pd.DataFrame,
+    vessel_schedules: dict[str, VoyageSchedule],
+    planning_time: datetime,
+) -> dict[tuple[str, str], set[frozenset[str]]]:
+    bay_set_by_area: defaultdict[str, set[str]] = defaultdict(set)
+    if frame.empty:
+        return {}
+    for row in frame[["YAA_AREANO", "YBY_BAYNO"]].drop_duplicates().to_dict("records"):
+        area_no = normalize_code(row.get("YAA_AREANO"))
+        bay_no = normalize_bay(row.get("YBY_BAYNO"))
+        if area_no and bay_no:
+            bay_set_by_area[area_no].add(bay_no)
+    occupied = active_occupied(frame, vessel_schedules, planning_time)
+    out: defaultdict[tuple[str, str], set[frozenset[str]]] = defaultdict(set)
     for row in occupied.to_dict("records"):
-        schedule = vessel_schedules.get(row.get("_voyage"))
-        released.append(schedule is not None and schedule.departure_time <= planning_time)
-    return pd.concat([empty, occupied.loc[released]], ignore_index=True)
+        size = normalize_size_small(row.get("IYC_CSZ_CSIZECD"))
+        if size not in {"40", "45"}:
+            continue
+        pair = infer_large_pair_for_slot(row, bay_set_by_area)
+        if pair is None:
+            continue
+        area_no, left, right = pair
+        pair_members = frozenset((left, right))
+        out[(area_no, left)].add(pair_members)
+        out[(area_no, right)].add(pair_members)
+    return dict(out)
+
+
+def large_pair_conflicts_existing(
+    area_no: str,
+    left: str,
+    right: str,
+    existing_large_pairs_by_member: Mapping[tuple[str, str], set[frozenset[str]]] | None,
+) -> bool:
+    if not existing_large_pairs_by_member:
+        return False
+    candidate = frozenset((left, right))
+    for bay_no in (left, right):
+        for existing_pair in existing_large_pairs_by_member.get((area_no, bay_no), set()):
+            if existing_pair != candidate:
+                return True
+    return False
+
+
+def active_large_container_shadow_slots(
+    frame: pd.DataFrame,
+    vessel_schedules: dict[str, VoyageSchedule],
+    planning_time: datetime,
+    large_bay_partner_by_bay: Mapping[tuple[str, str], str],
+    existing_large_pairs_by_member: Mapping[tuple[str, str], set[frozenset[str]]] | None = None,
+) -> set[tuple[str, str, str, str, str]]:
+    if not large_bay_partner_by_bay and not existing_large_pairs_by_member:
+        return set()
+    occupied = active_occupied(frame, vessel_schedules, planning_time)
+    if occupied.empty:
+        return set()
+    existing_large_pairs_by_member = existing_large_pairs_by_member or {}
+    out: set[tuple[str, str, str, str, str]] = set()
+    for row in occupied.to_dict("records"):
+        size = normalize_size_small(row.get("IYC_CSZ_CSIZECD"))
+        if size not in {"40", "45"}:
+            continue
+        area_no = normalize_code(row.get("YAA_AREANO"))
+        bay_no = normalize_bay(row.get("YBY_BAYNO"))
+        pair_sets = existing_large_pairs_by_member.get((area_no, bay_no), set())
+        if pair_sets:
+            for pair in pair_sets:
+                for partner_bay in pair:
+                    if partner_bay != bay_no:
+                        out.add(slot_identity(row, area_no=area_no, bay_no=partner_bay))
+            continue
+        partner_bay = large_bay_partner_by_bay.get((area_no, bay_no))
+        if partner_bay:
+            out.add(slot_identity(row, area_no=area_no, bay_no=partner_bay))
+    return out
+
+
+def drop_shadow_slots(
+    frame: pd.DataFrame,
+    shadow_slots: set[tuple[str, str, str, str, str]],
+) -> pd.DataFrame:
+    if frame.empty or not shadow_slots:
+        return frame
+    keep = [key not in shadow_slots for key in slot_identities(frame)]
+    return frame.loc[keep].copy()
 
 
 def capacity_by_bay_size(base: pd.DataFrame) -> dict[str, dict[tuple[str, str], int]]:
@@ -3305,6 +3526,7 @@ def apply_large_bay_pair_capacities(
     ordered_bays: list[str],
     cap_by_size: dict[str, dict[tuple[str, str], int]],
     physical_cap: dict[tuple[str, str], int],
+    existing_large_pairs_by_member: Mapping[tuple[str, str], set[frozenset[str]]] | None = None,
 ) -> dict[tuple[str, str], str]:
     partner_by_start: dict[tuple[str, str], str] = {}
     original = {
@@ -3324,11 +3546,14 @@ def apply_large_bay_pair_capacities(
         if not are_consecutive_small_bays(left, right):
             idx += 1
             continue
+        if large_pair_conflicts_existing(area_no, left, right, existing_large_pairs_by_member):
+            idx += 1
+            continue
         left_key = (area_no, left)
         right_key = (area_no, right)
         pair_physical = min(int(physical_cap.get(left_key, 0)), int(physical_cap.get(right_key, 0)))
         if pair_physical <= 0:
-            idx += 2
+            idx += 1
             continue
         has_large_capacity = False
         for size_mode in ("40", "45"):
@@ -3411,6 +3636,7 @@ def existing_bay_attributes(
     vessel_schedules: dict[str, VoyageSchedule],
     planning_time: datetime,
     attribute_rules: AttributeRules | None = None,
+    large_bay_partner_by_bay: Mapping[tuple[str, str], str] | None = None,
 ) -> dict[tuple[str, str], dict[str, set[str]]]:
     occupied = active_occupied(frame, vessel_schedules, planning_time)
     out: dict[tuple[str, str], dict[str, set[str]]] = {}
@@ -3426,34 +3652,61 @@ def existing_bay_attributes(
                 name = attribute_output_name(attr)
                 if name and name not in dynamic_attrs:
                     dynamic_attrs.append(name)
+    large_bay_partner_by_bay = large_bay_partner_by_bay or {}
     for row in occupied.to_dict("records"):
-        key = (row["YAA_AREANO"], row["YBY_BAYNO"])
-        attrs = out.setdefault(
-            key,
-            {
-                "sizes": set(),
-                "heights": set(),
-                "specials": set(),
-                "ports": set(),
-                "attributes": {},
-                "attributes_by_row": {},
-            },
-        )
-        attrs["sizes"].add(normalize_size_small(row.get("IYC_CSZ_CSIZECD")))
-        attrs["heights"].add(normalize_text(row.get("IYC_CHEIGHTCD"), "UNK"))
-        special = special_stow_code(row) or "NORMAL"
-        attrs["specials"].add(special)
-        port = normalize_text(row.get("IYC_POT_UNLDPORT"))
-        if port:
-            attrs["ports"].add(port)
-        row_no = normalize_row(row.get("YST_ROWNO"))
-        row_attrs = attrs["attributes_by_row"].setdefault(row_no, {}) if row_no else {}
-        for attr in dynamic_attrs:
-            value = dynamic_attribute_value(row, attr)
-            if value:
-                attrs["attributes"].setdefault(attr, set()).add(value)
-                if row_attrs is not None:
-                    row_attrs.setdefault(attr, set()).add(value)
+        area_no = normalize_code(row.get("YAA_AREANO"))
+        bay_no = normalize_bay(row.get("YBY_BAYNO"))
+        size = normalize_size_small(row.get("IYC_CSZ_CSIZECD"))
+        row_voyages = {
+            voyage
+            for voyage in (
+                normalize_voyage(row.get("IYC_EVOY_ID")),
+                normalize_voyage(row.get("IYC_IVOY_ID")),
+            )
+            if voyage
+        }
+        target_keys = [(area_no, bay_no)]
+        if size in {"40", "45"}:
+            partner_bay = large_bay_partner_by_bay.get((area_no, bay_no))
+            if partner_bay:
+                target_keys.append((area_no, partner_bay))
+        for key in dict.fromkeys(target_keys):
+            attrs = out.setdefault(
+                key,
+                {
+                    "sizes": set(),
+                    "heights": set(),
+                    "specials": set(),
+                    "ports": set(),
+                    "attributes": {},
+                    "attributes_by_row": {},
+                    "attributes_by_voyage": {},
+                    "attributes_by_row_by_voyage": {},
+                },
+            )
+            attrs["sizes"].add(size)
+            attrs["heights"].add(normalize_text(row.get("IYC_CHEIGHTCD"), "UNK"))
+            special = special_stow_code(row) or "NORMAL"
+            attrs["specials"].add(special)
+            port = normalize_text(row.get("IYC_POT_UNLDPORT"))
+            if port:
+                attrs["ports"].add(port)
+            row_no = normalize_row(row.get("YST_ROWNO"))
+            row_attrs = attrs["attributes_by_row"].setdefault(row_no, {}) if row_no else {}
+            for attr in dynamic_attrs:
+                value = dynamic_attribute_value(row, attr)
+                if value:
+                    if is_size_no_mix_attribute(attr):
+                        attrs["attributes"].setdefault(attr, set()).add(value)
+                        if row_attrs is not None:
+                            row_attrs.setdefault(attr, set()).add(value)
+                    else:
+                        for voyage in row_voyages:
+                            attrs["attributes_by_voyage"].setdefault(voyage, {}).setdefault(attr, set()).add(value)
+                            if row_no:
+                                attrs["attributes_by_row_by_voyage"].setdefault(row_no, {}).setdefault(
+                                    voyage, {}
+                                ).setdefault(attr, set()).add(value)
     return out
 
 
@@ -3677,6 +3930,7 @@ def build_problem(
         planning_time,
         set(target_voyages),
         set(bays),
+        attribute_rules,
     )
     bay_requirements, bay_blocklist, bay_adjust_rules, bay_constraint_summary = build_medium_small_bay_controls(
         input_guandong,

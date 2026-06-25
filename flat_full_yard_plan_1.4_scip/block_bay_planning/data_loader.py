@@ -615,7 +615,6 @@ def load_port_demand_groups(
             "special_stow_code": "",
             "pre_stow": False,
         }
-        group_columns = _medium_groupby_columns(attribute_rules, row.voyage_id)
         frame = doc_frames.get(row.voyage_id)
         matching = pd.DataFrame()
         if frame is not None and not frame.empty:
@@ -624,21 +623,43 @@ def load_port_demand_groups(
             port = frame.get("IYC_POT_UNLDPORT", pd.Series(index=frame.index, dtype=object)).map(lambda value: _norm(value, "UNK"))
             matching = frame.loc[status.eq(row.flow) & size.eq(row.size_mode) & port.eq(row.port)].copy()
         levels = attribute_rules.weight_levels_for(row.voyage_id) if attribute_rules is not None else (0, 10, 15, 20, 25, 30)
-        core = (row.flow, row.size_mode, row.port)
-        if not matching.empty:
+        if row.flow != "OF":
             weights: Counter[tuple] = Counter()
-            for record in matching.to_dict("records"):
-                values = _row_attributes(record, group_columns, levels=levels)
-                weights[tuple(values.get(column, "MIXED") for column in group_columns)] += 1
-            items = sorted(weights.items())
-            scaled = _largest_remainder_scale([count for _, count in items], sum(weights.values()), int(row.planned_boxes))
-            for (key, _count), qty in zip(items, scaled):
-                if qty > 0:
-                    counters[row.voyage_id][(core, group_columns, key)] += int(qty)
+            if not matching.empty:
+                for raw_record in matching.to_dict("records"):
+                    record = _normalized_doc_record(dict(raw_record), row.flow, row.size_mode, row.port)
+                    group_columns, values, port_label = _import_base_group_attributes(record, row.size_mode, row.port)
+                    core = (row.flow, row.size_mode, port_label)
+                    key = tuple(values.get(column, "MIXED") for column in group_columns)
+                    weights[(core, group_columns, key)] += 1
+                items = sorted(weights.items())
+                scaled = _largest_remainder_scale([count for _, count in items], sum(weights.values()), int(row.planned_boxes))
+                for (key, _count), qty in zip(items, scaled):
+                    if qty > 0:
+                        counters[row.voyage_id][key] += int(qty)
+            else:
+                record = _normalized_doc_record(base_attrs, row.flow, row.size_mode, row.port)
+                group_columns, values, port_label = _import_base_group_attributes(record, row.size_mode, row.port)
+                core = (row.flow, row.size_mode, port_label)
+                key = tuple(values.get(column, "MIXED") for column in group_columns)
+                counters[row.voyage_id][(core, group_columns, key)] += int(row.planned_boxes)
         else:
-            values = _row_attributes(base_attrs, group_columns, levels=levels)
-            key = tuple(values.get(column, "MIXED") for column in group_columns)
-            counters[row.voyage_id][(core, group_columns, key)] += int(row.planned_boxes)
+            group_columns = _medium_groupby_columns(attribute_rules, row.voyage_id)
+            core = (row.flow, row.size_mode, row.port)
+            if not matching.empty:
+                weights: Counter[tuple] = Counter()
+                for record in matching.to_dict("records"):
+                    values = _row_attributes(record, group_columns, levels=levels)
+                    weights[tuple(values.get(column, "MIXED") for column in group_columns)] += 1
+                items = sorted(weights.items())
+                scaled = _largest_remainder_scale([count for _, count in items], sum(weights.values()), int(row.planned_boxes))
+                for (key, _count), qty in zip(items, scaled):
+                    if qty > 0:
+                        counters[row.voyage_id][(core, group_columns, key)] += int(qty)
+            else:
+                values = _row_attributes(base_attrs, group_columns, levels=levels)
+                key = tuple(values.get(column, "MIXED") for column in group_columns)
+                counters[row.voyage_id][(core, group_columns, key)] += int(row.planned_boxes)
     for voyage_id in sorted(counters):
         for (core, group_columns, key), demand in sorted(counters[voyage_id].items(), key=lambda item: (item[0][0], item[0][2])):
             core_status, core_size, core_port = core
@@ -697,22 +718,31 @@ def load_small_doc_groups(
             if attribute_rules is not None and hasattr(attribute_rules, "weight_levels_for")
             else (0, 10, 15, 20, 25, 30)
         )
-        group_columns = _small_groupby_columns(attribute_rules, voyage_id)
         counter: Counter[tuple] = Counter()
         for row in frame.to_dict("records"):
+            flow = _flow(row.get("IYC_STS_CSTATUSCD"))
+            size = _size_mode(row.get("IYC_CSZ_CSIZECD"))
+            port = _norm(row.get("IYC_POT_UNLDPORT"), "UNK")
+            record = _normalized_doc_record(row, flow, size, port)
+            if flow == "OF":
+                group_columns = _small_groupby_columns(attribute_rules, voyage_id)
+                port_label = port
+            else:
+                group_columns = _import_small_groupby_columns(attribute_rules, voyage_id, record, size, port)
+                _base_attrs, _base_values, port_label = _import_base_group_attributes(record, size, port)
             core = (
-                _flow(row.get("IYC_STS_CSTATUSCD")),
-                _size_mode(row.get("IYC_CSZ_CSIZECD")),
-                _norm(row.get("IYC_POT_UNLDPORT"), "UNK"),
+                flow,
+                size,
+                port_label,
                 _norm(row.get("IYC_CHEIGHTCD"), "UNK"),
                 _weight_class(row.get("IYC_CWEIGHT"), levels),
                 _explicit_special_stow_code(row),
                 "0",
             )
-            values = _row_attributes(row, group_columns, levels=levels)
-            counter[(core, tuple(values.get(column, "") for column in group_columns))] += 1
+            values = _row_attributes(record, group_columns, levels=levels)
+            counter[(core, group_columns, tuple(values.get(column, "") for column in group_columns))] += 1
         for index, (key, demand) in enumerate(sorted(counter.items()), start=1):
-            core, dynamic_key = key
+            core, group_columns, dynamic_key = key
             status, size, port, height, weight, special_code, pre_stow_value = core
             values = dict(zip(group_columns, dynamic_key))
             pre_stow = str(pre_stow_value) == "1"
@@ -738,43 +768,52 @@ def load_small_doc_groups(
 def enforce_medium_groups_cover_small_groups(
     groups: list[BoxGroup],
     small_groups: list[SmallBoxGroup],
+    attribute_rules: AttributeRules | None = None,
 ) -> tuple[list[BoxGroup], dict[str, int], dict[str, int]]:
     """Adjust medium demand so it covers document floors without inflating totals first.
 
-    The document floor is exact at (voyage, flow, discharge-port, true-size).
-    When a floor is short, first shift forecast demand from other coarse groups
-    in the same (voyage, flow, big-plan-size) bucket. Only the remaining
+    The document floor is exact at the configured coarse group.  When a floor
+    is short, first shift forecast demand from other coarse groups in the same
+    (voyage, flow, big-plan-size) bucket. Only the remaining
     uncovered quantity is added as true extra medium demand.
     """
     updated = list(groups)
-    medium_by_key: Counter[tuple[str, str, str, str]] = Counter()
-    group_indices_by_key: defaultdict[tuple[str, str, str, str], list[int]] = defaultdict(list)
+    medium_by_key: Counter[tuple[str, ...]] = Counter()
+    group_indices_by_key: defaultdict[tuple[str, ...], list[int]] = defaultdict(list)
+    representative_by_key: dict[tuple[str, ...], BoxGroup | SmallBoxGroup] = {}
     for index, group in enumerate(updated):
-        key = _medium_small_coarse_key(group.voyage_id, group.status, group.port, group.size_mode)
+        key = _configured_group_coarse_key(group, attribute_rules)
         medium_by_key[key] += group.demand
         group_indices_by_key[key].append(index)
+        representative_by_key.setdefault(key, group)
 
-    small_by_key: Counter[tuple[str, str, str, str]] = Counter()
+    small_by_key: Counter[tuple[str, ...]] = Counter()
     for group in small_groups:
-        key = _medium_small_coarse_key(group.voyage_id, group.status, group.port, group.size)
+        key = _configured_group_coarse_key(group, attribute_rules)
         small_by_key[key] += group.demand
+        representative_by_key.setdefault(key, group)
 
     used_group_ids = {group.group_id for group in updated}
     added_by_key: dict[str, int] = {}
     shifted_by_key: dict[str, int] = {}
 
-    def bucket_key(key: tuple[str, str, str, str]) -> tuple[str, str, str]:
-        voyage_id, flow, _port, size = key
-        return voyage_id, flow, _medium_doc_floor_big_size(size)
+    def bucket_key(key: tuple[str, ...]) -> tuple[str, str, str]:
+        group = representative_by_key[key]
+        size = str(getattr(group, "size", getattr(group, "size_mode", "40")))
+        return str(group.voyage_id), str(group.status), _medium_doc_floor_big_size(size)
 
-    def increase_key(key: tuple[str, str, str, str], qty: int) -> None:
+    def increase_key(key: tuple[str, ...], qty: int) -> None:
         if qty <= 0:
             return
         if group_indices_by_key.get(key):
             index = group_indices_by_key[key][0]
             updated[index] = replace(updated[index], demand=updated[index].demand + qty)
         else:
-            voyage_id, flow, port, size = key
+            representative = representative_by_key[key]
+            voyage_id = str(representative.voyage_id)
+            flow = str(representative.status)
+            port = str(representative.port)
+            size = str(getattr(representative, "size", getattr(representative, "size_mode", "40")))
             group = BoxGroup(
                 group_id=_next_medium_group_id(voyage_id, used_group_ids),
                 voyage_id=voyage_id,
@@ -796,13 +835,14 @@ def enforce_medium_groups_cover_small_groups(
                     "port": port,
                     "size": size,
                     "size_mode": size,
+                    **{str(k): str(v) for k, v in (getattr(representative, "attributes", {}) or {}).items()},
                 },
             )
             group_indices_by_key[key].append(len(updated))
             updated.append(group)
         medium_by_key[key] += qty
 
-    def reduce_key(key: tuple[str, str, str, str], qty: int) -> None:
+    def reduce_key(key: tuple[str, ...], qty: int) -> None:
         remaining = max(0, int(qty))
         if remaining <= 0:
             return
@@ -816,10 +856,10 @@ def enforce_medium_groups_cover_small_groups(
             updated[index] = replace(updated[index], demand=current - take)
             remaining -= take
         if remaining > 0:
-            raise ValueError(f"cannot shift {qty} boxes from medium group {'|'.join(key)}")
+            raise ValueError(f"cannot shift {qty} boxes from medium group {_join_group_key(key)}")
         medium_by_key[key] -= qty
 
-    def donor_keys_for(key: tuple[str, str, str, str]) -> list[tuple[str, str, str, str]]:
+    def donor_keys_for(key: tuple[str, ...]) -> list[tuple[str, ...]]:
         target_bucket = bucket_key(key)
         donors = [
             donor_key
@@ -854,10 +894,12 @@ def enforce_medium_groups_cover_small_groups(
             shifted += take
             missing -= take
         if shifted > 0:
-            shifted_by_key["|".join(key)] = shifted_by_key.get("|".join(key), 0) + shifted
+            shifted_name = _join_group_key(key)
+            shifted_by_key[shifted_name] = shifted_by_key.get(shifted_name, 0) + shifted
         if missing > 0:
             increase_key(key, missing)
-            added_by_key["|".join(key)] = added_by_key.get("|".join(key), 0) + missing
+            added_name = _join_group_key(key)
+            added_by_key[added_name] = added_by_key.get(added_name, 0) + missing
 
     return [group for group in updated if group.demand > 0], added_by_key, shifted_by_key
 
@@ -866,8 +908,44 @@ def _medium_doc_floor_big_size(size: str) -> str:
     return "40" if _size_mode(size) == "45" else _size_mode(size)
 
 
-def _medium_small_coarse_key(voyage_id: str, flow: str, port: str, size: str) -> tuple[str, str, str, str]:
-    return (_voyage(voyage_id), _flow(flow), _norm(port, "UNK"), _size_mode(size))
+def _group_attr_value(group: BoxGroup | SmallBoxGroup, attr: str) -> str:
+    attrs = getattr(group, "attributes", {}) or {}
+    if attr in attrs:
+        return _norm(attrs.get(attr), "MIXED")
+    aliases = {
+        "status": getattr(group, "status", ""),
+        "flow": getattr(group, "status", ""),
+        "IYC_STS_CSTATUSCD": getattr(group, "status", ""),
+        "size": getattr(group, "size", ""),
+        "size_mode": getattr(group, "size", ""),
+        "IYC_CSZ_CSIZECD": getattr(group, "size", ""),
+        "port": getattr(group, "port", ""),
+        "IYC_POT_UNLDPORT": getattr(group, "port", ""),
+        "height": getattr(group, "height", ""),
+        "IYC_CHEIGHTCD": getattr(group, "height", ""),
+        "weight_class": getattr(group, "weight_class", ""),
+        "IYC_CWEIGHT": getattr(group, "weight_class", ""),
+    }
+    return _norm(aliases.get(attr), "MIXED")
+
+
+def _configured_group_coarse_attrs(group: BoxGroup | SmallBoxGroup, attribute_rules: AttributeRules | None) -> tuple[str, ...]:
+    if str(getattr(group, "status", "")) != "OF":
+        if _norm((getattr(group, "attributes", {}) or {}).get("IYC_EVOY_ID")):
+            return ("IYC_CSZ_CSIZECD", "IYC_EVOY_ID")
+        return ("IYC_CSZ_CSIZECD", "IYC_POT_UNLDPORT")
+    if attribute_rules is None:
+        return DEFAULT_MEDIUM_GROUP_COLUMNS
+    return tuple(str(attr) for attr in attribute_rules.coarse_for(getattr(group, "voyage_id", "")) if str(attr))
+
+
+def _configured_group_coarse_key(group: BoxGroup | SmallBoxGroup, attribute_rules: AttributeRules | None) -> tuple[str, ...]:
+    attrs = _configured_group_coarse_attrs(group, attribute_rules)
+    return (str(group.voyage_id), *(f"{attr}={_group_attr_value(group, attr)}" for attr in attrs))
+
+
+def _join_group_key(key: tuple[str, ...]) -> str:
+    return "|".join(str(part) for part in key)
 
 
 def _next_medium_group_id(voyage_id: str, used_group_ids: set[str]) -> str:
@@ -956,6 +1034,10 @@ def read_user_area_constraints(
 
 def _canonical_attribute_name(value: object) -> str:
     return str(value or "").strip()
+
+
+def _is_size_no_mix_attribute(value: object) -> bool:
+    return _canonical_attribute_name(value).upper() in {"IYC_CSZ_CSIZECD", "SIZE", "SIZE_MODE"}
 
 
 def _is_weight_attribute(value: object) -> bool:
@@ -1272,7 +1354,12 @@ def read_attribute_rules(data_dir: str | Path) -> AttributeRules:
 def _small_groupby_columns(attribute_rules: AttributeRules | None, voyage_id: object = None) -> tuple[str, ...]:
     if attribute_rules is None:
         return DEFAULT_FINE_GROUP_COLUMNS
-    attrs = list(attribute_rules.fine_for(voyage_id) if voyage_id is not None and hasattr(attribute_rules, "fine_for") else attribute_rules.fine_group_attributes)
+    attrs = list(
+        attribute_rules.coarse_for(voyage_id)
+        if voyage_id is not None and hasattr(attribute_rules, "coarse_for")
+        else attribute_rules.coarse_group_attributes
+    )
+    attrs.extend(attribute_rules.fine_for(voyage_id) if voyage_id is not None and hasattr(attribute_rules, "fine_for") else attribute_rules.fine_group_attributes)
     attrs.extend(attribute_rules.bay_no_mix_for(voyage_id) if voyage_id is not None and hasattr(attribute_rules, "bay_no_mix_for") else attribute_rules.bay_no_mix_attributes)
     attrs.extend(attribute_rules.row_no_mix_for(voyage_id) if voyage_id is not None and hasattr(attribute_rules, "row_no_mix_for") else attribute_rules.row_no_mix_attributes)
     columns: list[str] = []
@@ -1281,6 +1368,57 @@ def _small_groupby_columns(attribute_rules: AttributeRules | None, voyage_id: ob
         if column and column not in columns:
             columns.append(column)
     return tuple(columns)
+
+
+def _unique_attribute_names(attrs: tuple[object, ...] | list[object]) -> tuple[str, ...]:
+    columns: list[str] = []
+    for attr in attrs:
+        column = _canonical_attribute_name(attr)
+        if column and column not in columns:
+            columns.append(column)
+    return tuple(columns)
+
+
+def _normalized_doc_record(row: dict, flow: str, size_mode: str, port: str) -> dict:
+    record = dict(row)
+    record["status"] = flow
+    record["flow"] = flow
+    record["IYC_STS_CSTATUSCD"] = flow
+    record["size"] = size_mode
+    record["size_mode"] = size_mode
+    record["IYC_CSZ_CSIZECD"] = size_mode
+    record["port"] = port
+    record["IYC_POT_UNLDPORT"] = port
+    evoy = _voyage(row.get("IYC_EVOY_ID"))
+    if evoy:
+        record["IYC_EVOY_ID"] = evoy
+    return record
+
+
+def _import_base_group_attributes(row: dict, size_mode: str, port: str) -> tuple[tuple[str, ...], dict[str, str], str]:
+    evoy = _voyage(row.get("IYC_EVOY_ID"))
+    if evoy:
+        return (
+            ("IYC_CSZ_CSIZECD", "IYC_EVOY_ID"),
+            {"IYC_CSZ_CSIZECD": size_mode, "IYC_EVOY_ID": evoy},
+            "MIXED",
+        )
+    return (
+        ("IYC_CSZ_CSIZECD", "IYC_POT_UNLDPORT"),
+        {"IYC_CSZ_CSIZECD": size_mode, "IYC_POT_UNLDPORT": port},
+        port,
+    )
+
+
+def _import_small_groupby_columns(attribute_rules: AttributeRules | None, voyage_id: object, row: dict, size_mode: str, port: str) -> tuple[str, ...]:
+    base_attrs, _base_values, _port_label = _import_base_group_attributes(row, size_mode, port)
+    if attribute_rules is None:
+        return base_attrs
+    attrs: list[object] = list(base_attrs)
+    attrs.extend(attribute_rules.fine_for(voyage_id) if hasattr(attribute_rules, "fine_for") else attribute_rules.fine_group_attributes)
+    attrs.extend(attribute_rules.bay_no_mix_for(voyage_id) if hasattr(attribute_rules, "bay_no_mix_for") else attribute_rules.bay_no_mix_attributes)
+    attrs.extend(attribute_rules.row_no_mix_for(voyage_id) if hasattr(attribute_rules, "row_no_mix_for") else attribute_rules.row_no_mix_attributes)
+    return _unique_attribute_names(attrs)
 
 
 def _medium_groupby_columns(attribute_rules: AttributeRules | None, voyage_id: object = None) -> tuple[str, ...]:
@@ -1514,10 +1652,13 @@ def build_bays(
     )
     if excluded_bays:
         base = _drop_bays(base, excluded_bays)
-    cap_by_size = _capacity_by_bay_size(base)
-    row_cap_by_size = _capacity_by_bay_row_size(base)
-    physical_cap = _physical_capacity_by_bay(base)
-    row_physical_cap = _physical_capacity_by_bay_row(base)
+    existing_large_pairs_by_member = _existing_large_pair_members_by_bay(base, vessel_schedules, planning_time)
+    shadow_slots = _active_large_container_shadow_slots(base, vessel_schedules, planning_time, existing_large_pairs_by_member)
+    capacity_base = _drop_shadow_slots(base, shadow_slots)
+    cap_by_size = _capacity_by_bay_size(capacity_base)
+    row_cap_by_size = _capacity_by_bay_row_size(capacity_base)
+    physical_cap = _physical_capacity_by_bay(capacity_base)
+    row_physical_cap = _physical_capacity_by_bay_row(capacity_base)
     row_cap_by_bay_size = {
         size_mode: _row_capacity_index_by_bay(row_cap_by_size[size_mode])
         for size_mode in SIZE_MODES
@@ -1546,7 +1687,15 @@ def build_bays(
         ordered = sorted(area_df["YBY_BAYNO"].tolist(), key=_bay_sort_key)
         for idx, bay_no in enumerate(ordered):
             bay_order[(area_no, bay_no)] = idx
-        large_bay_partner.update(_apply_large_bay_pair_capacities(area_no, ordered, cap_by_size, physical_cap))
+        large_bay_partner.update(
+            _apply_large_bay_pair_capacities(
+                area_no,
+                ordered,
+                cap_by_size,
+                physical_cap,
+                existing_large_pairs_by_member,
+            )
+        )
         big_bay_starts = {
             bay_no
             for bay_no in ordered
@@ -1648,6 +1797,7 @@ def _populate_existing_bay_attributes(
         "YBY_BAYNO",
         "YST_ROWNO",
         "IYC_EVOY_ID",
+        "IYC_IVOY_ID",
         "IYC_CSZ_CSIZECD",
         "IYC_CHEIGHTCD",
         "IYC_POT_UNLDPORT",
@@ -1666,29 +1816,20 @@ def _populate_existing_bay_attributes(
                 name = _canonical_attribute_name(attr)
                 if name in base.columns and name not in columns:
                     columns.append(name)
+    for column in columns:
+        if column not in base.columns:
+            base[column] = ""
     occupied = base.loc[base["HAS_CONTAINER"] == 1, columns].copy()
     if occupied.empty:
         return
 
-    active_voyages = {
-        voyage_id
-        for voyage_id, schedule in vessel_schedules.items()
-        if schedule.departure_time > planning_time
-    }
-    known_voyages = set(vessel_schedules)
     occupied["_voyage"] = _voyage_series(occupied["IYC_EVOY_ID"])
-    occupied = occupied.loc[
-        occupied["_voyage"].eq("")
-        | ~occupied["_voyage"].isin(known_voyages)
-        | occupied["_voyage"].isin(active_voyages)
-    ]
-    if occupied.empty:
-        return
 
     occupied["_area"] = _norm_series(occupied["YAA_AREANO"])
     occupied["_bay"] = _bay_no_series(occupied["YBY_BAYNO"])
     occupied["_row"] = _row_no_series(occupied["YST_ROWNO"])
     occupied["_bay_key"] = occupied["_area"] + "-" + occupied["_bay"]
+    occupied["_i_voyage"] = _voyage_series(occupied["IYC_IVOY_ID"])
     occupied = occupied.loc[occupied["_bay_key"].isin(bays)]
     if occupied.empty:
         return
@@ -1729,14 +1870,22 @@ def _populate_existing_bay_attributes(
             attr_values = {str(item) for item in values[column].dropna().unique() if str(item)}
             if attr_values:
                 bay.existing_attrs.setdefault(attr, set()).update(attr_values)
+            for row in values.to_dict("records"):
+                value = str(row.get(column, "") or "")
+                if not value:
+                    continue
+                for voyage in {str(row.get("_voyage", "") or ""), str(row.get("_i_voyage", "") or "")} - {""}:
+                    bay.existing_attrs_by_voyage.setdefault(voyage, {}).setdefault(attr, set()).add(value)
         for attr in dynamic_attrs:
-            attr_values = {
-                _row_attribute_value(row, attr)
-                for row in values.to_dict("records")
-                if _row_attribute_value(row, attr)
-            }
-            if attr_values:
-                bay.existing_attrs.setdefault(attr, set()).update(attr_values)
+            for row in values.to_dict("records"):
+                value = _row_attribute_value(row, attr)
+                if not value:
+                    continue
+                if _is_size_no_mix_attribute(attr):
+                    bay.existing_attrs.setdefault(attr, set()).add(value)
+                    continue
+                for voyage in {str(row.get("_voyage", "") or ""), str(row.get("_i_voyage", "") or "")} - {""}:
+                    bay.existing_attrs_by_voyage.setdefault(voyage, {}).setdefault(attr, set()).add(value)
         for row_no, row_values in values.groupby("_row", sort=False):
             row_key = str(row_no)
             if not row_key:
@@ -1755,14 +1904,26 @@ def _populate_existing_bay_attributes(
                 attr_values = {str(item) for item in row_values[column].dropna().unique() if str(item)}
                 if attr_values:
                     bay.existing_attrs_by_row.setdefault(row_key, {}).setdefault(attr, set()).update(attr_values)
+                for row in row_values.to_dict("records"):
+                    value = str(row.get(column, "") or "")
+                    if not value:
+                        continue
+                    for voyage in {str(row.get("_voyage", "") or ""), str(row.get("_i_voyage", "") or "")} - {""}:
+                        bay.existing_attrs_by_row_by_voyage.setdefault(row_key, {}).setdefault(
+                            voyage, {}
+                        ).setdefault(attr, set()).add(value)
             for attr in dynamic_attrs:
-                attr_values = {
-                    _row_attribute_value(row, attr)
-                    for row in row_values.to_dict("records")
-                    if _row_attribute_value(row, attr)
-                }
-                if attr_values:
-                    bay.existing_attrs_by_row.setdefault(row_key, {}).setdefault(attr, set()).update(attr_values)
+                for row in row_values.to_dict("records"):
+                    value = _row_attribute_value(row, attr)
+                    if not value:
+                        continue
+                    if _is_size_no_mix_attribute(attr):
+                        bay.existing_attrs_by_row.setdefault(row_key, {}).setdefault(attr, set()).add(value)
+                        continue
+                    for voyage in {str(row.get("_voyage", "") or ""), str(row.get("_i_voyage", "") or "")} - {""}:
+                        bay.existing_attrs_by_row_by_voyage.setdefault(row_key, {}).setdefault(
+                            voyage, {}
+                        ).setdefault(attr, set()).add(value)
 
         statuses = values["_status"].dropna().astype(str)
         if statuses.str.endswith("E").any() or statuses.isin(["IE", "OE", "TE", "RE"]).any():
@@ -1870,39 +2031,7 @@ def _released_capacity_by_bay(
     vessel_schedules: dict[str, VoyageSchedule],
     planning_time: datetime,
 ) -> dict[str, Counter[tuple[str, str]]]:
-    released = {"20": Counter(), "40": Counter(), "45": Counter(), "physical": Counter()}
-    released_voyages = {
-        voyage_id
-        for voyage_id, schedule in vessel_schedules.items()
-        if schedule.departure_time <= planning_time
-    }
-    if not released_voyages:
-        return released
-
-    cols = ["YAA_AREANO", "YBY_BAYNO", "YBY_ENABLECSIZECD", "IYC_EVOY_ID"]
-    occupied = base.loc[base["HAS_CONTAINER"] == 1, cols].copy()
-    if occupied.empty:
-        return released
-
-    occupied["IYC_EVOY_ID"] = _voyage_series(occupied["IYC_EVOY_ID"])
-    occupied = occupied[occupied["IYC_EVOY_ID"].isin(released_voyages)]
-    if occupied.empty:
-        return released
-
-    occupied["YAA_AREANO"] = _norm_series(occupied["YAA_AREANO"])
-    occupied["YBY_BAYNO"] = _bay_no_series(occupied["YBY_BAYNO"])
-    occupied = occupied[(occupied["YAA_AREANO"] != "") & (occupied["YBY_BAYNO"] != "")]
-    if occupied.empty:
-        return released
-
-    physical_counts = occupied.groupby(["YAA_AREANO", "YBY_BAYNO"]).size()
-    released["physical"].update({(str(a), str(b)): int(v) for (a, b), v in physical_counts.items()})
-    for size_mode in SIZE_MODES:
-        counts = occupied.loc[_size_enabled_mask(occupied["YBY_ENABLECSIZECD"], size_mode)].groupby(
-            ["YAA_AREANO", "YBY_BAYNO"]
-        ).size()
-        released[size_mode].update({(str(a), str(b)): int(v) for (a, b), v in counts.items()})
-    return released
+    return {"20": Counter(), "40": Counter(), "45": Counter(), "physical": Counter()}
 
 
 def _is_occupied_at_planning_time(
@@ -1910,15 +2039,7 @@ def _is_occupied_at_planning_time(
     vessel_schedules: dict[str, VoyageSchedule],
     planning_time: datetime,
 ) -> bool:
-    if row.get("HAS_CONTAINER") != 1:
-        return False
-    voyage_id = _voyage(row.get("IYC_EVOY_ID"))
-    if not voyage_id:
-        return True
-    schedule = vessel_schedules.get(voyage_id)
-    if schedule is None:
-        return True
-    return schedule.departure_time > planning_time
+    return row.get("HAS_CONTAINER") == 1
 
 
 def _capacity_by_bay_size(base: pd.DataFrame) -> dict[str, dict[tuple[str, str], int]]:
@@ -1938,11 +2059,146 @@ def _physical_capacity_by_bay(base: pd.DataFrame) -> dict[tuple[str, str], int]:
     return {(str(a), str(b)): int(v) for (a, b), v in counts.items()}
 
 
+def _slot_identity(row: Mapping[str, object], area_no: str | None = None, bay_no: str | None = None) -> tuple[str, str, str, str, str]:
+    return (
+        _norm(area_no if area_no is not None else row.get("YAA_AREANO")),
+        _bay_no(bay_no if bay_no is not None else row.get("YBY_BAYNO")),
+        _row_no(row.get("YST_ROWNO")),
+        _row_no(row.get("YST_TIERNO")),
+        _row_no(row.get("YST_SLOTNO")),
+    )
+
+
+def _slot_identities(frame: pd.DataFrame) -> list[tuple[str, str, str, str, str]]:
+    if frame.empty:
+        return []
+    areas = frame.get("YAA_AREANO", pd.Series(index=frame.index, dtype=object)).map(_norm)
+    bays = frame.get("YBY_BAYNO", pd.Series(index=frame.index, dtype=object)).map(_bay_no)
+    rows = frame.get("YST_ROWNO", pd.Series(index=frame.index, dtype=object)).map(_row_no)
+    tiers = frame.get("YST_TIERNO", pd.Series(index=frame.index, dtype=object)).map(_row_no)
+    slots = frame.get("YST_SLOTNO", pd.Series(index=frame.index, dtype=object)).map(_row_no)
+    return list(zip(areas, bays, rows, tiers, slots))
+
+
+def _large_slot_start_enabled(value: object) -> bool:
+    if value is None:
+        return True
+    try:
+        if pd.isna(value):
+            return True
+    except (TypeError, ValueError):
+        pass
+    tokens = re.findall(r"\d+", str(value))
+    if not tokens:
+        return True
+    return any(_size_mode(token) in {"40", "45"} for token in tokens)
+
+
+def _infer_large_pair_for_slot(row: Mapping[str, object], bay_set_by_area: Mapping[str, set[str]]) -> tuple[str, str, str] | None:
+    area_no = _norm(row.get("YAA_AREANO"))
+    bay_no = _bay_no(row.get("YBY_BAYNO"))
+    if not area_no or not bay_no:
+        return None
+    bay_set = bay_set_by_area.get(area_no, set())
+    try:
+        next_bay = str(int(bay_no) + 2).zfill(max(2, len(bay_no)))
+        prev_bay = str(int(bay_no) - 2).zfill(max(2, len(bay_no)))
+    except ValueError:
+        return None
+    if _large_slot_start_enabled(row.get("YBY_ENABLECSIZECD")) and next_bay in bay_set and _are_consecutive_small_bays(bay_no, next_bay):
+        return area_no, bay_no, next_bay
+    if prev_bay in bay_set and _are_consecutive_small_bays(prev_bay, bay_no):
+        return area_no, prev_bay, bay_no
+    if next_bay in bay_set and _are_consecutive_small_bays(bay_no, next_bay):
+        return area_no, bay_no, next_bay
+    return None
+
+
+def _existing_large_pair_members_by_bay(
+    base: pd.DataFrame,
+    vessel_schedules: dict[str, VoyageSchedule],
+    planning_time: datetime,
+) -> dict[tuple[str, str], set[frozenset[str]]]:
+    if base.empty:
+        return {}
+    bay_set_by_area: defaultdict[str, set[str]] = defaultdict(set)
+    for row in base[["YAA_AREANO", "YBY_BAYNO"]].drop_duplicates().to_dict("records"):
+        area_no = _norm(row.get("YAA_AREANO"))
+        bay_no = _bay_no(row.get("YBY_BAYNO"))
+        if area_no and bay_no:
+            bay_set_by_area[area_no].add(bay_no)
+    occupied = base.loc[base["HAS_CONTAINER"] == 1].copy()
+    out: defaultdict[tuple[str, str], set[frozenset[str]]] = defaultdict(set)
+    for row in occupied.to_dict("records"):
+        size = _size_mode(row.get("IYC_CSZ_CSIZECD"))
+        if size not in {"40", "45"}:
+            continue
+        pair = _infer_large_pair_for_slot(row, bay_set_by_area)
+        if pair is None:
+            continue
+        area_no, left, right = pair
+        pair_members = frozenset((left, right))
+        out[(area_no, left)].add(pair_members)
+        out[(area_no, right)].add(pair_members)
+    return dict(out)
+
+
+def _active_large_container_shadow_slots(
+    base: pd.DataFrame,
+    vessel_schedules: dict[str, VoyageSchedule],
+    planning_time: datetime,
+    existing_large_pairs_by_member: Mapping[tuple[str, str], set[frozenset[str]]],
+) -> set[tuple[str, str, str, str, str]]:
+    if base.empty or not existing_large_pairs_by_member:
+        return set()
+    occupied = base.loc[base["HAS_CONTAINER"] == 1].copy()
+    out: set[tuple[str, str, str, str, str]] = set()
+    for row in occupied.to_dict("records"):
+        size = _size_mode(row.get("IYC_CSZ_CSIZECD"))
+        if size not in {"40", "45"}:
+            continue
+        area_no = _norm(row.get("YAA_AREANO"))
+        bay_no = _bay_no(row.get("YBY_BAYNO"))
+        for pair in existing_large_pairs_by_member.get((area_no, bay_no), set()):
+            for partner_bay in pair:
+                if partner_bay != bay_no:
+                    out.add(_slot_identity(row, area_no=area_no, bay_no=partner_bay))
+    return out
+
+
+def _drop_shadow_slots(
+    base: pd.DataFrame,
+    shadow_slots: set[tuple[str, str, str, str, str]],
+) -> pd.DataFrame:
+    if base.empty or not shadow_slots:
+        return base
+    occupied = base["HAS_CONTAINER"] == 1
+    keep = [is_occupied or key not in shadow_slots for is_occupied, key in zip(occupied, _slot_identities(base))]
+    return base.loc[keep].copy()
+
+
+def _large_pair_conflicts_existing(
+    area_no: str,
+    left: str,
+    right: str,
+    existing_large_pairs_by_member: Mapping[tuple[str, str], set[frozenset[str]]] | None,
+) -> bool:
+    if not existing_large_pairs_by_member:
+        return False
+    candidate = frozenset((left, right))
+    for bay_no in (left, right):
+        for existing_pair in existing_large_pairs_by_member.get((area_no, bay_no), set()):
+            if existing_pair != candidate:
+                return True
+    return False
+
+
 def _apply_large_bay_pair_capacities(
     area_no: str,
     ordered_bays: list[str],
     cap_by_size: dict[str, dict[tuple[str, str], int]],
     physical_cap: dict[tuple[str, str], int],
+    existing_large_pairs_by_member: Mapping[tuple[str, str], set[frozenset[str]]] | None = None,
 ) -> dict[tuple[str, str], str]:
     partner_by_start: dict[tuple[str, str], str] = {}
     original = {
@@ -1962,6 +2218,9 @@ def _apply_large_bay_pair_capacities(
         if not _are_consecutive_small_bays(left, right):
             idx += 1
             continue
+        if _large_pair_conflicts_existing(area_no, left, right, existing_large_pairs_by_member):
+            idx += 1
+            continue
         left_key = (area_no, left)
         right_key = (area_no, right)
         pair_physical = min(
@@ -1969,7 +2228,7 @@ def _apply_large_bay_pair_capacities(
             int(physical_cap.get(right_key, 0)),
         )
         if pair_physical <= 0:
-            idx += 2
+            idx += 1
             continue
         has_large_capacity = False
         for size_mode in ("40", "45"):
@@ -2074,15 +2333,6 @@ def _misplaced_bays_to_exclude(
     occupied = occupied.loc[occupied["_voyage"].isin(target_voyages)]
     if occupied.empty:
         return set()
-    active_voyages = {
-        voyage_id
-        for voyage_id in target_voyages
-        if voyage_id not in vessel_schedules or vessel_schedules[voyage_id].departure_time > planning_time
-    }
-    occupied = occupied.loc[occupied["_voyage"].isin(active_voyages)]
-    if occupied.empty:
-        return set()
-
     occupied["_area"] = _norm_series(occupied["YAA_AREANO"])
     occupied = occupied.loc[occupied["_area"].isin(area_functions)]
     if occupied.empty:
@@ -2311,7 +2561,7 @@ def build_problem(
     )
     small_groups = load_small_doc_groups(data_dir, target_voyages, planning_time, attribute_rules=attribute_rules)
     groups, medium_doc_floor_added_by_coarse_group, medium_doc_floor_shifted_by_coarse_group = (
-        enforce_medium_groups_cover_small_groups(groups, small_groups)
+        enforce_medium_groups_cover_small_groups(groups, small_groups, attribute_rules)
     )
     medium_doc_floor_by_coarse_group = dict(
         Counter(medium_doc_floor_added_by_coarse_group) + Counter(medium_doc_floor_shifted_by_coarse_group)
