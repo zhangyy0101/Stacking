@@ -571,6 +571,20 @@ def planning_included_rows(rows: pd.DataFrame) -> pd.DataFrame:
     return rows.loc[~planning_excluded_mask(rows)].copy()
 
 
+def yard_transshipment_mask(rows: pd.DataFrame) -> pd.Series:
+    if rows.empty or "IYC_EVOY_ID" not in rows.columns or "IYC_IVOY_ID" not in rows.columns:
+        return pd.Series(False, index=rows.index)
+    export_voyage = rows["IYC_EVOY_ID"].map(lambda value: bool(normalize_voyage(value)))
+    import_voyage = rows["IYC_IVOY_ID"].map(lambda value: bool(normalize_voyage(value)))
+    return export_voyage & import_voyage
+
+
+def medium_small_yard_included_rows(rows: pd.DataFrame) -> pd.DataFrame:
+    if rows.empty:
+        return rows.copy()
+    return rows.loc[~yard_transshipment_mask(rows)].copy()
+
+
 def normalize_voyage_list(values: Sequence[str] | None) -> list[str]:
     if values is None:
         return []
@@ -2431,6 +2445,7 @@ def read_yard_by_voyage_port_size(
     if "IYC_INYTM" in occupied.columns:
         in_time = pd.to_datetime(occupied["IYC_INYTM"], errors="coerce")
         occupied = occupied.loc[in_time.isna() | (in_time <= pd.Timestamp(planning_time))]
+    occupied = medium_small_yard_included_rows(occupied)
     if occupied.empty:
         return {}
     occupied["_container_key"] = [container_identity(row, index) for index, row in occupied.iterrows()]
@@ -2505,6 +2520,7 @@ def existing_coarse_group_loads(
     if "IYC_INYTM" in occupied.columns:
         in_time = pd.to_datetime(occupied["IYC_INYTM"], errors="coerce")
         occupied = occupied.loc[in_time.isna() | (in_time <= pd.Timestamp(planning_time))]
+    occupied = medium_small_yard_included_rows(occupied)
     if occupied.empty:
         return area_load, bay_load
 
@@ -2970,6 +2986,7 @@ def current_yard_container_keys(input_guandong: InputAdapterGd, planning_time: d
     if "IYC_INYTM" in occupied.columns:
         in_time = pd.to_datetime(occupied["IYC_INYTM"], errors="coerce")
         occupied = occupied.loc[in_time.isna() | (in_time <= pd.Timestamp(planning_time))]
+    occupied = medium_small_yard_included_rows(occupied)
     ids = set()
     numbers = set()
     if "IYC_CNTRID" in occupied.columns:

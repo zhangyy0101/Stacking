@@ -435,6 +435,7 @@ def _read_yard_by_voyage_port_size(
         "IYC_CNTRID",
         "IYC_CNTRNO",
         "IYC_EVOY_ID",
+        "IYC_IVOY_ID",
         "IYC_INYTM",
         "IYC_STS_CSTATUSCD",
         "IYC_CSZ_CSIZECD",
@@ -459,6 +460,7 @@ def _read_yard_by_voyage_port_size(
     if "IYC_INYTM" in occupied.columns:
         in_time = pd.to_datetime(occupied["IYC_INYTM"], errors="coerce")
         occupied = occupied.loc[in_time.isna() | (in_time <= planning_time)]
+    occupied = _medium_small_yard_included_rows(occupied)
     if occupied.empty:
         return {}
 
@@ -482,6 +484,20 @@ def _read_yard_by_voyage_port_size(
     for (voyage_id, flow, size, port), count in counts.items():
         out[str(voyage_id)][(str(flow), str(size), str(port))] += int(count)
     return dict(out)
+
+
+def _yard_transshipment_mask(rows: pd.DataFrame) -> pd.Series:
+    if rows.empty or "IYC_EVOY_ID" not in rows.columns or "IYC_IVOY_ID" not in rows.columns:
+        return pd.Series(False, index=rows.index)
+    export_voyage = rows["IYC_EVOY_ID"].map(lambda value: bool(_voyage(value)))
+    import_voyage = rows["IYC_IVOY_ID"].map(lambda value: bool(_voyage(value)))
+    return export_voyage & import_voyage
+
+
+def _medium_small_yard_included_rows(rows: pd.DataFrame) -> pd.DataFrame:
+    if rows.empty:
+        return rows.copy()
+    return rows.loc[~_yard_transshipment_mask(rows)].copy()
 
 
 def _container_identity(row: pd.Series, index: object) -> str:

@@ -78,6 +78,20 @@ def _voyage_series(series: pd.Series, fallback: str = "") -> pd.Series:
     return _map_unique(series, lambda value: _voyage(value, fallback))
 
 
+def _yard_transshipment_mask(rows: pd.DataFrame) -> pd.Series:
+    if rows.empty or "IYC_EVOY_ID" not in rows.columns or "IYC_IVOY_ID" not in rows.columns:
+        return pd.Series(False, index=rows.index)
+    export_voyage = _voyage_series(rows["IYC_EVOY_ID"]).map(bool)
+    import_voyage = _voyage_series(rows["IYC_IVOY_ID"]).map(bool)
+    return export_voyage & import_voyage
+
+
+def _medium_small_yard_included_rows(rows: pd.DataFrame) -> pd.DataFrame:
+    if rows.empty:
+        return rows.copy()
+    return rows.loc[~_yard_transshipment_mask(rows)].copy()
+
+
 def _bay_no_series(series: pd.Series) -> pd.Series:
     return _map_unique(series, _bay_no)
 
@@ -1286,7 +1300,7 @@ def _medium_groupby_columns(attribute_rules: AttributeRules | None, voyage_id: o
 
 
 def _current_yard_container_keys(data_path: Path, planning_time: datetime) -> tuple[set[str], set[str]]:
-    columns = ["HAS_CONTAINER", "IYC_CNTRID", "IYC_CNTRNO", "IYC_INYTM"]
+    columns = ["HAS_CONTAINER", "IYC_CNTRID", "IYC_CNTRNO", "IYC_INYTM", "IYC_EVOY_ID", "IYC_IVOY_ID"]
     if has_input_json(data_path):
         frame = input_dataframe(data_path, "bay_slots_detail", columns=columns)
     else:
@@ -1305,6 +1319,7 @@ def _current_yard_container_keys(data_path: Path, planning_time: datetime) -> tu
     if "IYC_INYTM" in occupied.columns:
         in_time = pd.to_datetime(occupied["IYC_INYTM"], errors="coerce")
         occupied = occupied.loc[in_time.isna() | (in_time <= planning_time)]
+    occupied = _medium_small_yard_included_rows(occupied)
     ids = set()
     numbers = set()
     if "IYC_CNTRID" in occupied.columns:
