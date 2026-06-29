@@ -2418,14 +2418,19 @@ def calculate_medium_demands(
     for voyage_id in normalized_voyages:
         receive_start = schedules.get(voyage_id).receive_start if voyage_id in schedules else planning_time
         stage, ratio = planning_stage(receive_start, planning_time)
-        predicted = read_predicted_by_port_size(input_guandong, voyage_id)
-        ratio_targets = ratio_targets_by_port(predicted, ratio)
         docs = read_doc_by_port_size(input_guandong, voyage_id)
-        planned_source = choose_planned_source(ratio_targets, docs)
         yard_counts = yard_by_voyage.get(voyage_id, Counter())
+        if is_import_voyage(input_guandong, voyage_id):
+            predicted = Counter()
+            ratio_targets = Counter()
+            planned_source = Counter(docs)
+        else:
+            predicted = read_predicted_by_port_size(input_guandong, voyage_id)
+            ratio_targets = ratio_targets_by_port(predicted, ratio)
+            planned_source = choose_planned_source(net_prediction_targets(ratio_targets, yard_counts), docs)
         for flow, size_mode, port in sorted(planned_source):
             yard_boxes = yard_counts.get((flow, size_mode, port), 0)
-            planned = max(0, planned_source[(flow, size_mode, port)] - yard_boxes)
+            planned = max(0, planned_source[(flow, size_mode, port)])
             if planned <= 0:
                 continue
             rows.append(
@@ -2446,6 +2451,25 @@ def calculate_medium_demands(
     if big_plan_caps:
         rows = cap_demand_rows_by_big_plan(rows, big_plan_caps)
     return rows
+
+
+def net_prediction_targets(
+    ratio_targets: Counter[tuple[str, str, str]],
+    yard_counts: Counter[tuple[str, str, str]],
+) -> Counter[tuple[str, str, str]]:
+    return Counter(
+        {
+            key: max(0, int(qty) - int(yard_counts.get(key, 0)))
+            for key, qty in ratio_targets.items()
+            if max(0, int(qty) - int(yard_counts.get(key, 0))) > 0
+        }
+    )
+
+
+def is_import_voyage(input_guandong: InputAdapterGd, voyage_id: object) -> bool:
+    voyage = normalize_voyage(voyage_id)
+    content = input_guandong.vessel_containers.get(voyage, {})
+    return isinstance(content, Mapping) and normalize_code(content.get("type")) == "I"
 
 
 def read_yard_by_voyage_port_size(
@@ -2751,15 +2775,10 @@ def choose_planned_source(
     docs: Counter[tuple[str, str, str]],
 ) -> Counter[tuple[str, str, str]]:
     planned: Counter[tuple[str, str, str]] = Counter()
-    flows = sorted({flow for flow, _, _ in ratio_targets} | {flow for flow, _, _ in docs})
-    for flow in flows:
-        for size_mode in SIZE_MODES:
-            ratio_total = sum(qty for (f, size, _), qty in ratio_targets.items() if f == flow and size == size_mode)
-            doc_total = sum(qty for (f, size, _), qty in docs.items() if f == flow and size == size_mode)
-            source = docs if doc_total > ratio_total else ratio_targets
-            for (f, size, port), qty in source.items():
-                if f == flow and size == size_mode and qty > 0:
-                    planned[(f, size, port)] += qty
+    for key in sorted(set(ratio_targets) | set(docs)):
+        qty = max(int(ratio_targets.get(key, 0)), int(docs.get(key, 0)))
+        if qty > 0:
+            planned[key] += qty
     return planned
 
 
@@ -2888,16 +2907,11 @@ def load_port_demand_groups(
     groups: list[BoxGroup] = []
     group_index: defaultdict[str, int] = defaultdict(int)
     counters: defaultdict[str, Counter[tuple]] = defaultdict(Counter)
-    yard_ids, yard_numbers = current_yard_container_keys(input_guandong, planning_time)
     doc_frames: dict[str, pd.DataFrame] = {}
     for voyage_id in voyage_ids:
         frame = input_guandong.vessel_containers.get(voyage_id, {}).get("doc_cntrs", None)
         if not isinstance(frame, pd.DataFrame) or frame.empty:
             continue
-        if yard_ids or yard_numbers:
-            cntr_ids = frame.get("IYC_CNTRID", pd.Series(index=frame.index, dtype=object)).map(normalize_code)
-            cntr_numbers = frame.get("IYC_CNTRNO", pd.Series(index=frame.index, dtype=object)).map(normalize_code)
-            frame = frame.loc[~(cntr_ids.isin(yard_ids) | cntr_numbers.isin(yard_numbers))].copy()
         if not frame.empty:
             doc_frames[voyage_id] = frame
 
@@ -3049,21 +3063,11 @@ def load_small_doc_groups(
     big_plan_caps: dict[tuple[str, str, str], int] | None = None,
 ) -> list[SmallBoxGroup]:
     planning_time = planning_time or parse_datetime(DEFAULT_PLANNING_TIME) or datetime(2026, 5, 19, 9, 30)
-    yard_ids, yard_numbers = (
-        current_yard_container_keys(input_guandong, planning_time)
-    )
     groups: list[SmallBoxGroup] = []
     for voyage_id in voyage_ids:
         frame = input_guandong.vessel_containers.get(voyage_id, {}).get("doc_cntrs", None)
         if not isinstance(frame, pd.DataFrame) or frame.empty:
             continue
-        if yard_ids or yard_numbers:
-            cntr_ids = frame.get("IYC_CNTRID", pd.Series(index=frame.index, dtype=object)).map(normalize_code)
-            cntr_numbers = frame.get("IYC_CNTRNO", pd.Series(index=frame.index, dtype=object)).map(normalize_code)
-            in_yard = cntr_ids.isin(yard_ids) | cntr_numbers.isin(yard_numbers)
-            frame = frame.loc[~in_yard].copy()
-            if frame.empty:
-                continue
         levels = attribute_rules.weight_levels_for(voyage_id)
         group_by_weight = getattr(attribute_rules, "weight_group_enabled_for", lambda _voyage_id: False)(voyage_id)
         counter: Counter[tuple] = Counter()
@@ -3197,6 +3201,7 @@ def build_bays(
         planning_time,
         attribute_rules,
         large_bay_partner_by_bay=large_bay_partner_by_bay,
+        existing_large_pairs_by_member=existing_large_pairs_by_member,
     )
     bays: dict[str, Bay] = {}
     by_area: defaultdict[str, list[str]] = defaultdict(list)
@@ -3419,6 +3424,15 @@ def infer_large_pair_for_slot(row: Mapping[str, Any], bay_set_by_area: Mapping[s
     return None
 
 
+def consecutive_large_pairs_from_bays(area_no: str, bay_nos: set[str]) -> list[tuple[str, str, str]]:
+    ordered = sorted((bay_no for bay_no in bay_nos if bay_no), key=bay_sort_key)
+    pairs: list[tuple[str, str, str]] = []
+    for left, right in zip(ordered, ordered[1:]):
+        if are_consecutive_small_bays(left, right):
+            pairs.append((area_no, left, right))
+    return pairs
+
+
 def existing_large_pair_members_by_bay(
     frame: pd.DataFrame,
     vessel_schedules: dict[str, VoyageSchedule],
@@ -3434,7 +3448,34 @@ def existing_large_pair_members_by_bay(
             bay_set_by_area[area_no].add(bay_no)
     occupied = active_occupied(frame, vessel_schedules, planning_time)
     out: defaultdict[tuple[str, str], set[frozenset[str]]] = defaultdict(set)
-    for row in occupied.to_dict("records"):
+    if occupied.empty:
+        return {}
+    occupied = occupied.copy()
+    occupied["_area_no"] = occupied.get("YAA_AREANO", pd.Series(index=occupied.index, dtype=object)).map(normalize_code)
+    occupied["_bay_no"] = occupied.get("YBY_BAYNO", pd.Series(index=occupied.index, dtype=object)).map(normalize_bay)
+    occupied["_size"] = occupied.get("IYC_CSZ_CSIZECD", pd.Series(index=occupied.index, dtype=object)).map(normalize_size_small)
+    occupied["_cntr_id"] = occupied.get("IYC_CNTRID", pd.Series(index=occupied.index, dtype=object)).map(normalize_code)
+    large_occupied = occupied[occupied["_size"].isin({"40", "45"})].copy()
+    resolved_indices: set[int] = set()
+    valid_container_rows = large_occupied[
+        large_occupied["_cntr_id"].notna()
+        & large_occupied["_cntr_id"].astype(str).ne("")
+        & large_occupied["_cntr_id"].astype(str).ne("-1")
+    ]
+    for (_area_no, _cntr_id), group in valid_container_rows.groupby(["_area_no", "_cntr_id"], sort=False):
+        area_no = normalize_code(_area_no)
+        bay_nos = {normalize_bay(value) for value in group["_bay_no"] if normalize_bay(value)}
+        actual_pairs = consecutive_large_pairs_from_bays(area_no, bay_nos)
+        if not actual_pairs:
+            continue
+        resolved_indices.update(int(idx) for idx in group.index)
+        for pair in actual_pairs:
+            _area_no, left, right = pair
+            pair_members = frozenset((left, right))
+            out[(_area_no, left)].add(pair_members)
+            out[(_area_no, right)].add(pair_members)
+    unresolved_large = large_occupied.loc[[idx not in resolved_indices for idx in large_occupied.index]]
+    for row in unresolved_large.to_dict("records"):
         size = normalize_size_small(row.get("IYC_CSZ_CSIZECD"))
         if size not in {"40", "45"}:
             continue
@@ -3637,6 +3678,7 @@ def existing_bay_attributes(
     planning_time: datetime,
     attribute_rules: AttributeRules | None = None,
     large_bay_partner_by_bay: Mapping[tuple[str, str], str] | None = None,
+    existing_large_pairs_by_member: Mapping[tuple[str, str], set[frozenset[str]]] | None = None,
 ) -> dict[tuple[str, str], dict[str, set[str]]]:
     occupied = active_occupied(frame, vessel_schedules, planning_time)
     out: dict[tuple[str, str], dict[str, set[str]]] = {}
@@ -3653,6 +3695,7 @@ def existing_bay_attributes(
                 if name and name not in dynamic_attrs:
                     dynamic_attrs.append(name)
     large_bay_partner_by_bay = large_bay_partner_by_bay or {}
+    existing_large_pairs_by_member = existing_large_pairs_by_member or {}
     for row in occupied.to_dict("records"):
         area_no = normalize_code(row.get("YAA_AREANO"))
         bay_no = normalize_bay(row.get("YBY_BAYNO"))
@@ -3667,9 +3710,16 @@ def existing_bay_attributes(
         }
         target_keys = [(area_no, bay_no)]
         if size in {"40", "45"}:
-            partner_bay = large_bay_partner_by_bay.get((area_no, bay_no))
-            if partner_bay:
-                target_keys.append((area_no, partner_bay))
+            pair_sets = existing_large_pairs_by_member.get((area_no, bay_no), set())
+            if pair_sets:
+                for pair in pair_sets:
+                    for partner_bay in pair:
+                        if partner_bay != bay_no:
+                            target_keys.append((area_no, partner_bay))
+            else:
+                partner_bay = large_bay_partner_by_bay.get((area_no, bay_no))
+                if partner_bay:
+                    target_keys.append((area_no, partner_bay))
         for key in dict.fromkeys(target_keys):
             attrs = out.setdefault(
                 key,

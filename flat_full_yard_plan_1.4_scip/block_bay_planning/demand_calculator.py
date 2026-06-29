@@ -13,7 +13,7 @@ from xml.etree import ElementTree
 
 import pandas as pd
 
-from .input_json import has_input_json, input_dataframe, input_value, vessel_doc_frame, vessel_predict_cntrs
+from .input_json import has_input_json, input_dataframe, input_value, input_voyage_value, vessel_doc_frame, vessel_predict_cntrs
 
 
 DEFAULT_PLANNING_TIME = datetime(2026, 5, 19, 9, 30)
@@ -154,6 +154,7 @@ def calculate_medium_demands(
 ) -> list[DemandRow]:
     data_path = Path(data_dir)
     schedules = _read_receive_windows(data_path)
+    import_voyages = _read_import_voyages(data_path)
     yard_by_voyage = _read_yard_by_voyage_port_size(
         data_path,
         {_voyage(voyage_id) for voyage_id in voyage_ids},
@@ -173,15 +174,20 @@ def calculate_medium_demands(
             planning_time,
             horizon_hours,
         )
-        predicted = _read_predicted_by_port_size(data_path, voyage_id)
-        ratio_targets = _ratio_targets(predicted, ratio)
         docs = _read_doc_by_port_size(data_path, voyage_id)
-        planned_source = _choose_planned_source(ratio_targets, docs)
         yard_counts = yard_by_voyage.get(voyage_id, Counter())
+        if _voyage(voyage_id) in import_voyages:
+            predicted = Counter()
+            ratio_targets = Counter()
+            planned_source = Counter(docs)
+        else:
+            predicted = _read_predicted_by_port_size(data_path, voyage_id)
+            ratio_targets = _ratio_targets(predicted, ratio)
+            planned_source = _choose_planned_source(_net_prediction_targets(ratio_targets, yard_counts), docs)
         keys = sorted(planned_source)
         for flow, size_mode, port in keys:
             yard_boxes = yard_counts.get((flow, size_mode, port), 0)
-            planned = max(0, planned_source[(flow, size_mode, port)] - yard_boxes)
+            planned = max(0, planned_source[(flow, size_mode, port)])
             if planned <= 0:
                 continue
             rows.append(
@@ -202,6 +208,48 @@ def calculate_medium_demands(
     if big_plan_caps:
         rows = _cap_rows_by_big_plan(rows, big_plan_caps)
     return rows
+
+
+def _net_prediction_targets(
+    ratio_targets: Counter[tuple[str, str, str]],
+    yard_counts: Counter[tuple[str, str, str]],
+) -> Counter[tuple[str, str, str]]:
+    return Counter(
+        {
+            key: max(0, int(qty) - int(yard_counts.get(key, 0)))
+            for key, qty in ratio_targets.items()
+            if max(0, int(qty) - int(yard_counts.get(key, 0))) > 0
+        }
+    )
+
+
+def _read_import_voyages(data_path: Path) -> set[str]:
+    if has_input_json(data_path):
+        voyages = set()
+        containers = input_value(data_path, "vessel_containers", {})
+        if not isinstance(containers, dict):
+            return voyages
+        for voyage_id in containers.keys():
+            content = input_voyage_value(data_path, "vessel_containers", voyage_id, {})
+            if isinstance(content, dict) and _norm(content.get("type")) == "I":
+                voyages.add(_voyage(voyage_id))
+        return voyages
+
+    path = data_path / "vessel_berth_info_new.csv"
+    if not path.exists():
+        path = data_path / "vessel_berth_info.csv"
+    if not path.exists():
+        return set()
+    frame = _read_csv_compat(path)
+    if frame.empty:
+        return set()
+    voyages = set()
+    for row in frame.to_dict("records"):
+        if _norm(row.get("VOY_IEFG")) == "I":
+            voyage_id = _voyage(row.get("VOY_ID"))
+            if voyage_id:
+                voyages.add(voyage_id)
+    return voyages
 
 
 def planning_stage_window(
@@ -251,15 +299,10 @@ def _choose_planned_source(
     docs: Counter[tuple[str, str, str]],
 ) -> Counter[tuple[str, str, str]]:
     planned: Counter[tuple[str, str, str]] = Counter()
-    flows = sorted({flow for flow, _, _ in ratio_targets} | {flow for flow, _, _ in docs})
-    for flow in flows:
-        for size_mode in ("20", "40", "45"):
-            ratio_total = sum(qty for (f, size, _), qty in ratio_targets.items() if f == flow and size == size_mode)
-            doc_total = sum(qty for (f, size, _), qty in docs.items() if f == flow and size == size_mode)
-            source = docs if doc_total > ratio_total else ratio_targets
-            for (f, size, port), qty in source.items():
-                if f == flow and size == size_mode and qty > 0:
-                    planned[(f, size, port)] += qty
+    for key in sorted(set(ratio_targets) | set(docs)):
+        qty = max(int(ratio_targets.get(key, 0)), int(docs.get(key, 0)))
+        if qty > 0:
+            planned[key] += qty
     return planned
 
 

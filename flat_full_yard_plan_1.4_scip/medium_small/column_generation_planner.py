@@ -16,6 +16,7 @@ from block_bay_planning.models import Bay, ProblemData, SmallBoxGroup
 
 SIZE_ORDER = {"45": 0, "20": 1, "40": 2}
 EXPORT_FLOWS = frozenset({"OF"})
+MANDATORY_BAY_NO_MIX_ATTRS = ("IYC_CSZ_CSIZECD",)
 SIZE_NO_MIX_ATTRS = frozenset({"IYC_CSZ_CSIZECD", "SIZE", "SIZE_MODE"})
 
 
@@ -113,6 +114,8 @@ class ColumnGenerationConfig:
     medium_plan_bay_quota: dict[tuple[str, str, str, str, str, str], int] | None = None
     repair_can_exceed_medium_plan_quota: bool = False
     unplaced_penalty: float = 100_000.0
+    document_unplaced_penalty_multiplier: float = 10.0
+    forecast_unplaced_penalty_multiplier: float = 1.0
     required_area_reward: float = 1_000.0
     existing_coarse_bay_reward: float = 48.0
     existing_coarse_neighbor_bay_reward: float = 24.0
@@ -342,11 +345,15 @@ class ColumnGenerationPlanner:
 
         forecast_group_count = 0
         forecast_box_count = 0
+        non_export_fallback_suppressed_boxes = 0
         for coarse_key, qty in sorted(remaining.items()):
             if qty <= 0:
                 continue
             representative = representative_by_coarse.get(coarse_key)
             if representative is None:
+                continue
+            if representative.status not in EXPORT_FLOWS:
+                non_export_fallback_suppressed_boxes += int(qty)
                 continue
             for height, height_qty in self._split_forecast_by_height(
                 representative.voyage_id,
@@ -396,6 +403,7 @@ class ColumnGenerationPlanner:
             "original_medium_output_box_count": sum(group.demand for group in self.problem.groups),
             "forecast_fallback_group_count": forecast_group_count,
             "forecast_fallback_box_count": forecast_box_count,
+            "non_export_fallback_suppressed_box_count": non_export_fallback_suppressed_boxes,
             "dropped_doc_box_count": dropped_doc_boxes,
             "doc_boxes_outside_medium_target": 0,
             "planned_box_count": sum(group.demand for group in planning_groups),
@@ -430,11 +438,15 @@ class ColumnGenerationPlanner:
         height_weights = self._forecast_height_weights(source_doc_groups)
         forecast_group_count = 0
         forecast_box_count = 0
+        non_export_fallback_suppressed_boxes = 0
         for coarse_key, qty in sorted(remaining_medium.items()):
             if qty <= 0:
                 continue
             representative = representative_by_coarse.get(coarse_key)
             if representative is None:
+                continue
+            if representative.status not in EXPORT_FLOWS:
+                non_export_fallback_suppressed_boxes += int(qty)
                 continue
             for height, height_qty in self._split_forecast_by_height(
                 representative.voyage_id,
@@ -482,6 +494,7 @@ class ColumnGenerationPlanner:
             "original_medium_output_box_count": sum(group.demand for group in self.problem.groups),
             "forecast_fallback_group_count": forecast_group_count,
             "forecast_fallback_box_count": forecast_box_count,
+            "non_export_fallback_suppressed_box_count": non_export_fallback_suppressed_boxes,
             "dropped_doc_box_count": 0,
             "doc_boxes_outside_medium_target": doc_boxes_outside_medium_target,
             "planned_box_count": sum(group.demand for group in planning_groups),
@@ -1179,15 +1192,19 @@ class ColumnGenerationPlanner:
         relayout_state["group_area_bay_load"][group_bay_key] += int(col.quantity)
         relayout_state["coarse_area_bay_load"][coarse_bay_key] += int(col.quantity)
 
-    def _solution_rank(self, selected: Counter[int], unplaced: Counter[str]) -> tuple[int, float, int]:
+    def _solution_rank(self, selected: Counter[int], unplaced: Counter[str]) -> tuple[int, int, float, int]:
         return (
+            self._document_unplaced_boxes(unplaced),
             sum(unplaced.values()),
             self._selected_solution_energy(selected, unplaced),
             sum(1 for qty in selected.values() if qty > 0),
         )
 
     def _selected_solution_energy(self, selected: Counter[int], unplaced: Counter[str]) -> float:
-        energy = float(self.config.unplaced_penalty) * sum(max(0, int(qty)) for qty in unplaced.values())
+        energy = sum(
+            self._unplaced_penalty_for_group_id(group_id) * max(0, int(qty))
+            for group_id, qty in unplaced.items()
+        )
         actual_quota: Counter[tuple[str, str, str, str]] = Counter()
         actual_coarse_area: Counter[tuple[str, ...]] = Counter()
         used_group_area: set[tuple[tuple[str, ...], str]] = set()
@@ -1251,6 +1268,39 @@ class ColumnGenerationPlanner:
                         for right in quantities[left_index + 1 :]:
                             energy += pair_penalty * abs(left - right)
         return float(energy)
+
+    def _document_unplaced_boxes(self, unplaced: Counter[str]) -> int:
+        return sum(
+            max(0, int(qty))
+            for group_id, qty in unplaced.items()
+            if self.group_source.get(group_id, "document") == "document"
+        )
+
+    def _source_rank_for_group_id(self, group_id: str) -> int:
+        return 0 if self.group_source.get(group_id, "document") == "document" else 1
+
+    def _source_rank_for_group(self, group: SmallBoxGroup) -> int:
+        return self._source_rank_for_group_id(group.group_id)
+
+    def _unplaced_penalty_for_group_id(self, group_id: str) -> float:
+        source = self.group_source.get(group_id, "document")
+        multiplier = (
+            self.config.document_unplaced_penalty_multiplier
+            if source == "document"
+            else self.config.forecast_unplaced_penalty_multiplier
+        )
+        return float(self.config.unplaced_penalty) * max(0.0, float(multiplier))
+
+    def _unplaced_objective_for_group(self, group: SmallBoxGroup, objective_mode: str) -> float:
+        if objective_mode == "min_unplaced":
+            source = self.group_source.get(group.group_id, "document")
+            multiplier = (
+                self.config.document_unplaced_penalty_multiplier
+                if source == "document"
+                else self.config.forecast_unplaced_penalty_multiplier
+            )
+            return max(1.0, float(multiplier))
+        return self._unplaced_penalty_for_group_id(group.group_id)
 
     def _area_fallback_tier_penalty_for_column(self, col: PlacementColumn) -> float:
         tier = self._area_fallback_tier_for_attrs(
@@ -2247,7 +2297,7 @@ class ColumnGenerationPlanner:
                 lb=0.0,
                 ub=group.demand,
                 vtype="C" if relax else "I",
-                obj=1.0 if objective_mode == "min_unplaced" else self.config.unplaced_penalty,
+                obj=self._unplaced_objective_for_group(group, objective_mode),
                 name=f"unplaced_{group.group_id}",
             )
             for group in self.groups
@@ -3137,10 +3187,11 @@ class ColumnGenerationPlanner:
 
     def _effective_group_duals(self, group_dual: dict[str, float], lp_unplaced: Counter[str]) -> dict[str, float]:
         out = dict(group_dual)
-        threshold = float(self.config.unplaced_penalty) * 0.1
         for group_id, qty in lp_unplaced.items():
+            penalty = self._unplaced_penalty_for_group_id(group_id)
+            threshold = penalty * 0.1
             if qty > 0 and out.get(group_id, 0.0) < threshold:
-                out[group_id] = float(self.config.unplaced_penalty)
+                out[group_id] = penalty
         return out
 
     def _build_initial_columns(self) -> None:
@@ -3161,7 +3212,18 @@ class ColumnGenerationPlanner:
             attrs = self.attribute_rules.bay_no_mix_for(voyage_id)
         else:
             attrs = getattr(self.attribute_rules, "bay_no_mix_attributes", ())
-        return tuple(str(attr) for attr in attrs if str(attr))
+        ordered: list[str] = list(MANDATORY_BAY_NO_MIX_ATTRS)
+        seen = set(ordered)
+        for attr in attrs:
+            name = str(attr).strip()
+            if not name:
+                continue
+            if self._is_size_no_mix_attr(name):
+                name = MANDATORY_BAY_NO_MIX_ATTRS[0]
+            if name not in seen:
+                ordered.append(name)
+                seen.add(name)
+        return tuple(ordered)
 
     def _row_no_mix_attrs(self, voyage_id: object = None) -> tuple[str, ...]:
         if self.attribute_rules is not None and voyage_id is not None and hasattr(self.attribute_rules, "row_no_mix_for"):
@@ -3717,6 +3779,7 @@ class ColumnGenerationPlanner:
                 sorted(
                     by_coarse[coarse_key],
                     key=lambda group: (
+                        self._source_rank_for_group(group),
                         -int(group.demand),
                         group.height,
                         group.weight_class,
@@ -5902,8 +5965,9 @@ class ColumnGenerationPlanner:
                     return True
         return False
 
-    def _group_sort_key(self, group: SmallBoxGroup) -> tuple[int, int, int, str, str, str]:
+    def _group_sort_key(self, group: SmallBoxGroup) -> tuple[int, int, int, int, str, str, str]:
         return (
+            self._source_rank_for_group(group),
             SIZE_ORDER.get(group.size, 3),
             len(self._area_weights(group)) if hasattr(self, "quota_by_key") else 0,
             -group.demand,

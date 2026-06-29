@@ -585,7 +585,6 @@ def load_port_demand_groups(
     group_index: defaultdict[str, int] = defaultdict(int)
     counters: defaultdict[str, Counter[tuple[tuple[str, ...], tuple[object, ...]]]] = defaultdict(Counter)
     data_path = Path(data_dir)
-    yard_ids, yard_numbers = _current_yard_container_keys(data_path, planning_time)
     doc_frames: dict[str, pd.DataFrame] = {}
     for voyage_id in voyage_ids:
         if has_input_json(data_path):
@@ -595,10 +594,6 @@ def load_port_demand_groups(
             frame = pd.read_parquet(path) if path.exists() else pd.DataFrame()
         if frame.empty:
             continue
-        if yard_ids or yard_numbers:
-            cntr_ids = frame.get("IYC_CNTRID", pd.Series(index=frame.index, dtype=object)).map(_norm)
-            cntr_numbers = frame.get("IYC_CNTRNO", pd.Series(index=frame.index, dtype=object)).map(_norm)
-            frame = frame.loc[~(cntr_ids.isin(yard_ids) | cntr_numbers.isin(yard_numbers))].copy()
         if not frame.empty:
             doc_frames[voyage_id] = frame
     for row in demand_rows:
@@ -694,7 +689,6 @@ def load_small_doc_groups(
     attribute_rules: AttributeRules | None = None,
 ) -> list[SmallBoxGroup]:
     data_path = Path(data_dir)
-    yard_ids, yard_numbers = _current_yard_container_keys(data_path, planning_time)
     groups: list[SmallBoxGroup] = []
     for voyage_id in voyage_ids:
         if has_input_json(data_path):
@@ -706,13 +700,6 @@ def load_small_doc_groups(
             frame = pd.read_parquet(path)
         if frame.empty:
             continue
-        if yard_ids or yard_numbers:
-            cntr_ids = frame.get("IYC_CNTRID", pd.Series(index=frame.index, dtype=object)).map(_norm)
-            cntr_numbers = frame.get("IYC_CNTRNO", pd.Series(index=frame.index, dtype=object)).map(_norm)
-            in_yard = cntr_ids.isin(yard_ids) | cntr_numbers.isin(yard_numbers)
-            frame = frame.loc[~in_yard].copy()
-            if frame.empty:
-                continue
         levels = (
             attribute_rules.weight_levels_for(voyage_id)
             if attribute_rules is not None and hasattr(attribute_rules, "weight_levels_for")
@@ -1741,7 +1728,14 @@ def build_bays(
     build_bays.last_tops_closed_bay_count = getattr(apply_tops_reservations, "last_reserved_bay_count", 0)
     build_bays.last_misplaced_excluded_bay_count = len(excluded_bays)
 
-    _populate_existing_bay_attributes(base, bays, vessel_schedules, planning_time, attribute_rules)
+    _populate_existing_bay_attributes(
+        base,
+        bays,
+        vessel_schedules,
+        planning_time,
+        attribute_rules,
+        existing_large_pairs_by_member,
+    )
 
     return bays
 
@@ -1791,6 +1785,7 @@ def _populate_existing_bay_attributes(
     vessel_schedules: dict[str, VoyageSchedule],
     planning_time: datetime,
     attribute_rules: AttributeRules | None = None,
+    existing_large_pairs_by_member: Mapping[tuple[str, str], set[frozenset[str]]] | None = None,
 ) -> None:
     columns = [
         "YAA_AREANO",
@@ -1839,6 +1834,29 @@ def _populate_existing_bay_attributes(
     occupied["_port"] = _norm_series(occupied["IYC_POT_UNLDPORT"])
     occupied["_status"] = _norm_series(occupied["IYC_STS_CSTATUSCD"])
     occupied["_ctype"] = _norm_series(occupied["IYC_CTYPECD"])
+    existing_large_pairs_by_member = existing_large_pairs_by_member or {}
+    if existing_large_pairs_by_member:
+        expanded_records: list[dict] = []
+        for record in occupied.to_dict("records"):
+            area_no = str(record.get("_area", "") or "")
+            bay_no = str(record.get("_bay", "") or "")
+            target_bays = [bay_no]
+            if str(record.get("_size", "") or "") in {"40", "45"}:
+                for pair in existing_large_pairs_by_member.get((area_no, bay_no), set()):
+                    for partner_bay in pair:
+                        partner = str(partner_bay or "")
+                        if partner and partner != bay_no:
+                            target_bays.append(partner)
+            for target_bay in dict.fromkeys(target_bays):
+                expanded = dict(record)
+                expanded["_bay"] = target_bay
+                expanded["_bay_key"] = f"{area_no}-{target_bay}"
+                expanded_records.append(expanded)
+        if expanded_records:
+            occupied = pd.DataFrame.from_records(expanded_records)
+            occupied = occupied.loc[occupied["_bay_key"].isin(bays)]
+            if occupied.empty:
+                return
     dynamic_attrs: list[str] = []
     if attribute_rules is not None:
         for attrs in (
@@ -2114,6 +2132,15 @@ def _infer_large_pair_for_slot(row: Mapping[str, object], bay_set_by_area: Mappi
     return None
 
 
+def _consecutive_large_pairs_from_bays(area_no: str, bay_nos: set[str]) -> list[tuple[str, str, str]]:
+    ordered = sorted((bay_no for bay_no in bay_nos if bay_no), key=_bay_sort_key)
+    pairs: list[tuple[str, str, str]] = []
+    for left, right in zip(ordered, ordered[1:]):
+        if _are_consecutive_small_bays(left, right):
+            pairs.append((area_no, left, right))
+    return pairs
+
+
 def _existing_large_pair_members_by_bay(
     base: pd.DataFrame,
     vessel_schedules: dict[str, VoyageSchedule],
@@ -2129,7 +2156,33 @@ def _existing_large_pair_members_by_bay(
             bay_set_by_area[area_no].add(bay_no)
     occupied = base.loc[base["HAS_CONTAINER"] == 1].copy()
     out: defaultdict[tuple[str, str], set[frozenset[str]]] = defaultdict(set)
-    for row in occupied.to_dict("records"):
+    if occupied.empty:
+        return {}
+    occupied["_area_no"] = occupied.get("YAA_AREANO", pd.Series(index=occupied.index, dtype=object)).map(_norm)
+    occupied["_bay_no"] = occupied.get("YBY_BAYNO", pd.Series(index=occupied.index, dtype=object)).map(_bay_no)
+    occupied["_size"] = occupied.get("IYC_CSZ_CSIZECD", pd.Series(index=occupied.index, dtype=object)).map(_size_mode)
+    occupied["_cntr_id"] = occupied.get("IYC_CNTRID", pd.Series(index=occupied.index, dtype=object)).map(_norm)
+    large_occupied = occupied[occupied["_size"].isin({"40", "45"})].copy()
+    resolved_indices: set[int] = set()
+    valid_container_rows = large_occupied[
+        large_occupied["_cntr_id"].notna()
+        & large_occupied["_cntr_id"].astype(str).ne("")
+        & large_occupied["_cntr_id"].astype(str).ne("-1")
+    ]
+    for (_area_no, _cntr_id), group in valid_container_rows.groupby(["_area_no", "_cntr_id"], sort=False):
+        area_no = _norm(_area_no)
+        bay_nos = {_bay_no(value) for value in group["_bay_no"] if _bay_no(value)}
+        actual_pairs = _consecutive_large_pairs_from_bays(area_no, bay_nos)
+        if not actual_pairs:
+            continue
+        resolved_indices.update(int(idx) for idx in group.index)
+        for pair in actual_pairs:
+            _area_no, left, right = pair
+            pair_members = frozenset((left, right))
+            out[(_area_no, left)].add(pair_members)
+            out[(_area_no, right)].add(pair_members)
+    unresolved_large = large_occupied.loc[[idx not in resolved_indices for idx in large_occupied.index]]
+    for row in unresolved_large.to_dict("records"):
         size = _size_mode(row.get("IYC_CSZ_CSIZECD"))
         if size not in {"40", "45"}:
             continue
