@@ -68,6 +68,7 @@
   \item 大计划输入构建：\code{adapters/input_adapter_standard.py}
   \item 大计划求解器：\code{large_plan/solver.py}
   \item 中小计划列生成求解器：\code{medium_small/column_generation_planner.py}
+  \item 矫正大计划生成：\code{medium_small/corrected_large_plan.py}
   \item 中小计划问题数据结构：\code{block_bay_planning/models.py}
 \end{itemize}
 
@@ -90,6 +91,7 @@
   \item 将大计划结果以内存方式传入中小计划。
   \item 构建中小计划 \code{ProblemData}，包括计划需求、贝位容量、箱区功能、用户箱区和贝位控制、大计划配额、堆场现状协调信息等。
   \item 调用中小计划列生成求解器，生成中计划、小计划、未放置箱和诊断信息输出。
+  \item 根据原大计划和中计划实际新增箱落位生成矫正大计划，使大计划箱区结果覆盖中小计划实际分配。
 \end{enumerate}
 
 \subsection{三层计划的数据传递关系}
@@ -101,6 +103,7 @@
 大计划 & 航次需求、箱区功能、箱区容量、在场快照、历史计划、用户箱区规则 & 输出航次、流向、箱区、尺寸口径的计划量；中小计划将其作为箱区继承目标和配额引导 \\
 中计划 & 计划需求、大计划箱区配额、贝位容量、箱区功能、用户粗属性规则、用户箱区规则、堆场现状协调信息 & 输出粗属性组到箱区和贝位的分配结果；小计划继承其箱区和贝位边界 \\
 小计划 & 资料箱、用户细属性规则、贝位和行容量、属性混放规则、中计划边界、堆场现状协调信息 & 输出细属性组的具体贝位、块和行分配，并记录未放置箱 \\
+矫正大计划 & 原大计划 \code{allocation.csv}、中计划实际新增箱落位 & 输出覆盖中计划新增箱分配的箱区级大计划视图；保留原在场箱快照，按新增箱口径矫正 \code{new_qty} \\
 \bottomrule
 \end{longtable}
 
@@ -185,6 +188,16 @@ flat_full_yard_plan_1.4_scip/data/input/input_data.json
 \]
 
 这类箱不会参与出口预测净需求扣减，也不会进入堆场现状协调信息。
+
+中小计划的贝位容量、行容量、尺寸混放和大贝 partner 占用按当前物理在场状态处理，不按计划离港时间释放快照中的箱位。
+
+待分配新箱与在场箱的兼容性按两层口径处理：
+\begin{itemize}
+  \item 尺寸约束跨航次生效。只要贝位或排内已有在场箱，新箱必须与该位置的尺寸状态兼容；20、40、45 尺在中小计划中保持独立尺寸口径。
+  \item \param{bay_rules} 和 \param{row_rules} 中的非尺寸属性按航次作用域生效。若在场箱属于同一航次，则这些用户配置属性会约束新箱；若在场箱不属于同一航次，则不以该在场箱的非尺寸属性限制新箱。
+\end{itemize}
+
+快照中已经存在的历史混贝、混排状态不作为中小计划的修复对象。算法只保证新增落位不继续制造与当前新箱组不兼容的尺寸、贝位属性和排属性冲突。
 
 \section{大计划算法}
 
@@ -293,9 +306,9 @@ flat_full_yard_plan_1.4_scip/data/input/input_data.json
 outputs_large/latest_run/allocation.csv
 \end{Verbatim}
 
-常见字段包括 \code{voy_id}、\code{flow}、\code{area_no}、\code{size}、\code{planned_qty}、\code{new_qty}。
+常见字段包括 \code{voy_id}、\code{flow}、\code{area_no}、\code{size}、\code{planned_qty}、\code{snapshot_qty}、\code{new_qty}。
 
-\code{planned_qty} 表示规划后该航次、流向、箱区、尺寸的总计划量；\code{new_qty} 表示仍需新增安排的箱量。
+\code{snapshot_qty} 表示当前快照中已经在该箱区的同航次、同流向、同尺寸口径箱量；\code{new_qty} 表示仍需新增安排的箱量；\code{planned_qty} 表示两者合计后的箱区级总计划量。
 
 \section{中小计划算法}
 
@@ -412,17 +425,7 @@ column 包含航次、流向、港口、尺寸、箱高、重量档、特殊属�
 
 其中，细属性组来自 \code{small_groups}，其属性字段由输入 JSON 中的 \param{detail_attr} 及进口箱特例决定；粗属性 key 使用同一属性分组规则，是规划器在中小计划内部用于聚合、集中度和堆场现状协调的 key。
 
-生成 column 时会检查：
-
-\begin{itemize}
-  \item 贝位容量和行容量。
-  \item 箱区功能。
-  \item 用户箱区和贝位控制。
-  \item 大计划区域优先和 fallback。
-  \item 当前在场箱属性混放。
-  \item 堆场现状协调成本。
-  \item E 开头出口箱区的额外规则。
-\end{itemize}
+column 生成时先做功能、容量、用户范围、属性兼容等硬过滤；通过过滤后，再计算大计划继承、堆场现状协调、作业位置、20 尺空间利用等成本项。具体口径在下面的位置选择章节中说明。
 
 \subsection{中小计划目标函数和位置选择}
 
@@ -437,11 +440,15 @@ column 包含航次、流向、港口、尺寸、箱高、重量档、特殊属�
   \item 用户禁用箱区、限制箱区、关闭箱区、禁用贝位和 TOPS 保留位置会作为硬过滤。
   \item 贝位必须支持对应尺寸；20 尺、40 尺、45 尺会按贝位能力、大贝 partner 和边贝规则生成可行位置。
   \item 贝位容量、行容量、尺寸容量和物理容量不能超限。
-  \item 当前在场箱和已选候选列形成的贝位、排属性状态必须满足 \param{bay_rules} 和 \param{row_rules}。
+  \item 当前在场箱和已选候选列形成的贝位、排属性状态必须满足尺寸约束、\param{bay_rules} 和 \param{row_rules}。
   \item 单独小计划入口中，如果配置了外部中计划配额，repair 的部分阶段会把中计划箱区或贝位配额作为阶段性范围约束。
 \end{itemize}
 
 用户指定箱区不会强行覆盖箱区功能。也就是说，可用箱区是用户范围、关闭/禁用规则、箱区功能、容量和属性规则共同过滤后的交集。
+
+尺寸约束是固定硬约束，不依赖用户是否显式把尺寸写入 \param{bay_rules}。规划器会把尺寸属性并入贝位不混规则，且尺寸属性不区分航次；因此，新箱之间、新箱与在场箱之间都不能在同一约束作用范围内形成 20/40/45 尺寸冲突。
+
+40/45 尺落位还会检查大贝 partner。对于由两个小贝组成的大贝，两个小贝必须同时具备可用容量和兼容的尺寸状态；如果某个小贝已有 20 尺在场箱，则该小贝不参与大贝组合。如果快照中已有 40/45 尺箱占用一组小贝，则该组以及与该组成员重叠的其他大贝组合都会被阻断。例如 07+09 已有大箱、11+13 已有大箱时，09+11 不能再作为新大贝使用。
 
 \subsubsection{候选列成本}
 
@@ -456,6 +463,7 @@ column 包含航次、流向、港口、尺寸、箱高、重量档、特殊属�
 堆场现状 & 候选贝若已有同粗属性 key 的在场箱会得到奖励，邻近已有同 key 贝位也会得到较小奖励；与其他 key 冲突或邻近冲突会增加成本。粗属性 key 由用户规则或进口特例生成。 \\
 作业位置 & 航次泊位到箱区的距离、当前作业箱区、作业窗口后的箱区偏好会进入候选成本。 \\
 贝位形态 & fallback 贝位、非优先 6 贝块等会增加成本。 \\
+20 尺空间利用 & 20 尺箱使用孤立空小贝或不降低剩余大贝组合能力的位置时成本较低；打断连续可拼大贝的小贝段时会增加成本。已有在场箱的非段内小贝不额外获得孤立空小贝奖励。 \\
 E 区出口规则 & E 开头箱区仍按功能表判断；对出口航次还会控制同一箱区使用的贝位起点数，并对非 40/45 尺出口箱增加软惩罚。 \\
 \bottomrule
 \end{longtable}
@@ -472,6 +480,7 @@ E 区出口规则 & E 开头箱区仍按功能表判断；对出口航次还会�
 + \text{大计划偏离惩罚} \\
 &+ \text{中计划集中度惩罚}
 + \text{小计划拆分惩罚}
++ \text{20 尺空间利用成本}
 + \text{其他作业偏好成本}
 \end{aligned}
 \]
@@ -487,24 +496,16 @@ E 区出口规则 & E 开头箱区仍按功能表判断；对出口航次还会�
 大计划偏离 & 按航次、流向、箱区、尺寸统计实际使用量，与大计划配额目标的差值越大惩罚越高。 \\
 中计划集中度 & 对需要集中的粗属性 key，跨多个箱区会产生惩罚，最大箱区份额会产生奖励；对较大的组，会控制打开箱区数量、过小箱区份额和箱区间分布失衡。 \\
 小计划拆分 & 同一细属性组跨箱区、跨块、跨贝都会增加惩罚；同一粗属性 key 在同箱区内跨块、跨贝也会增加惩罚。 \\
+20 尺空间利用 & 对 20 尺方案统计连续可拼大贝小贝段的组合能力损失；repair 过程中也会根据已选 20 尺落位动态更新该成本，尽量减少新开小贝对 40/45 尺能力的破坏。 \\
 属性兼容性 & 主问题会继续保证同一贝位或同一排内不会选择互相冲突的属性取值。 \\
 \bottomrule
 \end{longtable}
 
-因此，中小计划最终输出的位置，是在满足功能、容量、用户范围和属性混放等硬约束的基础上，对大计划继承、计划需求覆盖、资料箱优先、粗细属性集中、堆场现状、作业距离和特殊箱区规则加权后的整体最优或近似最优组合。
+因此，中小计划最终输出的位置，是在满足功能、容量、用户范围和属性混放等硬约束的基础上，对大计划继承、计划需求覆盖、资料箱优先、粗细属性集中、堆场现状、20 尺空间利用、作业距离和特殊箱区规则加权后的整体最优或近似最优组合。
 
 \subsection{主问题}
 
-列生成主问题选择 column 覆盖所有细属性组需求：
-
-\[
-\min\quad
-\text{column cost}
-+ \text{unplaced penalty}
-+ \text{split penalty}
-+ \text{big plan deviation}
-+ \text{other penalties}
-\]
+列生成主问题在上述候选列成本和组合层惩罚基础上选择 column，覆盖所有细属性组需求。
 
 约束包括：
 
@@ -566,11 +567,98 @@ repair 后存在箱区内重排逻辑：
 \begin{itemize}
   \item 保持箱区层面的箱量不变。
   \item 尝试重新选择箱区内贝位 column。
-  \item 改善小计划集中度、贝位和块拆分、堆场现状协调等指标。
+  \item 改善小计划集中度、贝位和块拆分、堆场现状协调、20 尺空间利用等指标。
   \item 如果重排后评分没有改善，则保留原方案。
 \end{itemize}
 
 该逻辑由 \param{post_repair_area_relayout_enabled} 控制。
+
+\section{矫正大计划}
+
+矫正大计划是中小计划完成后的箱区级结果视图，用于把中小计划实际落位结果回写到大计划口径。该过程不重新求解大计划，只对原大计划箱区行做汇总、覆盖和重分布。
+
+\subsection{输入和适用入口}
+
+矫正大计划使用两个输入：
+\begin{itemize}
+  \item 原大计划行：全流程中使用内存中的 \code{allocation.csv} 行；单独中小计划中读取 \param{--big-plan} 指向的大计划 CSV。
+  \item 中计划行：中小计划输出的 \code{medium_plan.csv}，其中 \code{planned_boxes} 表示新增箱落位量，不包含已经在场的 \code{snapshot_qty}。
+\end{itemize}
+
+全流程入口和单独中小计划入口均输出矫正大计划。对应脚本为
+\pathcode{run_flat_full_yard_plan.py} 和
+\pathcode{run_medium_small_column_generation.py}。
+单独大计划入口只输出原大计划；单独小计划入口只根据外部中计划生成小计划，不生成矫正大计划。
+
+\subsection{基本口径}
+
+矫正大计划按 \((\text{航次}, \text{流向}, \text{尺寸})\) 分组，45 尺按大计划口径并入 40 尺。对每个箱区 \(a\)，定义：
+
+\[
+\begin{aligned}
+S_a &= \text{原大计划中的 snapshot\_qty},\\
+N^{old}_a &= \text{原大计划中的 new\_qty},\\
+M_a &= \text{中计划实际分配到该箱区的新增箱量}.
+\end{aligned}
+\]
+
+其中 \(M_a\) 是新增箱量，不包含在场箱。矫正后保持：
+\[
+S^{corr}_a = S_a
+\]
+并以中计划落位作为新增量下界：
+\[
+N^{corr}_a \ge M_a.
+\]
+
+最终输出字段满足：
+\[
+\text{planned\_qty}^{corr}_a
+= \text{snapshot\_qty}^{corr}_a
++ \text{new\_qty}^{corr}_a.
+\]
+
+\subsection{新增量目标}
+
+对每个 \((v,f,s)\) 分组，矫正后的新增总量目标为：
+\[
+N^{target}
+= \max\left(
+\sum_a N^{old}_a,
+\sum_a M_a
+\right).
+\]
+
+该口径体现两点：
+\begin{itemize}
+  \item 原大计划已经给出的新增配额会尽量保留。
+  \item 当原大计划存在未满足需求，导致原 \code{new_qty} 少于中计划实际落位时，矫正大计划允许扩展 \code{new_qty}，以覆盖中小计划结果。
+\end{itemize}
+
+\subsection{箱区级分布}
+
+箱区级矫正先取：
+\[
+N^{corr}_a = \max(N^{old}_a,\ M_a).
+\]
+
+如果 \(\sum_a N^{corr}_a > N^{target}\)，则只从超过中计划下界的部分中扣减，即扣减量不使任何箱区低于 \(M_a\)。扣减按可扣减量使用最大余数法分配。
+
+如果 \(\sum_a N^{corr}_a < N^{target}\)，则把剩余新增量分配回箱区。优先按原大计划 \code{new_qty} 权重分配；没有原新增量时，按中计划落位量分配；仍无权重时，按在场箱快照权重兜底。
+
+因此，矫正大计划既覆盖中计划实际新增落位，又尽量保留原大计划新增配额总量。原大计划因未满足需求而没有放下的新增箱，可以通过中小计划实际落位被补入矫正大计划。
+
+\subsection{诊断口径}
+
+矫正诊断文件记录：
+\begin{itemize}
+  \item \code{coverage_violation_count}：矫正后 \code{new_qty} 未覆盖中计划实际落位的行数。
+  \item \code{feasible}：当覆盖缺口为 0 时为 \code{true}。
+  \item \code{original_snapshot_total} 和 \code{corrected_snapshot_total}：用于确认在场箱快照保持不变。
+  \item \code{original_new_total} 和 \code{corrected_new_total}：用于比较新增量矫正前后差异。
+  \item \code{new_total_expansion_boxes}：因中计划实际落位超过原大计划 \code{new_qty} 而补入的新增箱总量。
+  \item \code{expanded_groups}：发生新增量扩展的 \((\text{航次}, \text{流向}, \text{尺寸})\) 分组。
+\end{itemize}
 
 \section{输出文件}
 
@@ -592,11 +680,22 @@ full_plan_outputs/<run_name>/
 \pathcode{medium_small_plan/small_plan_six_bay_blocks.csv} & 小计划按 6 贝块汇总 \\
 \pathcode{medium_small_plan/unplaced_boxes.csv} & 未放置箱明细 \\
 \pathcode{medium_small_plan/big_plan_used.csv} & 中小计划使用的大计划行 \\
+\pathcode{medium_small_plan/corrected_large_plan.csv} & 矫正大计划结果；保留在场箱快照，覆盖中计划新增箱落位 \\
+\pathcode{medium_small_plan/corrected_large_plan_diagnostics.json} & 矫正大计划诊断信息 \\
 \pathcode{medium_small_plan/generated_columns.csv} & 生成列明细 \\
 \pathcode{medium_small_plan/diagnostics.json} & 中小计划诊断信息 \\
 \pathcode{pipeline_summary.json} & 全流程摘要 \\
 \bottomrule
 \end{longtable}
+
+单独中小计划入口的输出目录为：
+
+\begin{Verbatim}[fontsize=\small,breaklines=true,breakanywhere=true]
+medium_small_column_generation_outputs/<run_name>/
+\end{Verbatim}
+
+该入口同样输出 \pathcode{corrected_large_plan.csv} 和
+\pathcode{corrected_large_plan_diagnostics.json}。其原大计划输入来自命令行参数 \param{--big-plan}。
 
 \section{可调参数}
 
@@ -816,6 +915,10 @@ full_plan_outputs/<run_name>/
 \param{small_plan_group_bay_split_penalty} & 8.0 & 细属性组跨贝惩罚 \\
 \param{small_plan_coarse_area_block_split_penalty} & 24.0 & 同粗属性箱区内跨块惩罚 \\
 \param{small_plan_coarse_area_bay_split_penalty} & 2.5 & 同粗属性箱区内跨贝惩罚 \\
+\param{twenty_isolated_bay_reward} & 80.0 & 20 尺箱使用孤立空小贝或静态不损失大贝能力位置的奖励 \\
+\param{twenty_large_segment_loss_penalty} & 220.0 & 最终方案造成连续小贝段大贝组合能力损失时的组合层惩罚 \\
+\param{twenty_large_segment_fresh_loss_penalty} & 240.0 & repair 动态选择中，新使用某个小贝会减少剩余大贝组合能力时的惩罚 \\
+\param{twenty_large_segment_used_zero_loss_reward} & 160.0 & repair 动态选择中，同一连续段已有 20 尺落位后，继续使用不增加大贝损失位置的奖励 \\
 \param{existing_coarse_bay_reward} & 48.0 & 候选贝与已有堆场粗 key 匹配时的奖励 \\
 \param{existing_coarse_neighbor_bay_reward} & 24.0 & 候选贝邻近已有匹配粗 key 时的奖励 \\
 \param{existing_other_coarse_bay_penalty} & 48.0 & 候选贝与其他粗 key 冲突时的惩罚 \\

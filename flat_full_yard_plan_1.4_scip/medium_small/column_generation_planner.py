@@ -122,6 +122,10 @@ class ColumnGenerationConfig:
     existing_other_coarse_bay_penalty: float = 48.0
     existing_other_coarse_neighbor_bay_penalty: float = 12.0
     existing_coarse_neighbor_max_bay_distance: int = 12
+    twenty_isolated_bay_reward: float = 80.0
+    twenty_large_segment_loss_penalty: float = 220.0
+    twenty_large_segment_fresh_loss_penalty: float = 240.0
+    twenty_large_segment_used_zero_loss_reward: float = 160.0
     group_area_balance_penalty: float = 18.0
     medium_concentrated_group_threshold: int = 26
     medium_small_group_area_split_penalty: float = 2400.0
@@ -203,6 +207,9 @@ class ColumnGenerationPlanner:
         self.existing_coarse_area_bays: defaultdict[tuple[str, ...], set[str]] = defaultdict(set)
         self.existing_area_coarse_bays: defaultdict[tuple[str, tuple[str, ...]], set[str]] = defaultdict(set)
         self.existing_bay_coarse_load: defaultdict[str, Counter[tuple[str, ...]]] = defaultdict(Counter)
+        self.large_segment_by_bay: dict[str, tuple[str, ...]] = {}
+        self.large_segment_base_pairs: dict[tuple[str, ...], int] = {}
+        self.large_segment_static_loss_by_bay: dict[str, int] = {}
         for (*coarse_key, area_no, bay_key), value in self.existing_coarse_bay_load.items():
             if value > 0:
                 coarse_tuple = tuple(coarse_key)
@@ -893,6 +900,9 @@ class ColumnGenerationPlanner:
         existing_same_coarse_neighbor_boxes = 0
         existing_other_coarse_bay_boxes = 0
         existing_other_coarse_neighbor_boxes = 0
+        twenty_segment_used_bays: defaultdict[tuple[str, ...], set[str]] = defaultdict(set)
+        twenty_zero_loss_boxes = 0
+        twenty_isolated_empty_boxes = 0
         for idx, chosen in selected.items():
             if chosen <= 0 or idx < 0 or idx >= len(self._columns):
                 continue
@@ -910,9 +920,19 @@ class ColumnGenerationPlanner:
                 existing_other_coarse_bay_boxes += qty
             elif anchor_category == "other_neighbor":
                 existing_other_coarse_neighbor_boxes += qty
+            if col.size == "20":
+                segment = self._large_segment_key_for_20_bay(col.bay_key)
+                if segment is None:
+                    if not self._bay_existing_size_modes(col.bay_key):
+                        twenty_isolated_empty_boxes += qty
+                else:
+                    twenty_segment_used_bays[segment].add(col.bay_key)
+                    if self._twenty_segment_static_loss_for_bay(col.bay_key) <= 0:
+                        twenty_zero_loss_boxes += qty
 
         fine_area_pairs = {(fine_key, area_no) for fine_key, area_no, _bay_key in fine_area_bays}
         coarse_area_pairs = {key[:-1] for key in coarse_area_bays}
+        twenty_segment_loss = self._twenty_segment_total_loss(twenty_segment_used_bays)
         fine_excess_bays = max(0, len(fine_area_bays) - len(fine_area_pairs))
         coarse_excess_bays = max(0, len(coarse_area_bays) - len(coarse_area_pairs))
         min_boxes = max(0, int(self.config.medium_large_group_min_area_boxes or 0))
@@ -928,6 +948,9 @@ class ColumnGenerationPlanner:
             + 10.0 * len(fine_area_bays)
             + 4.0 * len(coarse_area_bays)
             + existing_anchor_score
+            + self._twenty_segment_loss_penalty() * twenty_segment_loss
+            - float(getattr(self.config, "twenty_isolated_bay_reward", 0.0) or 0.0)
+            * min(50, twenty_isolated_empty_boxes + twenty_zero_loss_boxes)
         )
         return {
             "score": round(score, 6),
@@ -943,6 +966,10 @@ class ColumnGenerationPlanner:
             "existing_same_coarse_neighbor_boxes": existing_same_coarse_neighbor_boxes,
             "existing_other_coarse_bay_boxes": existing_other_coarse_bay_boxes,
             "existing_other_coarse_neighbor_boxes": existing_other_coarse_neighbor_boxes,
+            "twenty_large_segment_loss": twenty_segment_loss,
+            "twenty_large_segment_used_bay_count": sum(len(bays) for bays in twenty_segment_used_bays.values()),
+            "twenty_zero_loss_boxes": twenty_zero_loss_boxes,
+            "twenty_isolated_empty_boxes": twenty_isolated_empty_boxes,
         }
 
     def _build_area_relayout_solution(
@@ -1096,7 +1123,8 @@ class ColumnGenerationPlanner:
                 if not self._column_fits_state(col, state, remaining, enforce_quota=False):
                     continue
                 score = (
-                    self._area_relayout_column_score(col, relayout_state, remaining),
+                    self._area_relayout_column_score(col, relayout_state, remaining)
+                    + self._twenty_bay_state_cost(group, bay_key, state),
                     0 if int(col.quantity) >= int(remaining) else 1,
                     -int(col.quantity),
                     col.bay_key,
@@ -1212,6 +1240,7 @@ class ColumnGenerationPlanner:
         used_coarse_area_block: set[tuple[str, ...]] = set()
         used_coarse_area_bay: set[tuple[str, ...]] = set()
         used_voyage_area: set[tuple[str, str]] = set()
+        used_twenty_segment_bays: defaultdict[tuple[str, ...], set[str]] = defaultdict(set)
         for idx, chosen in selected.items():
             if chosen <= 0 or idx < 0 or idx >= len(self._columns):
                 continue
@@ -1228,12 +1257,17 @@ class ColumnGenerationPlanner:
                 used_coarse_area_block.add(col.coarse_key + (col.area_no, col.block_id))
             used_coarse_area_bay.add(col.coarse_key + (col.area_no, col.bay_key))
             used_voyage_area.add((col.voyage_id, col.area_no))
+            if col.size == "20":
+                segment = self._large_segment_key_for_20_bay(col.bay_key)
+                if segment is not None:
+                    used_twenty_segment_bays[segment].add(col.bay_key)
 
         energy += self.config.small_plan_group_area_split_penalty * len(used_group_area)
         energy += self.config.small_plan_group_block_split_penalty * len(used_group_block)
         energy += self.config.small_plan_coarse_area_block_split_penalty * len(used_coarse_area_block)
         energy += self.config.small_plan_coarse_area_bay_split_penalty * len(used_coarse_area_bay)
         energy += sum(self._voyage_area_cost(voyage_id, area_no) for voyage_id, area_no in used_voyage_area)
+        energy += self._twenty_segment_loss_penalty() * self._twenty_segment_total_loss(used_twenty_segment_bays)
 
         target_keys = set(actual_quota)
         for key, qty in self.quota_by_key.items():
@@ -3896,6 +3930,7 @@ class ColumnGenerationPlanner:
             "row_used_attrs": {},
             "bay_used_size": {},
             "bay_used_attrs": {},
+            "twenty_segment_used_bays": set(),
             "group_bay_used": set(),
             "used_group_area": set(),
             "used_group_block": set(),
@@ -4028,6 +4063,7 @@ class ColumnGenerationPlanner:
             abs(before_quota + qty - target) - abs(before_quota - target)
         )
         score += self._coarse_area_incremental_repair_cost(coarse_area_key, qty, state["coarse_area_used"])
+        score += self._twenty_bay_state_cost(group, bay_key, state)
         return float(score)
 
     def _coarse_area_incremental_repair_cost(
@@ -4238,6 +4274,10 @@ class ColumnGenerationPlanner:
                 state["area_edge_has45"].add(col.area_no)
             else:
                 state["area_edge_has_non45"].add(col.area_no)
+        if col.size == "20":
+            segment = self._large_segment_key_for_20_bay(col.bay_key)
+            if segment is not None:
+                state.setdefault("twenty_segment_used_bays", set()).add(col.bay_key)
         state["big_plan_quota_used"][col.quota_key] += col.quantity
         state["medium_plan_quota_used"][col.coarse_key + (col.area_no,)] += col.quantity
         state["medium_plan_bay_quota_used"][col.coarse_key + (col.area_no, col.bay_key)] += col.quantity
@@ -4599,6 +4639,7 @@ class ColumnGenerationPlanner:
                     cost += self._existing_other_neighbor_penalty(other_distance)
         if group.special_stow or group.pre_stow:
             cost -= 1.0
+        cost += self._twenty_bay_static_cost(group, bay_key)
         return cost
 
     def _area_fallback_tier_penalty(self, group: SmallBoxGroup, area_no: str) -> float:
@@ -4665,6 +4706,7 @@ class ColumnGenerationPlanner:
                 self.block_bay_nos[block_id] = tuple(self.bays[bay_key].bay_no for bay_key in members)
                 for bay_key in members:
                     self.block_by_bay[(area_no, bay_key)] = block_id
+        self._prepare_large_segment_preservation_indexes()
         heights_by_size: defaultdict[str, set[str]] = defaultdict(set)
         for group in self.groups:
             heights_by_size[group.size].add(group.height)
@@ -4683,6 +4725,155 @@ class ColumnGenerationPlanner:
                     continue
                 for height in heights:
                     self.area_size_height_cap[(bay.area_no, size, height)] += cap
+
+    def _prepare_large_segment_preservation_indexes(self) -> None:
+        self.large_segment_by_bay.clear()
+        self.large_segment_base_pairs.clear()
+        self.large_segment_static_loss_by_bay.clear()
+
+        def flush(segment: list[str]) -> None:
+            if len(segment) < 2:
+                return
+            segment_key = tuple(segment)
+            base_pairs = self._segment_pair_capacity(segment_key)
+            self.large_segment_base_pairs[segment_key] = base_pairs
+            for key in segment_key:
+                self.large_segment_by_bay[key] = segment_key
+                self.large_segment_static_loss_by_bay[key] = max(
+                    0,
+                    base_pairs - self._segment_pair_capacity_after_removed(segment_key, {key}),
+                )
+
+        for area_no, keys in self.bays_by_area.items():
+            segment: list[str] = []
+            for bay_key in keys:
+                if not self._bay_can_participate_in_large_segment(bay_key):
+                    flush(segment)
+                    segment = []
+                    continue
+                if segment and not self._segment_bays_are_consecutive(segment[-1], bay_key):
+                    flush(segment)
+                    segment = []
+                segment.append(bay_key)
+            flush(segment)
+
+    def _bay_can_participate_in_large_segment(self, bay_key: str) -> bool:
+        bay = self.bays.get(bay_key)
+        if bay is None or int(getattr(bay, "physical_capacity", 0) or 0) <= 0:
+            return False
+        existing_sizes = self._bay_existing_size_modes(bay_key)
+        if "20" in existing_sizes:
+            return False
+        if "40" in existing_sizes and "45" in existing_sizes:
+            return False
+        if existing_sizes & {"40", "45"}:
+            return True
+        if int(bay.cap_by_size.get("40", 0) or 0) > 0 or int(bay.cap_by_size.get("45", 0) or 0) > 0:
+            return True
+        for size in ("40", "45"):
+            if any(int(value or 0) > 0 for value in (bay.row_cap_by_size.get(size, {}) or {}).values()):
+                return True
+        return False
+
+    def _segment_bays_are_consecutive(self, left_key: str, right_key: str) -> bool:
+        left = self.bays.get(left_key)
+        right = self.bays.get(right_key)
+        if left is None or right is None or left.area_no != right.area_no:
+            return False
+        try:
+            return int(left.bay_no) + 2 == int(right.bay_no)
+        except (TypeError, ValueError):
+            return int(right.bay_order) - int(left.bay_order) == 1
+
+    def _segment_pair_capacity(self, bay_keys: Iterable[str]) -> int:
+        ordered = sorted(
+            (key for key in bay_keys if key in self.bays),
+            key=lambda key: (self.bays[key].area_no, self.bays[key].bay_order, key),
+        )
+        total = 0
+        run_len = 0
+        prev_key: str | None = None
+        for key in ordered:
+            if prev_key is not None and self._segment_bays_are_consecutive(prev_key, key):
+                run_len += 1
+            else:
+                total += run_len // 2
+                run_len = 1
+            prev_key = key
+        total += run_len // 2
+        return total
+
+    def _segment_pair_capacity_after_removed(self, segment: tuple[str, ...], removed_bays: set[str]) -> int:
+        if not removed_bays:
+            return self.large_segment_base_pairs.get(segment, self._segment_pair_capacity(segment))
+        return self._segment_pair_capacity(key for key in segment if key not in removed_bays)
+
+    def _large_segment_key_for_20_bay(self, bay_key: str) -> tuple[str, ...] | None:
+        return self.large_segment_by_bay.get(bay_key)
+
+    def _bay_existing_size_modes(self, bay_key: str) -> set[str]:
+        bay = self.bays.get(bay_key)
+        if bay is None:
+            return set()
+        return {str(size) for size in getattr(bay, "existing_size_modes", set()) if str(size)}
+
+    def _twenty_segment_static_loss_for_bay(self, bay_key: str) -> int:
+        return max(0, int(self.large_segment_static_loss_by_bay.get(bay_key, 0)))
+
+    def _twenty_segment_incremental_loss(self, bay_key: str, state: dict | None) -> int:
+        segment = self._large_segment_key_for_20_bay(bay_key)
+        if segment is None:
+            return 0
+        used = set(state.get("twenty_segment_used_bays", set())) if state is not None else set()
+        used_in_segment = {key for key in used if self.large_segment_by_bay.get(key) == segment}
+        if bay_key in used_in_segment:
+            return 0
+        before = self._segment_pair_capacity_after_removed(segment, used_in_segment)
+        after = self._segment_pair_capacity_after_removed(segment, used_in_segment | {bay_key})
+        return max(0, before - after)
+
+    def _twenty_segment_total_loss(self, used_bays_by_segment: dict[tuple[str, ...], set[str]]) -> int:
+        loss = 0
+        for segment, used_bays in used_bays_by_segment.items():
+            base_pairs = self.large_segment_base_pairs.get(segment, self._segment_pair_capacity(segment))
+            remaining_pairs = self._segment_pair_capacity_after_removed(segment, set(used_bays))
+            loss += max(0, base_pairs - remaining_pairs)
+        return loss
+
+    def _twenty_bay_static_cost(self, group: SmallBoxGroup, bay_key: str) -> float:
+        if group.size != "20":
+            return 0.0
+        reward = float(getattr(self.config, "twenty_isolated_bay_reward", 0.0) or 0.0)
+        segment = self._large_segment_key_for_20_bay(bay_key)
+        if segment is None:
+            return 0.0 if self._bay_existing_size_modes(bay_key) else -reward
+        loss = self._twenty_segment_static_loss_for_bay(bay_key)
+        if loss <= 0:
+            return -reward
+        return self._twenty_segment_loss_penalty() * loss
+
+    def _twenty_bay_state_cost(self, group: SmallBoxGroup, bay_key: str, state: dict | None) -> float:
+        if group.size != "20":
+            return 0.0
+        reward = float(getattr(self.config, "twenty_isolated_bay_reward", 0.0) or 0.0)
+        segment = self._large_segment_key_for_20_bay(bay_key)
+        if segment is None:
+            if self._bay_existing_size_modes(bay_key):
+                return 0.0
+            if state is not None and state.get("bay_load", Counter()).get(bay_key, 0) > 0:
+                return 0.0
+            return -reward
+        loss = self._twenty_segment_incremental_loss(bay_key, state)
+        if loss <= 0:
+            used = set(state.get("twenty_segment_used_bays", set())) if state is not None else set()
+            if any(self.large_segment_by_bay.get(key) == segment for key in used):
+                return -float(getattr(self.config, "twenty_large_segment_used_zero_loss_reward", 0.0) or 0.0)
+            return -reward
+        return float(getattr(self.config, "twenty_large_segment_fresh_loss_penalty", 0.0) or 0.0) * loss
+
+    def _twenty_segment_loss_penalty(self) -> float:
+        return max(0.0, float(getattr(self.config, "twenty_large_segment_loss_penalty", 0.0) or 0.0))
+
     def _prepare_quota(self) -> None:
         for (voyage_id, flow, area_no, big_size), qty in getattr(self.problem, "area_size_quota", {}).items():
             if qty > 0:

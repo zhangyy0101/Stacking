@@ -24,6 +24,7 @@ from medium_small.bridge import (
     solve_medium_small_problem,
     write_medium_demand_rows_from_rows,
 )
+from medium_small.corrected_large_plan import read_csv_records, write_corrected_large_plan_outputs
 from api.planning_api import YardPlanAlgorithmConfig, solve_medium_small_plan_df
 
 
@@ -94,6 +95,26 @@ def main() -> None:
             "flat_pipeline_mode": "external_large_plan_to_embedded_column_generation_scip",
         },
     )
+    corrected_large_plan_path = output_dir / "corrected_large_plan.csv"
+    corrected_large_plan_diagnostics_path = output_dir / "corrected_large_plan_diagnostics.json"
+    _corrected_large_rows, corrected_large_diagnostics = write_corrected_large_plan_outputs(
+        corrected_large_plan_path,
+        corrected_large_plan_diagnostics_path,
+        read_csv_records(args.big_plan),
+        result.medium_rows,
+    )
+    if corrected_large_diagnostics.get("coverage_violation_count", 0):
+        print(
+            "corrected_large_plan warning: "
+            f"{corrected_large_diagnostics.get('coverage_violation_count')} coverage violation(s); "
+            f"see {corrected_large_plan_diagnostics_path}"
+        )
+    elif corrected_large_diagnostics.get("new_total_expansion_boxes", 0):
+        print(
+            "corrected_large_plan: "
+            f"expanded new_qty by {corrected_large_diagnostics.get('new_total_expansion_boxes')} boxes "
+            "to cover medium/small placements."
+        )
     summary = {
         "planning_time": planning_time.isoformat(sep=" "),
         "adapter_json": str(adapter_json_path),
@@ -107,6 +128,12 @@ def main() -> None:
         "medium_algorithm": diagnostics.get("algorithm"),
         "medium_master_status": diagnostics.get("master_status"),
         "medium_unplaced_boxes": diagnostics.get("unplaced_boxes"),
+        "corrected_large_plan": str(corrected_large_plan_path),
+        "corrected_large_plan_diagnostics": str(corrected_large_plan_diagnostics_path),
+        "corrected_large_plan_feasible": corrected_large_diagnostics.get("feasible"),
+        "corrected_large_plan_coverage_violations": corrected_large_diagnostics.get("coverage_violation_count"),
+        "corrected_large_plan_new_total_expansion_boxes": corrected_large_diagnostics.get("new_total_expansion_boxes"),
+        "corrected_large_plan_expanded_group_count": corrected_large_diagnostics.get("new_total_expansion_group_count"),
     }
     write_json(output_dir / "pipeline_summary.json", summary)
 
@@ -114,6 +141,7 @@ def main() -> None:
     print(f"medium_plan: {output_dir / 'medium_plan.csv'}")
     print(f"small_plan: {output_dir / 'small_plan.csv'}")
     print(f"unplaced_boxes: {output_dir / 'unplaced_boxes.csv'}")
+    print(f"corrected_large_plan: {corrected_large_plan_path}")
     print(f"diagnostics: {output_dir / 'diagnostics.json'}")
 
 

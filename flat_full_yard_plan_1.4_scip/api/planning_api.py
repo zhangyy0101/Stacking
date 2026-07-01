@@ -24,6 +24,7 @@ from medium_small.bridge import (
     make_config as make_medium_small_config,
 )
 from medium_small.column_generation_planner import ColumnGenerationConfig, ColumnGenerationPlanner
+from medium_small.corrected_large_plan import build_corrected_large_plan_rows
 from medium_small.small_plan_from_medium import (
     apply_external_medium_plan,
     configure_small_plan_from_medium,
@@ -115,10 +116,16 @@ def solve_medium_small_plan_df(
         big_plan=latest_large_plan_df,
     )
     result = ColumnGenerationPlanner(inputs.problem, replace(config.medium_small)).solve()
+    corrected_large_rows, corrected_large_diagnostics = build_corrected_large_plan_rows(
+        latest_large_plan_df.to_dict("records"),
+        result.medium_rows,
+    )
     return {
         "medium_plan": pd.DataFrame(result.medium_rows),
         "small_plan": pd.DataFrame(result.small_rows),
         "unplaced_boxes": pd.DataFrame(result.unplaced_rows),
+        "corrected_large_plan": pd.DataFrame(corrected_large_rows),
+        "corrected_large_plan_diagnostics": pd.DataFrame([corrected_large_diagnostics]),
     }
 
 
@@ -162,6 +169,8 @@ def solve_full_yard_plan_df(
         "medium_plan": medium_small["medium_plan"],
         "small_plan": medium_small["small_plan"],
         "unplaced_boxes": medium_small["unplaced_boxes"],
+        "corrected_large_plan": medium_small["corrected_large_plan"],
+        "corrected_large_plan_diagnostics": medium_small["corrected_large_plan_diagnostics"],
     }
 
 

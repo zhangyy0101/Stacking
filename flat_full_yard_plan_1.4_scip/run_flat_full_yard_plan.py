@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import os
 import sys
 from datetime import datetime
@@ -47,6 +46,7 @@ from medium_small.bridge import (
     solve_medium_small_problem,
     write_medium_demand_rows_from_rows,
 )
+from medium_small.corrected_large_plan import write_corrected_large_plan_outputs
 
 
 def parse_args() -> argparse.Namespace:
@@ -185,6 +185,26 @@ def main() -> None:
     big_plan_used_path = medium_small_output_dir / "big_plan_used.csv"
     generated_columns_path = medium_small_output_dir / "generated_columns.csv"
     medium_small_diagnostics_path = medium_small_output_dir / "diagnostics.json"
+    corrected_large_plan_path = medium_small_output_dir / "corrected_large_plan.csv"
+    corrected_large_plan_diagnostics_path = medium_small_output_dir / "corrected_large_plan_diagnostics.json"
+    _corrected_large_rows, corrected_large_diagnostics = write_corrected_large_plan_outputs(
+        corrected_large_plan_path,
+        corrected_large_plan_diagnostics_path,
+        large_allocation_rows,
+        result.medium_rows,
+    )
+    if corrected_large_diagnostics.get("coverage_violation_count", 0):
+        print(
+            "corrected_large_plan warning: "
+            f"{corrected_large_diagnostics.get('coverage_violation_count')} coverage violation(s); "
+            f"see {corrected_large_plan_diagnostics_path}"
+        )
+    elif corrected_large_diagnostics.get("new_total_expansion_boxes", 0):
+        print(
+            "corrected_large_plan: "
+            f"expanded new_qty by {corrected_large_diagnostics.get('new_total_expansion_boxes')} boxes "
+            "to cover medium/small placements."
+        )
 
     summary = {
         "planning_time": str(planning_time),
@@ -203,6 +223,8 @@ def main() -> None:
         "small_plan_six_bay_blocks": str(small_plan_six_bay_blocks_path),
         "unplaced_boxes": str(unplaced_boxes_path),
         "big_plan_used": str(big_plan_used_path),
+        "corrected_large_plan": str(corrected_large_plan_path),
+        "corrected_large_plan_diagnostics": str(corrected_large_plan_diagnostics_path),
         "generated_columns": str(generated_columns_path),
         "medium_small_diagnostics": str(medium_small_diagnostics_path),
         "large_allocation_output": str(large_allocation_path),
@@ -224,6 +246,10 @@ def main() -> None:
         "medium_unplaced_row_count": len(result.unplaced_rows),
         "medium_row_count": len(result.medium_rows),
         "small_row_count": len(result.small_rows),
+        "corrected_large_plan_feasible": corrected_large_diagnostics.get("feasible"),
+        "corrected_large_plan_coverage_violations": corrected_large_diagnostics.get("coverage_violation_count"),
+        "corrected_large_plan_new_total_expansion_boxes": corrected_large_diagnostics.get("new_total_expansion_boxes"),
+        "corrected_large_plan_expanded_group_count": corrected_large_diagnostics.get("new_total_expansion_group_count"),
     }
     write_json(run_dir / "pipeline_summary.json", summary)
 
@@ -231,6 +257,7 @@ def main() -> None:
     print(f"large_plan: {large_output_dir}")
     print(f"medium_small_plan: {medium_small_output_dir}")
     print(f"unplaced_boxes: {unplaced_boxes_path}")
+    print(f"corrected_large_plan: {corrected_large_plan_path}")
     print(f"summary: {run_dir / 'pipeline_summary.json'}")
 
 
@@ -286,18 +313,6 @@ def print_solution_summary(solution) -> None:
     print(f"of_area_overage_total: {sum(solution.of_area_over.values())}")
     print(f"area_share_overage_total: {sum(solution.h.values())}")
     print(f"required_area_unmet: {getattr(solution, 'required_area_unmet', {})}")
-
-
-def write_rows(path: Path, rows: list[dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not rows:
-        path.write_text("", encoding="utf-8-sig")
-        return
-    fieldnames = list(rows[0].keys())
-    with path.open("w", newline="", encoding="utf-8-sig") as fp:
-        writer = csv.DictWriter(fp, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
 
 
 def make_six_bay_block_rows(small_rows: list[dict]) -> list[dict]:
