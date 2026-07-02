@@ -193,6 +193,7 @@ class BoxGroup:
     special_codes: tuple[str, ...]
     demand: int
     attributes: dict[str, str] = field(default_factory=dict)
+    area_allowlist: set[str] | None = None
 
     @property
     def size_mode(self) -> str:
@@ -289,6 +290,7 @@ class SmallBoxGroup:
     special_stow: bool = False
     special_stow_code: str = ""
     attributes: dict[str, str] = field(default_factory=dict)
+    area_allowlist: set[str] | None = None
 
 
 @dataclass
@@ -623,6 +625,19 @@ def normalize_area_list(values: Any) -> list[str]:
 
 def normalize_area(value: Any) -> str:
     return normalize_text(value, "")
+
+
+def read_port_sail_area(input_guandong: InputAdapterGd) -> dict[str, set[str]]:
+    raw = getattr(input_guandong, "port_sail_area", {}) or {}
+    if not isinstance(raw, Mapping):
+        return {}
+    out: dict[str, set[str]] = {}
+    for port, areas in raw.items():
+        port_code = normalize_text(port)
+        area_set = set(normalize_area_list(areas))
+        if port_code and area_set:
+            out[port_code] = area_set
+    return out
 
 
 def canonical_attribute_tuple(values: Any, default: Sequence[str]) -> tuple[str, ...]:
@@ -2916,6 +2931,7 @@ def load_port_demand_groups(
     groups: list[BoxGroup] = []
     group_index: defaultdict[str, int] = defaultdict(int)
     counters: defaultdict[str, Counter[tuple]] = defaultdict(Counter)
+    port_sail_area = read_port_sail_area(input_guandong)
     doc_frames: dict[str, pd.DataFrame] = {}
     for voyage_id in voyage_ids:
         frame = input_guandong.vessel_containers.get(voyage_id, {}).get("doc_cntrs", None)
@@ -2926,6 +2942,7 @@ def load_port_demand_groups(
 
     import_counters: Counter[tuple] = Counter()
     for voyage_id, frame in doc_frames.items():
+        import_voyage = is_import_voyage(input_guandong, voyage_id)
         for record in frame.to_dict("records"):
             flow = normalize_medium_small_flow(record.get("IYC_STS_CSTATUSCD"), default="OF")
             if flow == "OF":
@@ -2936,11 +2953,12 @@ def load_port_demand_groups(
             group_attrs, values, port_label = import_base_group_attributes(normalized_record, size, port)
             core = (flow, size, port_label)
             key = tuple(values.get(attr, "MIXED") for attr in group_attrs)
-            import_counters[(voyage_id, flow, "40" if size == "45" else size, core, group_attrs, key)] += 1
+            constraint_port = port if import_voyage and port in port_sail_area else ""
+            import_counters[(voyage_id, flow, "40" if size == "45" else size, core, group_attrs, key, constraint_port)] += 1
 
     import_by_cap_key: defaultdict[tuple[str, str, str], list[tuple[tuple, int]]] = defaultdict(list)
     for full_key, qty in import_counters.items():
-        voyage_id, flow, big_size, _core, _group_attrs, _key = full_key
+        voyage_id, flow, big_size, _core, _group_attrs, _key, _constraint_port = full_key
         import_by_cap_key[(voyage_id, medium_small_area_flow(flow), big_size)].append((full_key, int(qty)))
     for cap_key, items in import_by_cap_key.items():
         total = sum(qty for _key, qty in items)
@@ -2958,8 +2976,8 @@ def load_port_demand_groups(
         for (full_key, _qty), planned_qty in zip(items, scaled):
             if planned_qty <= 0:
                 continue
-            voyage_id, _flow, _big_size, core, group_attrs, key = full_key
-            counters[voyage_id][(core, group_attrs, key)] += int(planned_qty)
+            voyage_id, _flow, _big_size, core, group_attrs, key, constraint_port = full_key
+            counters[voyage_id][(core, group_attrs, key, constraint_port)] += int(planned_qty)
 
     for row in demand_rows:
         if row.flow != "OF":
@@ -3001,13 +3019,13 @@ def load_port_demand_groups(
             scaled = largest_remainder_scale([count for _, count in items], sum(weights.values()), int(row.planned_boxes))
             for (key, _count), qty in zip(items, scaled):
                 if qty > 0:
-                    counters[row.voyage_id][(core, group_attrs, key)] += int(qty)
+                    counters[row.voyage_id][(core, group_attrs, key, "")] += int(qty)
         else:
             values = dynamic_attributes_from_row(base_attrs, group_attrs, levels=attribute_rules.weight_levels_for(row.voyage_id))
             key = tuple(values.get(attr, "MIXED") for attr in group_attrs)
-            counters[row.voyage_id][(core, group_attrs, key)] += int(row.planned_boxes)
+            counters[row.voyage_id][(core, group_attrs, key, "")] += int(row.planned_boxes)
     for voyage_id in sorted(counters):
-        for (core, group_attrs, key), demand in sorted(counters[voyage_id].items(), key=lambda item: (item[0][0], item[0][2])):
+        for (core, group_attrs, key, constraint_port), demand in sorted(counters[voyage_id].items(), key=lambda item: (item[0][0], item[0][2])):
             core_status, core_size, core_port = core
             values = dict(zip(group_attrs, key))
             group_index[voyage_id] += 1
@@ -3031,6 +3049,7 @@ def load_port_demand_groups(
                     special_codes=(),
                     demand=demand,
                     attributes={str(k): str(v) for k, v in values.items()},
+                    area_allowlist=set(port_sail_area[constraint_port]) if constraint_port else None,
                 )
             )
     return groups, demand_rows
@@ -3073,10 +3092,12 @@ def load_small_doc_groups(
 ) -> list[SmallBoxGroup]:
     planning_time = planning_time or parse_datetime(DEFAULT_PLANNING_TIME) or datetime(2026, 5, 19, 9, 30)
     groups: list[SmallBoxGroup] = []
+    port_sail_area = read_port_sail_area(input_guandong)
     for voyage_id in voyage_ids:
         frame = input_guandong.vessel_containers.get(voyage_id, {}).get("doc_cntrs", None)
         if not isinstance(frame, pd.DataFrame) or frame.empty:
             continue
+        import_voyage = is_import_voyage(input_guandong, voyage_id)
         levels = attribute_rules.weight_levels_for(voyage_id)
         group_by_weight = getattr(attribute_rules, "weight_group_enabled_for", lambda _voyage_id: False)(voyage_id)
         counter: Counter[tuple] = Counter()
@@ -3102,11 +3123,12 @@ def load_small_doc_groups(
                 "0",
             )
             values = dynamic_attributes_from_row(normalized_record, group_columns, levels=levels)
-            counter[(core, group_columns, tuple(values.get(column, "") for column in group_columns))] += 1
+            constraint_port = port if import_voyage and flow != "OF" and port in port_sail_area else ""
+            counter[(core, group_columns, tuple(values.get(column, "") for column in group_columns), constraint_port)] += 1
         planned_counter: Counter[tuple] = Counter()
         import_by_cap_key: defaultdict[tuple[str, str, str], list[tuple[tuple, int]]] = defaultdict(list)
         for key, qty in counter.items():
-            core, _group_columns, _dynamic_key = key
+            core, _group_columns, _dynamic_key, _constraint_port = key
             flow, size, _port, _height, _weight, _special_code, _pre_stow_value = core
             if flow == "OF":
                 planned_counter[key] += int(qty)
@@ -3130,7 +3152,7 @@ def load_small_doc_groups(
                     planned_counter[key] += int(planned_qty)
 
         for index, (key, demand) in enumerate(sorted(planned_counter.items()), start=1):
-            core, group_columns, dynamic_key = key
+            core, group_columns, dynamic_key, constraint_port = key
             status, size, port, height, weight, special_code, pre_stow_value = core
             values = dict(zip(group_columns, dynamic_key))
             groups.append(
@@ -3147,6 +3169,7 @@ def load_small_doc_groups(
                     special_stow=bool(special_code),
                     special_stow_code=str(special_code),
                     attributes={str(k): str(v) for k, v in values.items()},
+                    area_allowlist=set(port_sail_area[constraint_port]) if constraint_port else None,
                 )
             )
     return groups

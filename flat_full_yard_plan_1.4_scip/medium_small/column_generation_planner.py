@@ -393,6 +393,7 @@ class ColumnGenerationPlanner:
                     special_stow=False,
                     special_stow_code="",
                     attributes=attributes,
+                    area_allowlist=self._copy_area_allowlist(representative),
                 )
                 planning_groups.append(group)
                 self.group_source[group.group_id] = "forecast_fallback"
@@ -486,6 +487,7 @@ class ColumnGenerationPlanner:
                     special_stow=False,
                     special_stow_code="",
                     attributes=attributes,
+                    area_allowlist=self._copy_area_allowlist(representative),
                 )
                 planning_groups.append(group)
                 self.group_source[group.group_id] = "forecast_fallback"
@@ -524,6 +526,13 @@ class ColumnGenerationPlanner:
         return need
 
     @staticmethod
+    def _copy_area_allowlist(group) -> set[str] | None:
+        allowlist = getattr(group, "area_allowlist", None)
+        if allowlist is None:
+            return None
+        return set(allowlist)
+
+    @staticmethod
     def _copy_group_with_demand(group: SmallBoxGroup, demand: int) -> SmallBoxGroup:
         return SmallBoxGroup(
             group_id=group.group_id,
@@ -538,6 +547,7 @@ class ColumnGenerationPlanner:
             special_stow=group.special_stow,
             special_stow_code=group.special_stow_code,
             attributes=dict(getattr(group, "attributes", {}) or {}),
+            area_allowlist=ColumnGenerationPlanner._copy_area_allowlist(group),
         )
 
     @staticmethod
@@ -555,6 +565,7 @@ class ColumnGenerationPlanner:
             special_stow=False,
             special_stow_code="",
             attributes=dict(getattr(group, "attributes", {}) or {}),
+            area_allowlist=ColumnGenerationPlanner._copy_area_allowlist(group),
         )
 
     def _fallback_group_attributes(
@@ -4474,6 +4485,7 @@ class ColumnGenerationPlanner:
                 if self._candidate_area_base_scope(group, area_no, scope)
                 and self._user_area_policy_allows(group.voyage_id, area_no)
                 and self._area_supports_group_flow(group, area_no)
+                and self._port_sail_area_policy_allows(group, area_no)
             ],
             key=lambda area_no: (
                 self._priority_area_rank(group, area_no),
@@ -4533,6 +4545,16 @@ class ColumnGenerationPlanner:
         if allow and area_no not in allow:
             return False
         return True
+
+    @staticmethod
+    def _port_sail_area_policy_allows(group: SmallBoxGroup, area_no: str) -> bool:
+        if group.status in EXPORT_FLOWS:
+            return True
+        allowlist = getattr(group, "area_allowlist", None)
+        if allowlist is None:
+            return True
+        area_code = str(area_no or "").strip().upper()
+        return area_code in {str(area or "").strip().upper() for area in allowlist}
 
     def _user_bay_policy_allows(self, group: SmallBoxGroup, bay_key: str) -> bool:
         blocked = getattr(self.problem, "user_group_bay_blocklist", {}).get(group.group_id, set())

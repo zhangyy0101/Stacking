@@ -122,6 +122,7 @@ class InputAdapterGd:
         self.bay_rules: Dict[str, List[str]] = {}   # 贝不能混
         self.row_rules: Dict[str, List[str]] = {}   # 排不能混
         self.weight_level: Dict[str, List[int]] = {} # 重量等级
+        self.port_sail_area: Dict[str, List[str]] = {} # 港口与航区的映射
         self.is_data_local: bool = False                  # 是否本地加载信息
         self.local_path: str = None                       # 本地加载文件地址
         self.need_save_data: bool = True                  # 是否保存输入信息
@@ -152,6 +153,7 @@ class InputAdapterGd:
             "bay_rules": self.bay_rules,
             "row_rules": self.row_rules,
             "weight_level": self.weight_level,
+            "port_sail_area": self.port_sail_area,
             "is_data_local": self.is_data_local,
             "local_path": self.local_path,
             "need_save_data": self.need_save_data,
@@ -205,6 +207,7 @@ class InputAdapterGd:
             DEFAULT_WEIGHT_LEVEL,
             fill_missing=False,
         )
+        obj.port_sail_area = data.get("port_sail_area", {})
         obj.is_data_local = data.get("is_data_local", False)
         obj.local_path = data.get("local_path")
         obj.need_save_data = data.get("need_save_data", True)

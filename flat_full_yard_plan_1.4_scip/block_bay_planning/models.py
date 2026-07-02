@@ -102,6 +102,7 @@ class BoxGroup:
     special_codes: tuple[str, ...]
     demand: int
     attributes: dict[str, str] = field(default_factory=dict)
+    area_allowlist: set[str] | None = None
 
     @property
     def size_mode(self) -> str:
@@ -218,6 +219,7 @@ class SmallBoxGroup:
     special_stow: bool = False
     special_stow_code: str = ""
     attributes: dict[str, str] = field(default_factory=dict)
+    area_allowlist: set[str] | None = None
 
 
 @dataclass
