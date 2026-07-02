@@ -2409,6 +2409,7 @@ def calculate_medium_demands(
     voyage_ids: list[str] | tuple[str, ...] = DEFAULT_TARGET_VOYAGES,
     planning_time: datetime | None = None,
     big_plan_caps: dict[tuple[str, str, str], int] | None = None,
+    horizon_hours: float = 24.0,
 ) -> list[DemandRow]:
     planning_time = planning_time or parse_datetime(DEFAULT_PLANNING_TIME) or datetime(2026, 5, 19, 9, 30)
     schedules = read_vessel_schedules(input_guandong)
@@ -2417,7 +2418,7 @@ def calculate_medium_demands(
     rows: list[DemandRow] = []
     for voyage_id in normalized_voyages:
         receive_start = schedules.get(voyage_id).receive_start if voyage_id in schedules else planning_time
-        stage, ratio = planning_stage(receive_start, planning_time)
+        stage, ratio = planning_stage(receive_start, planning_time, horizon_hours)
         docs = read_doc_by_port_size(input_guandong, voyage_id)
         yard_counts = yard_by_voyage.get(voyage_id, Counter())
         if is_import_voyage(input_guandong, voyage_id):
@@ -2707,17 +2708,18 @@ def cap_demand_rows_by_big_plan(
     return sorted(capped_rows, key=lambda row: (row.voyage_id, row.flow, row.size_mode, row.port))
 
 
-def planning_stage(receive_start: datetime, planning_time: datetime) -> tuple[str, float]:
+def planning_stage(receive_start: datetime, planning_time: datetime, horizon_hours: float = 24.0) -> tuple[str, float]:
+    horizon = timedelta(hours=horizon_hours if horizon_hours > 0 else 24.0)
     if planning_time < receive_start:
-        if planning_time + timedelta(hours=24) >= receive_start:
+        if planning_time + horizon >= receive_start:
             return "before_open_within_24h", 0.70
         return "before_open_beyond_24h", 0.0
     elapsed = planning_time - receive_start
-    if elapsed < timedelta(hours=24):
+    if elapsed < horizon:
         return "open_first_24h", 0.70
-    if elapsed < timedelta(hours=48):
-        return "open_second_24h", 0.20
-    return "open_third_24h_or_later", 0.10
+    if elapsed < horizon * 2:
+        return "open_second_24h", 0.90
+    return "open_third_24h_or_later", 1.00
 
 
 def read_predicted_by_port_size(input_guandong: InputAdapterGd, voyage_id: str) -> Counter[tuple[str, str, str]]:
@@ -2902,8 +2904,15 @@ def load_port_demand_groups(
     planning_time: datetime,
     attribute_rules: AttributeRules,
     big_plan_caps: dict[tuple[str, str, str], int] | None = None,
+    horizon_hours: float = 24.0,
 ) -> tuple[list[BoxGroup], list[DemandRow]]:
-    demand_rows = calculate_medium_demands(input_guandong, voyage_ids, planning_time, big_plan_caps=big_plan_caps)
+    demand_rows = calculate_medium_demands(
+        input_guandong,
+        voyage_ids,
+        planning_time,
+        big_plan_caps=big_plan_caps,
+        horizon_hours=horizon_hours,
+    )
     groups: list[BoxGroup] = []
     group_index: defaultdict[str, int] = defaultdict(int)
     counters: defaultdict[str, Counter[tuple]] = defaultdict(Counter)
@@ -3888,6 +3897,7 @@ def build_problem(
         planning_time,
         attribute_rules,
         big_plan_caps=None,
+        horizon_hours=horizon_hours,
     )
     small_groups = load_small_doc_groups(
         input_guandong,
@@ -4097,6 +4107,7 @@ def load_medium_small_inputs(
         list(voyages),
         planning_time,
         big_plan_caps=None,
+        horizon_hours=horizon_hours,
     )
     problem = build_problem(
         input_guandong,

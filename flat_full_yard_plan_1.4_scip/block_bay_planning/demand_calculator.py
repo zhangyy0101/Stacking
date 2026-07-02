@@ -373,15 +373,16 @@ def _read_receive_windows(data_path: Path) -> dict[str, tuple[datetime, datetime
     return windows
 
 
-def _planning_stage(receive_start: datetime, planning_time: datetime) -> tuple[str, float]:
+def _planning_stage(receive_start: datetime, planning_time: datetime, horizon_hours: float = 24.0) -> tuple[str, float]:
+    horizon = timedelta(hours=horizon_hours if horizon_hours > 0 else 24.0)
     if planning_time < receive_start:
-        if planning_time + timedelta(hours=24) >= receive_start:
+        if planning_time + horizon >= receive_start:
             return "before_open_within_24h", 0.70
         return "before_open_beyond_24h", 0.0
     elapsed = planning_time - receive_start
-    if elapsed < timedelta(hours=24):
+    if elapsed < horizon:
         return "open_first_24h", 0.70
-    if elapsed < timedelta(hours=48):
+    if elapsed < horizon * 2:
         return "open_second_24h", 0.90
     return "open_third_24h_or_later", 1.00
 
