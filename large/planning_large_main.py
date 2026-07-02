@@ -260,6 +260,7 @@ def build_current_case_data(
     user_design: bool = False,
     user_design_large_plan_area: Optional[Sequence[str]] = None,
     adjust_plan_info: Optional[Mapping[str, Any]] = None,
+    port_sail_area: Optional[Mapping[str, Sequence[str]]] = None,
 ) -> PlanningInputArtifacts:
     """
     功能：
@@ -286,6 +287,7 @@ def build_current_case_data(
 
     data_dir = discover_data_dir(base_dir, data_dir)
     flow_aliases = {normalize_code(k): normalize_code(v) for k, v in (flow_aliases or {}).items()}
+    port_sail_area = normalize_port_sail_area(port_sail_area or {})
 
     # 当前要规划的航次集合。出口和进口在数据来源上不同，但求解器中统一进入 V。
     if export_vessels is None:
@@ -394,13 +396,14 @@ def build_current_case_data(
     cbar40 = {(v, a): max(0.0, c40.get(a, 0.0) - tops40.get((v, a), 0.0)) for v in all_vessels for a in areas}
 
     # 需求 D：出口 = 资料箱/快照箱去重 + 预估超出部分补 OF；进口 = 资料箱 + 快照补全。
-    d20, d40, demand_diagnostics = build_demand_params(
+    d20, d40, port_demand20, port_demand40, demand_diagnostics = build_demand_params(
         data_dir,
         export_vessels=export_vessels,
         import_vessels=import_vessels,
         current_snapshot=current_snapshot,
         model_areas=set(areas),
         flow_aliases=flow_aliases,
+        port_sail_area=port_sail_area,
     )
     of_work_lanes = {
         vessel: read_prediction_work_lanes(data_dir / f"predict_data_{vessel}.xlsx")
@@ -455,6 +458,9 @@ def build_current_case_data(
         C20=c20,
         C20Direct=c20_direct,
         C40=c40,
+        port_area_demand20=port_demand20,
+        port_area_demand40=port_demand40,
+        port_area_allowlist=port_sail_area,
         Cbar20=cbar20,
         Cbar20Direct=cbar20_direct,
         Cbar40=cbar40,
@@ -489,6 +495,10 @@ def build_current_case_data(
         "area_count": len(areas),
         "flows": flows,
         "flow_aliases": flow_aliases,
+        "port_area_constraint_ports": sorted(port_sail_area),
+        "port_area_constrained_demand20_total": float(sum(port_demand20.values())),
+        "port_area_constrained_demand40_total": float(sum(port_demand40.values())),
+        "port_area_constrained_group_count": int(len(port_demand20) + len(port_demand40)),
         **area_control_diagnostics,
         "bad_bay_count": len(bad_bays),
         "bad_bay_sample": sorted(list(bad_bays))[:20],
@@ -764,6 +774,45 @@ def read_adjust_plan_info(path: Optional[Path]) -> dict[str, Any]:
         return {}
     adjust_plan_info = data.get("adjust_plan_info", data)
     return adjust_plan_info if isinstance(adjust_plan_info, dict) else {}
+
+
+def normalize_port_sail_area(raw: Optional[Mapping[str, Any]]) -> dict[str, list[str]]:
+    result: dict[str, list[str]] = {}
+    if not isinstance(raw, Mapping):
+        return result
+    for raw_port, raw_areas in raw.items():
+        port = normalize_code(raw_port)
+        if not port:
+            continue
+        if isinstance(raw_areas, str):
+            area_iterable: Iterable[Any] = [raw_areas]
+        else:
+            try:
+                area_iterable = list(raw_areas or [])
+            except TypeError:
+                area_iterable = []
+        areas: list[str] = []
+        seen: set[str] = set()
+        for raw_area in area_iterable:
+            area = normalize_code(raw_area)
+            if not area or area in seen:
+                continue
+            seen.add(area)
+            areas.append(area)
+        if areas:
+            result[port] = areas
+    return result
+
+
+def read_port_sail_area_json(path: Optional[Path]) -> dict[str, list[str]]:
+    if path is None:
+        return {}
+    with path.open("r", encoding="utf-8") as fp:
+        data = json.load(fp)
+    if not isinstance(data, dict):
+        return {}
+    raw = data.get("port_sail_area", data)
+    return normalize_port_sail_area(raw if isinstance(raw, Mapping) else {})
 
 
 def discover_export_vessels(data_dir: Path) -> list[str]:
@@ -1440,7 +1489,14 @@ def build_demand_params(
     current_snapshot: pd.DataFrame,
     model_areas: set[str],
     flow_aliases: Mapping[str, str],
-) -> tuple[dict[tuple[str, str], float], dict[tuple[str, str], float], dict[str, Any]]:
+    port_sail_area: Optional[Mapping[str, Sequence[str]]] = None,
+) -> tuple[
+    dict[tuple[str, str], float],
+    dict[tuple[str, str], float],
+    dict[tuple[str, str, str], float],
+    dict[tuple[str, str, str], float],
+    dict[str, Any],
+]:
     """
     功能：
         构造求解器最终需求参数 D20 和 D40。
@@ -1466,7 +1522,10 @@ def build_demand_params(
 
     d20: dict[tuple[str, str], float] = {}
     d40: dict[tuple[str, str], float] = {}
+    port_demand20: dict[tuple[str, str, str], float] = {}
+    port_demand40: dict[tuple[str, str, str], float] = {}
     diagnostics: dict[str, Any] = {}
+    port_sail_area = normalize_port_sail_area(port_sail_area or {})
 
     for vessel in export_vessels:
         doc_path = data_dir / f"container_info_{vessel}.parquet"
@@ -1531,6 +1590,13 @@ def build_demand_params(
             doc = doc[~doc["cntr_id"].isin(existing_ids)].copy()
         merged = merge_snapshot_and_doc(doc, snap)
         add_grouped_demand(merged, vessel, d20, d40)
+        port_constrained_rows = add_import_port_area_demand(
+            doc,
+            vessel,
+            port_sail_area,
+            port_demand20,
+            port_demand40,
+        )
         diagnostics[vessel] = {
             "type": "import",
             "doc_path": str(doc_path),
@@ -1538,13 +1604,14 @@ def build_demand_params(
             "snapshot_rows": int(len(snap_all)),
             "snapshot_rows_in_model_areas": int(len(snap)),
             "dedup_rows": int(len(merged)),
+            "port_area_constrained_doc_new_rows": port_constrained_rows,
         }
-    return d20, d40, diagnostics
+    return d20, d40, port_demand20, port_demand40, diagnostics
 
 
 def empty_normalized_container_frame() -> pd.DataFrame:
     return pd.DataFrame(
-        columns=["cntr_id", "e_voy", "i_voy", "size", "raw_flow", "flow"]
+        columns=["cntr_id", "e_voy", "i_voy", "size", "raw_flow", "flow", "port"]
     )
 
 
@@ -1599,6 +1666,9 @@ def normalize_container_frame(df: pd.DataFrame, flow_aliases: Mapping[str, str])
     df["size"] = df["IYC_CSZ_CSIZECD"].map(normalize_size)
     df["raw_flow"] = df["IYC_STS_CSTATUSCD"].map(normalize_code)
     df["flow"] = df["raw_flow"].map(lambda value: medium_small_area_flow(normalize_flow(value, flow_aliases)))
+    df["port"] = df.get("IYC_POT_UNLDPORT", pd.Series(index=df.index, dtype=object)).map(
+        lambda value: normalize_code(value) or "UNK"
+    )
     return df
 
 
@@ -1658,6 +1728,31 @@ def add_grouped_demand(
     for (flow, size), qty in grouped.items():
         target = d20 if size == "20" else d40
         target[(vessel, flow)] = target.get((vessel, flow), 0.0) + float(qty)
+
+
+def add_import_port_area_demand(
+    rows: pd.DataFrame,
+    vessel: str,
+    port_sail_area: Mapping[str, Sequence[str]],
+    demand20: dict[tuple[str, str, str], float],
+    demand40: dict[tuple[str, str, str], float],
+) -> int:
+    if rows.empty or not port_sail_area:
+        return 0
+    work = rows.copy()
+    if "port" not in work.columns:
+        work["port"] = work.get("IYC_POT_UNLDPORT", pd.Series(index=work.index, dtype=object)).map(
+            lambda value: normalize_code(value) or "UNK"
+        )
+    work = work[work["port"].isin(set(port_sail_area))].copy()
+    if work.empty:
+        return 0
+    grouped = work.groupby(["flow", "size", "port"]).size()
+    for (flow, size, port), qty in grouped.items():
+        target = demand20 if size == "20" else demand40
+        key = (vessel, str(flow), str(port))
+        target[key] = target.get(key, 0.0) + float(qty)
+    return int(grouped.sum())
 
 
 def read_prediction_counts(path: Path) -> tuple[float, float]:
@@ -2317,6 +2412,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="JSON file containing adjust_plan_info; large_plan[voy_id].add/remove controls large-plan areas.",
     )
+    parser.add_argument(
+        "--port-sail-area-json",
+        type=Path,
+        default=None,
+        help="JSON file containing port_sail_area mapping from import discharge port to allowed yard areas.",
+    )
     return parser.parse_args()
 
 
@@ -2340,6 +2441,9 @@ def main() -> None:
     state = RollingPlanningState(resolve_output_path(args.state_dir, base_dir))
     flow_aliases = {} if args.disable_default_flow_aliases else DEFAULT_FLOW_ALIASES
     adjust_plan_info = read_adjust_plan_info(args.adjust_plan_info_json)
+    port_sail_area = read_port_sail_area_json(args.port_sail_area_json)
+    if not port_sail_area and isinstance(adjust_plan_info.get("port_sail_area"), Mapping):
+        port_sail_area = normalize_port_sail_area(adjust_plan_info.get("port_sail_area"))
 
     artifacts = build_current_case_data(
         base_dir=base_dir,
@@ -2352,6 +2456,7 @@ def main() -> None:
         user_design=bool(args.user_design_large_plan_area),
         user_design_large_plan_area=args.user_design_large_plan_area,
         adjust_plan_info=adjust_plan_info,
+        port_sail_area=port_sail_area,
     )
     print_case_summary(artifacts)
     solution = solve_daily_rolling_yard_plan(

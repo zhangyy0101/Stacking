@@ -10,11 +10,14 @@ GRB = None
 Vessel = str
 Flow = str
 Area = str
+Port = str
 
 VF = Tuple[Vessel, Flow]
 VA = Tuple[Vessel, Area]
 AF = Tuple[Area, Flow]
 VFA = Tuple[Vessel, Flow, Area]
+VFP = Tuple[Vessel, Flow, Port]
+VFPA = Tuple[Vessel, Flow, Port, Area]
 
 
 @dataclass(frozen=True)
@@ -85,6 +88,9 @@ class DailyRollingYardPlanningData:
     # 参数 C20Direct：拆分后适放 20 尺箱的剩余容量。
     # 它与 C20 的区别是：C20 控制 20 尺等价物理空间，C20Direct 控制真实可放 20 尺的位置。
     C20Direct: Optional[Mapping[Area, float]] = None
+    port_area_demand20: Mapping[VFP, float] = field(default_factory=dict)
+    port_area_demand40: Mapping[VFP, float] = field(default_factory=dict)
+    port_area_allowlist: Mapping[Port, Sequence[Area]] = field(default_factory=dict)
 
     # 参数 S/L/Q：当前快照已出现并关联到活跃航次的箱量。
     # 若 S 未传，求解器会使用 L+Q 自动构造 S。
@@ -921,6 +927,32 @@ def _prepare_params(
                     E20[v, f, a] = 0
                     E40[v, f, a] = 0
 
+    port_area_allowlist = _normalize_port_area_allowlist(getattr(data, "port_area_allowlist", {}), A)
+    port_area_demand20 = _normalize_port_area_demand(
+        getattr(data, "port_area_demand20", {}),
+        port_area_allowlist,
+        V,
+        F,
+    )
+    port_area_demand40 = _normalize_port_area_demand(
+        getattr(data, "port_area_demand40", {}),
+        port_area_allowlist,
+        V,
+        F,
+    )
+    port_area_keys20 = sorted(port_area_demand20)
+    port_area_keys40 = sorted(port_area_demand40)
+    port_area_assignment_keys20 = [
+        (v, f, port, a)
+        for v, f, port in port_area_keys20
+        for a in sorted(port_area_allowlist.get(port, set()))
+    ]
+    port_area_assignment_keys40 = [
+        (v, f, port, a)
+        for v, f, port in port_area_keys40
+        for a in sorted(port_area_allowlist.get(port, set()))
+    ]
+
     # 航次级 TOPS 扣减后容量。若外部直接传 Cbar，则使用外部值；否则用 C - TOPS 自动计算。
     Cbar20 = {}
     Cbar20Direct = {}
@@ -965,6 +997,8 @@ def _prepare_params(
     # 基础非负性检查，防止负容量/负需求进入模型。
     _validate_nonnegative("D20", D20)
     _validate_nonnegative("D40", D40)
+    _validate_nonnegative("port_area_demand20", port_area_demand20)
+    _validate_nonnegative("port_area_demand40", port_area_demand40)
     _validate_nonnegative("S20", S20)
     _validate_nonnegative("S40", S40)
     _validate_nonnegative("C20", C20)
@@ -1009,6 +1043,13 @@ def _prepare_params(
         "allowed_areas_by_vessel": allowed_areas_by_vessel,
         "required_areas_by_vessel": required_areas_by_vessel,
         "required_area_keys": required_area_keys,
+        "port_area_allowlist": port_area_allowlist,
+        "port_area_demand20": port_area_demand20,
+        "port_area_demand40": port_area_demand40,
+        "port_area_keys20": port_area_keys20,
+        "port_area_keys40": port_area_keys40,
+        "port_area_assignment_keys20": port_area_assignment_keys20,
+        "port_area_assignment_keys40": port_area_assignment_keys40,
     }
 
 
@@ -1122,6 +1163,46 @@ def _normalize_area_controls(
             required_result[vessel] = normalized
 
     return allowed_result, required_result
+
+
+def _normalize_port_area_allowlist(
+    raw: Mapping[Port, Sequence[Area]],
+    areas: Sequence[Area],
+) -> dict[Port, set[Area]]:
+    area_set = set(areas)
+    result: dict[Port, set[Area]] = {}
+    for raw_port, raw_areas in (raw or {}).items():
+        port = str(raw_port).strip().upper()
+        if not port:
+            continue
+        result[port] = {
+            str(area).strip().upper()
+            for area in (raw_areas or ())
+            if str(area).strip().upper() in area_set
+        }
+    return result
+
+
+def _normalize_port_area_demand(
+    raw: Mapping[VFP, float],
+    allowlist: Mapping[Port, set[Area]],
+    vessels: Sequence[Vessel],
+    flows: Sequence[Flow],
+) -> dict[VFP, float]:
+    vessel_set = set(vessels)
+    flow_set = set(flows)
+    result: dict[VFP, float] = {}
+    for raw_key, raw_qty in (raw or {}).items():
+        if not isinstance(raw_key, tuple) or len(raw_key) != 3:
+            continue
+        vessel, flow, port = (str(raw_key[0]), str(raw_key[1]), str(raw_key[2]).strip().upper())
+        if vessel not in vessel_set or flow not in flow_set or port not in allowlist:
+            continue
+        qty = float(raw_qty or 0.0)
+        if qty <= 1e-6:
+            continue
+        result[(vessel, flow, port)] = result.get((vessel, flow, port), 0.0) + qty
+    return result
 
 
 def _num(mapping: Optional[Mapping[Any, Any]], key: tuple[Any, ...], default: float = 0.0) -> float:
@@ -1441,6 +1522,10 @@ def build_daily_rolling_yard_model_scip(
     berth_conflict_pairs = params["berth_conflict_pairs"]
     berth_conflict_keys = params["berth_conflict_keys"]
     required_area_keys = params["required_area_keys"]
+    port_area_keys20 = params["port_area_keys20"]
+    port_area_keys40 = params["port_area_keys40"]
+    port_area_assignment_keys20 = params["port_area_assignment_keys20"]
+    port_area_assignment_keys40 = params["port_area_assignment_keys40"]
     weights = data.weights
 
     model = Model(data.name)
@@ -1501,6 +1586,22 @@ def build_daily_rolling_yard_model_scip(
     m40 = {(v, f): model.addVar(vtype="C", lb=0.0, name=f"m40[{v},{f}]") for v in V for f in F}
     s20 = {(v, f): model.addVar(vtype="C", lb=0.0, name=f"s20[{v},{f}]") for v in V for f in F}
     s40 = {(v, f): model.addVar(vtype="C", lb=0.0, name=f"s40[{v},{f}]") for v in V for f in F}
+    port_load20 = {
+        key: model.addVar(vtype="C", lb=0.0, name=f"port_load20[{key[0]},{key[1]},{key[2]},{key[3]}]")
+        for key in port_area_assignment_keys20
+    }
+    port_load40 = {
+        key: model.addVar(vtype="C", lb=0.0, name=f"port_load40[{key[0]},{key[1]},{key[2]},{key[3]}]")
+        for key in port_area_assignment_keys40
+    }
+    port_unmet20 = {
+        key: model.addVar(vtype="C", lb=0.0, name=f"port_unmet20[{key[0]},{key[1]},{key[2]}]")
+        for key in port_area_keys20
+    }
+    port_unmet40 = {
+        key: model.addVar(vtype="C", lb=0.0, name=f"port_unmet40[{key[0]},{key[1]},{key[2]}]")
+        for key in port_area_keys40
+    }
     of_area_used = {
         (v, a): model.addVar(vtype="B", name=f"of_area_used[{v},{a}]")
         for v in OF_area_vessels
@@ -1543,6 +1644,27 @@ def build_daily_rolling_yard_model_scip(
                 model.addCons(s20[v, f] == 0.0)
                 model.addCons(s40[v, f] == 0.0)
 
+    for v, f, port in port_area_keys20:
+        model.addCons(
+            quicksum(port_load20[v, f, port, a] for a in params["port_area_allowlist"].get(port, set()))
+            + port_unmet20[v, f, port]
+            == params["port_area_demand20"][v, f, port]
+        )
+    for v, f, port in port_area_keys40:
+        model.addCons(
+            quicksum(port_load40[v, f, port, a] for a in params["port_area_allowlist"].get(port, set()))
+            + port_unmet40[v, f, port]
+            == params["port_area_demand40"][v, f, port]
+        )
+    for v in V:
+        for f in F:
+            keys20 = [key for key in port_area_keys20 if key[0] == v and key[1] == f]
+            keys40 = [key for key in port_area_keys40 if key[0] == v and key[1] == f]
+            if keys20:
+                model.addCons(quicksum(port_unmet20[key] for key in keys20) <= s20[v, f])
+            if keys40:
+                model.addCons(quicksum(port_unmet40[key] for key in keys40) <= s40[v, f])
+
     for v in V:
         for f in F:
             for a in A:
@@ -1564,6 +1686,22 @@ def build_daily_rolling_yard_model_scip(
                     X40[v, f, a] - params["S40"][v, f, a]
                     <= params["R40S"][v, f] * params["E40"][v, f, a]
                 )
+                matched_port_keys20 = [
+                    key for key in port_area_keys20 if key[0] == v and key[1] == f and (key[0], key[1], key[2], a) in port_area_assignment_keys20
+                ]
+                matched_port_keys40 = [
+                    key for key in port_area_keys40 if key[0] == v and key[1] == f and (key[0], key[1], key[2], a) in port_area_assignment_keys40
+                ]
+                if matched_port_keys20:
+                    model.addCons(
+                        quicksum(port_load20[key[0], key[1], key[2], a] for key in matched_port_keys20)
+                        <= X20[v, f, a] - params["S20"][v, f, a]
+                    )
+                if matched_port_keys40:
+                    model.addCons(
+                        quicksum(port_load40[key[0], key[1], key[2], a] for key in matched_port_keys40)
+                        <= X40[v, f, a] - params["S40"][v, f, a]
+                    )
 
     for a in A:
         model.addCons(

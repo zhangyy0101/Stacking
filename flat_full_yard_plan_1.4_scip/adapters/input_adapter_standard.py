@@ -115,6 +115,9 @@ class LargePlanningData:
     E20: Mapping[tuple[str, str, str], int]
     E40: Mapping[tuple[str, str, str], int]
     C20Direct: Mapping[str, float] | None = None
+    port_area_demand20: Mapping[tuple[str, str, str], float] = field(default_factory=dict)
+    port_area_demand40: Mapping[tuple[str, str, str], float] = field(default_factory=dict)
+    port_area_allowlist: Mapping[str, Sequence[str]] = field(default_factory=dict)
     S20: Mapping[tuple[str, str, str], float] = field(default_factory=dict)
     S40: Mapping[tuple[str, str, str], float] = field(default_factory=dict)
     L20: Mapping[tuple[str, str, str], float] = field(default_factory=dict)
@@ -1709,6 +1712,9 @@ def normalize_container_frame(df: pd.DataFrame, flow_aliases: Mapping[str, str])
     df["e_voy"] = df["IYC_EVOY_ID"].map(normalize_voyage)
     df["i_voy"] = df["IYC_IVOY_ID"].map(normalize_voyage)
     df["size"] = df["IYC_CSZ_CSIZECD"].map(normalize_size_large)
+    df["port"] = df.get("IYC_POT_UNLDPORT", pd.Series(index=df.index, dtype=object)).map(
+        lambda value: normalize_text(value, "UNK")
+    )
     df["raw_flow"] = df["IYC_STS_CSTATUSCD"].map(normalize_code)
     df["flow"] = df["raw_flow"].map(lambda value: medium_small_area_flow(normalize_flow(value, flow_aliases)))
     return df
@@ -1755,6 +1761,32 @@ def add_grouped_demand(
         target = d20 if size == "20" else d40
         key = (vessel, str(flow))
         target[key] = target.get(key, 0.0) + float(qty)
+
+
+def add_import_port_area_demand(
+    rows: pd.DataFrame,
+    vessel: str,
+    port_sail_area: Mapping[str, set[str]],
+    demand20: dict[tuple[str, str, str], float],
+    demand40: dict[tuple[str, str, str], float],
+) -> int:
+    if rows.empty or not port_sail_area:
+        return 0
+    work = rows.copy()
+    if "port" not in work.columns:
+        work["port"] = work.get("IYC_POT_UNLDPORT", pd.Series(index=work.index, dtype=object)).map(
+            lambda value: normalize_text(value, "UNK")
+        )
+    work = work[work["port"].isin(set(port_sail_area))].copy()
+    if work.empty:
+        return 0
+    grouped = work.groupby(["flow", "size", "port"]).size()
+    for (flow, size, port), qty in grouped.items():
+        target = demand20 if size == "20" else demand40
+        key = (vessel, str(flow), str(port))
+        target[key] = target.get(key, 0.0) + float(qty)
+    return int(grouped.sum())
+
 
 def read_prediction_counts(input_guandong: InputAdapterGd, vessel_id: str) -> tuple[float, float]:
     content = input_guandong.vessel_containers.get(vessel_id, {})
@@ -1808,10 +1840,19 @@ def build_demand_params(
     current_snapshot: pd.DataFrame,
     flow_aliases: Mapping[str, str],
     covered_areas: Sequence[str] | None = None,
-) -> tuple[dict[tuple[str, str], float], dict[tuple[str, str], float], dict[str, dict[str, Any]]]:
+) -> tuple[
+    dict[tuple[str, str], float],
+    dict[tuple[str, str], float],
+    dict[tuple[str, str, str], float],
+    dict[tuple[str, str, str], float],
+    dict[str, dict[str, Any]],
+]:
     d20: dict[tuple[str, str], float] = {}
     d40: dict[tuple[str, str], float] = {}
+    port_demand20: dict[tuple[str, str, str], float] = {}
+    port_demand40: dict[tuple[str, str, str], float] = {}
     diagnostics: dict[str, dict[str, Any]] = {}
+    port_sail_area = read_port_sail_area(input_guandong)
     covered_area_set = {normalize_area(area) for area in covered_areas or [] if normalize_area(area)}
     for vessel in export_vessels:
         doc_container = input_guandong.vessel_containers.get(vessel, {}).get("doc_cntrs", None)
@@ -1878,6 +1919,13 @@ def build_demand_params(
         merged = merge_snapshot_and_doc(doc, unique_snap)
         add_grouped_demand(covered_snap, vessel, d20, d40)
         add_grouped_demand(doc_new, vessel, d20, d40)
+        port_constrained_rows = add_import_port_area_demand(
+            doc_new,
+            vessel,
+            port_sail_area,
+            port_demand20,
+            port_demand40,
+        )
         diagnostics[vessel] = {
             "type": "import",
             "doc_rows": int(len(doc)),
@@ -1886,8 +1934,9 @@ def build_demand_params(
             "covered_snapshot_rows": int(len(covered_snap)),
             "doc_new_rows": int(len(doc_new)),
             "dedup_rows": int(len(merged)),
+            "port_area_constrained_doc_new_rows": port_constrained_rows,
         }
-    return d20, d40, diagnostics
+    return d20, d40, port_demand20, port_demand40, diagnostics
 
 
 def parse_tops_time(series: pd.Series) -> pd.Series:
@@ -2231,7 +2280,7 @@ def build_large_inputs(
     }
     cbar40 = {(v, a): max(0.0, c40.get(a, 0.0) - tops40.get((v, a), 0.0)) for v in all_vessels for a in areas}
 
-    d20, d40, demand_diagnostics = build_demand_params(
+    d20, d40, port_demand20, port_demand40, demand_diagnostics = build_demand_params(
         input_guandong,
         export_vessels,
         import_vessels,
@@ -2262,6 +2311,9 @@ def build_large_inputs(
         A=areas,
         D20=d20,
         D40=d40,
+        port_area_demand20=port_demand20,
+        port_area_demand40=port_demand40,
+        port_area_allowlist=read_port_sail_area(input_guandong),
         L20=l20,
         L40=l40,
         Q20=q20,
@@ -2315,6 +2367,10 @@ def build_large_inputs(
         "old_vessels": sorted([v for v, flag in old_flags.items() if flag]),
         "of_work_lanes": of_work_lanes,
         "of_area_limits": {vessel: 2.0 * lanes for vessel, lanes in of_work_lanes.items()},
+        "port_area_constraint_ports": sorted(read_port_sail_area(input_guandong)),
+        "port_area_constrained_demand20_total": float(sum(port_demand20.values())),
+        "port_area_constrained_demand40_total": float(sum(port_demand40.values())),
+        "port_area_constrained_group_count": int(len(port_demand20) + len(port_demand40)),
         "demand": demand_diagnostics,
     }
     return (
