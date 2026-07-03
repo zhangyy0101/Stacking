@@ -11,6 +11,7 @@ Vessel = str
 Flow = str
 Area = str
 Port = str
+Cluster = str
 
 VF = Tuple[Vessel, Flow]
 VA = Tuple[Vessel, Area]
@@ -18,6 +19,9 @@ AF = Tuple[Area, Flow]
 VFA = Tuple[Vessel, Flow, Area]
 VFP = Tuple[Vessel, Flow, Port]
 VFPA = Tuple[Vessel, Flow, Port, Area]
+VFC = Tuple[Vessel, Flow, Cluster]
+VFCA = Tuple[Vessel, Flow, Cluster, Area]
+CA = Tuple[Cluster, Area]
 
 
 @dataclass(frozen=True)
@@ -42,6 +46,7 @@ class YardPlanningWeights:
     adjustment: float = 10.0
     balance: float = 1.0
     priority_area: float = 0.01
+    import_cluster_area: float = 5.0
 
 
 @dataclass
@@ -92,6 +97,10 @@ class DailyRollingYardPlanningData:
     port_area_demand20: Mapping[VFP, float] = field(default_factory=dict)
     port_area_demand40: Mapping[VFP, float] = field(default_factory=dict)
     port_area_allowlist: Mapping[Port, Sequence[Area]] = field(default_factory=dict)
+    import_cluster_demand20: Mapping[VFC, float] = field(default_factory=dict)
+    import_cluster_demand40: Mapping[VFC, float] = field(default_factory=dict)
+    import_cluster_snapshot20: Mapping[VFCA, float] = field(default_factory=dict)
+    import_cluster_snapshot40: Mapping[VFCA, float] = field(default_factory=dict)
 
     # 参数 S/L/Q：当前快照已出现并关联到活跃航次的箱量。
     # 若 S 未传，求解器会使用 L+Q 自动构造 S。
@@ -321,6 +330,40 @@ def build_daily_rolling_yard_model(
     port_load40 = model.addVars(port_area_assignment_keys40, vtype=GRB.CONTINUOUS, lb=0, name="port_load40")
     port_unmet20 = model.addVars(port_area_keys20, vtype=GRB.CONTINUOUS, lb=0, name="port_unmet20")
     port_unmet40 = model.addVars(port_area_keys40, vtype=GRB.CONTINUOUS, lb=0, name="port_unmet40")
+    import_cluster_keys20 = params["import_cluster_keys20"]
+    import_cluster_keys40 = params["import_cluster_keys40"]
+    import_cluster_assignment_keys20 = params["import_cluster_assignment_keys20"]
+    import_cluster_assignment_keys40 = params["import_cluster_assignment_keys40"]
+    import_cluster_area_keys = params["import_cluster_area_keys"]
+    import_cluster_load20 = model.addVars(
+        import_cluster_assignment_keys20,
+        vtype=GRB.CONTINUOUS,
+        lb=0,
+        name="import_cluster_load20",
+    )
+    import_cluster_load40 = model.addVars(
+        import_cluster_assignment_keys40,
+        vtype=GRB.CONTINUOUS,
+        lb=0,
+        name="import_cluster_load40",
+    )
+    import_cluster_unmet20 = model.addVars(
+        import_cluster_keys20,
+        vtype=GRB.CONTINUOUS,
+        lb=0,
+        name="import_cluster_unmet20",
+    )
+    import_cluster_unmet40 = model.addVars(
+        import_cluster_keys40,
+        vtype=GRB.CONTINUOUS,
+        lb=0,
+        name="import_cluster_unmet40",
+    )
+    import_cluster_area_used = model.addVars(
+        import_cluster_area_keys,
+        vtype=GRB.BINARY,
+        name="import_cluster_area_used",
+    )
 
     # of_area_used[v,a]：出口航次 v 的 OF 箱是否使用箱区 a。
     # of_area_over[v]：OF 使用箱区数超过 2 倍作业路数的超额量。
@@ -398,6 +441,29 @@ def build_daily_rolling_yard_model(
             if keys40:
                 model.addConstr(gp.quicksum(port_unmet40[key] for key in keys40) <= s40[v, f])
 
+    for v, f, cluster in import_cluster_keys20:
+        model.addConstr(
+            gp.quicksum(import_cluster_load20[v, f, cluster, a] for a in A)
+            + import_cluster_unmet20[v, f, cluster]
+            == params["import_cluster_demand20"][v, f, cluster],
+            name=f"import_cluster_demand20[{v},{f},{cluster}]",
+        )
+    for v, f, cluster in import_cluster_keys40:
+        model.addConstr(
+            gp.quicksum(import_cluster_load40[v, f, cluster, a] for a in A)
+            + import_cluster_unmet40[v, f, cluster]
+            == params["import_cluster_demand40"][v, f, cluster],
+            name=f"import_cluster_demand40[{v},{f},{cluster}]",
+        )
+    for v in V:
+        for f in F:
+            keys20 = [key for key in import_cluster_keys20 if key[0] == v and key[1] == f]
+            keys40 = [key for key in import_cluster_keys40 if key[0] == v and key[1] == f]
+            if keys20:
+                model.addConstr(gp.quicksum(import_cluster_unmet20[key] for key in keys20) <= s20[v, f])
+            if keys40:
+                model.addConstr(gp.quicksum(import_cluster_unmet40[key] for key in keys40) <= s40[v, f])
+
     # -------------------------
     # 约束 2：快照已出现箱覆盖约束
     # X[v,f,a] >= S[v,f,a]
@@ -466,6 +532,38 @@ def build_daily_rolling_yard_model(
                         <= X40[v, f, a] - params["S40"][v, f, a],
                         name=f"port_area_link40[{v},{f},{a}]",
                     )
+                matched_cluster_keys20 = [
+                    key for key in import_cluster_keys20 if key[0] == v and key[1] == f
+                ]
+                matched_cluster_keys40 = [
+                    key for key in import_cluster_keys40 if key[0] == v and key[1] == f
+                ]
+                if matched_cluster_keys20:
+                    model.addConstr(
+                        gp.quicksum(import_cluster_load20[key[0], key[1], key[2], a] for key in matched_cluster_keys20)
+                        <= X20[v, f, a],
+                        name=f"import_cluster_link20[{v},{f},{a}]",
+                    )
+                if matched_cluster_keys40:
+                    model.addConstr(
+                        gp.quicksum(import_cluster_load40[key[0], key[1], key[2], a] for key in matched_cluster_keys40)
+                        <= X40[v, f, a],
+                        name=f"import_cluster_link40[{v},{f},{a}]",
+                    )
+                for key in matched_cluster_keys20:
+                    fixed_qty = params["import_cluster_snapshot20"].get((key[0], key[1], key[2], a), 0.0)
+                    if fixed_qty:
+                        model.addConstr(
+                            import_cluster_load20[key[0], key[1], key[2], a] >= fixed_qty,
+                            name=f"import_cluster_snapshot20[{key[0]},{key[1]},{key[2]},{a}]",
+                        )
+                for key in matched_cluster_keys40:
+                    fixed_qty = params["import_cluster_snapshot40"].get((key[0], key[1], key[2], a), 0.0)
+                    if fixed_qty:
+                        model.addConstr(
+                            import_cluster_load40[key[0], key[1], key[2], a] >= fixed_qty,
+                            name=f"import_cluster_snapshot40[{key[0]},{key[1]},{key[2]},{a}]",
+                        )
 
     # -------------------------
     # 约束 5：箱区容量约束
@@ -634,6 +732,21 @@ def build_daily_rolling_yard_model(
                     name=f"of_balance40_lower[{v},{a}]",
                 )
 
+    for cluster, a in import_cluster_area_keys:
+        cluster_load = gp.quicksum(
+            import_cluster_load20[v, f, key_cluster, a]
+            for v, f, key_cluster in import_cluster_keys20
+            if key_cluster == cluster
+        ) + gp.quicksum(
+            import_cluster_load40[v, f, key_cluster, a]
+            for v, f, key_cluster in import_cluster_keys40
+            if key_cluster == cluster
+        )
+        model.addConstr(
+            cluster_load <= params["import_cluster_totals"][cluster] * import_cluster_area_used[cluster, a],
+            name=f"import_cluster_area_used[{cluster},{a}]",
+        )
+
     # -------------------------
     # 目标函数分项
     # -------------------------
@@ -676,6 +789,7 @@ def build_daily_rolling_yard_model(
     # Z_required_area：人工 add 箱区未被使用的软惩罚。
     Z_required_area = gp.quicksum(required_area_unmet[key] for key in required_area_keys)
     Z_priority_area = gp.quicksum(y[v, a] for v, a in priority_area_keys)
+    Z_import_cluster_area = gp.quicksum(import_cluster_area_used[key] for key in import_cluster_area_keys)
 
     # Z_op：箱区作业能力超额惩罚。
     Z_op = gp.quicksum(o[a] for a in A)
@@ -699,6 +813,7 @@ def build_daily_rolling_yard_model(
         + weights.berth_conflict * Z_berth_conflict
         + data.required_area_penalty * Z_required_area
         + getattr(weights, "priority_area", 0.01) * Z_priority_area
+        + getattr(weights, "import_cluster_area", 5.0) * Z_import_cluster_area
         + weights.adjustment * Z_adj
         + weights.balance * Z_bal,
         GRB.MINIMIZE,
@@ -718,6 +833,11 @@ def build_daily_rolling_yard_model(
         "m40": m40,
         "s20": s20,
         "s40": s40,
+        "import_cluster_load20": import_cluster_load20,
+        "import_cluster_load40": import_cluster_load40,
+        "import_cluster_unmet20": import_cluster_unmet20,
+        "import_cluster_unmet40": import_cluster_unmet40,
+        "import_cluster_area_used": import_cluster_area_used,
         "of_area_used": of_area_used,
         "of_area_over": of_area_over,
         "berth_conflict_shared": berth_conflict_shared,
@@ -736,6 +856,7 @@ def build_daily_rolling_yard_model(
             "berth_conflict": Z_berth_conflict,
             "required_area": Z_required_area,
             "priority_area": Z_priority_area,
+            "import_cluster_area": Z_import_cluster_area,
             "adjustment": Z_adj,
             "balance": Z_bal,
         },
@@ -1013,6 +1134,47 @@ def _prepare_params(
         for v, f, port in port_area_keys40
         for a in sorted(port_area_allowlist.get(port, set()))
     ]
+    import_cluster_demand20 = _normalize_import_cluster_demand(
+        getattr(data, "import_cluster_demand20", {}),
+        V,
+        F,
+    )
+    import_cluster_demand40 = _normalize_import_cluster_demand(
+        getattr(data, "import_cluster_demand40", {}),
+        V,
+        F,
+    )
+    import_cluster_demand20, import_cluster_demand40, import_cluster_totals = _eligible_import_cluster_demands(
+        import_cluster_demand20,
+        import_cluster_demand40,
+    )
+    import_cluster_snapshot20 = _normalize_import_cluster_snapshot(
+        getattr(data, "import_cluster_snapshot20", {}),
+        import_cluster_demand20,
+        A,
+    )
+    import_cluster_snapshot40 = _normalize_import_cluster_snapshot(
+        getattr(data, "import_cluster_snapshot40", {}),
+        import_cluster_demand40,
+        A,
+    )
+    import_cluster_keys20 = sorted(import_cluster_demand20)
+    import_cluster_keys40 = sorted(import_cluster_demand40)
+    import_cluster_assignment_keys20 = [
+        (v, f, cluster, a)
+        for v, f, cluster in import_cluster_keys20
+        for a in A
+    ]
+    import_cluster_assignment_keys40 = [
+        (v, f, cluster, a)
+        for v, f, cluster in import_cluster_keys40
+        for a in A
+    ]
+    import_cluster_area_keys = [
+        (cluster, a)
+        for cluster in sorted(import_cluster_totals)
+        for a in A
+    ]
 
     # 航次级 TOPS 扣减后容量。若外部直接传 Cbar，则使用外部值；否则用 C - TOPS 自动计算。
     Cbar20 = {}
@@ -1066,6 +1228,10 @@ def _prepare_params(
     _validate_nonnegative("D40", D40)
     _validate_nonnegative("port_area_demand20", port_area_demand20)
     _validate_nonnegative("port_area_demand40", port_area_demand40)
+    _validate_nonnegative("import_cluster_demand20", import_cluster_demand20)
+    _validate_nonnegative("import_cluster_demand40", import_cluster_demand40)
+    _validate_nonnegative("import_cluster_snapshot20", import_cluster_snapshot20)
+    _validate_nonnegative("import_cluster_snapshot40", import_cluster_snapshot40)
     _validate_nonnegative("S20", S20)
     _validate_nonnegative("S40", S40)
     _validate_nonnegative("C20", C20)
@@ -1119,6 +1285,16 @@ def _prepare_params(
         "port_area_keys40": port_area_keys40,
         "port_area_assignment_keys20": port_area_assignment_keys20,
         "port_area_assignment_keys40": port_area_assignment_keys40,
+        "import_cluster_demand20": import_cluster_demand20,
+        "import_cluster_demand40": import_cluster_demand40,
+        "import_cluster_snapshot20": import_cluster_snapshot20,
+        "import_cluster_snapshot40": import_cluster_snapshot40,
+        "import_cluster_keys20": import_cluster_keys20,
+        "import_cluster_keys40": import_cluster_keys40,
+        "import_cluster_assignment_keys20": import_cluster_assignment_keys20,
+        "import_cluster_assignment_keys40": import_cluster_assignment_keys40,
+        "import_cluster_area_keys": import_cluster_area_keys,
+        "import_cluster_totals": import_cluster_totals,
     }
 
 
@@ -1292,6 +1468,65 @@ def _normalize_port_area_demand(
         if qty <= 1e-6:
             continue
         result[(vessel, flow, port)] = result.get((vessel, flow, port), 0.0) + qty
+    return result
+
+
+def _normalize_import_cluster_demand(
+    raw: Mapping[VFC, float],
+    vessels: Sequence[Vessel],
+    flows: Sequence[Flow],
+) -> dict[VFC, float]:
+    vessel_set = set(vessels)
+    flow_set = set(flows)
+    result: dict[VFC, float] = {}
+    for raw_key, raw_qty in (raw or {}).items():
+        if not isinstance(raw_key, tuple) or len(raw_key) != 3:
+            continue
+        vessel, flow, cluster = str(raw_key[0]), str(raw_key[1]), str(raw_key[2]).strip().upper()
+        if vessel not in vessel_set or flow not in flow_set or not cluster:
+            continue
+        qty = float(raw_qty or 0.0)
+        if qty <= 1e-6:
+            continue
+        result[(vessel, flow, cluster)] = result.get((vessel, flow, cluster), 0.0) + qty
+    return result
+
+
+def _eligible_import_cluster_demands(
+    demand20: Mapping[VFC, float],
+    demand40: Mapping[VFC, float],
+) -> tuple[dict[VFC, float], dict[VFC, float], dict[Cluster, float]]:
+    totals: dict[Cluster, float] = {}
+    for key, qty in list((demand20 or {}).items()) + list((demand40 or {}).items()):
+        totals[key[2]] = totals.get(key[2], 0.0) + float(qty or 0.0)
+    eligible = {cluster for cluster, qty in totals.items() if qty > 1.0 + 1e-6}
+    filtered20 = {key: qty for key, qty in demand20.items() if key[2] in eligible}
+    filtered40 = {key: qty for key, qty in demand40.items() if key[2] in eligible}
+    return filtered20, filtered40, {cluster: totals[cluster] for cluster in eligible}
+
+
+def _normalize_import_cluster_snapshot(
+    raw: Mapping[VFCA, float],
+    demand: Mapping[VFC, float],
+    areas: Sequence[Area],
+) -> dict[VFCA, float]:
+    area_set = set(areas)
+    result: dict[VFCA, float] = {}
+    for raw_key, raw_qty in (raw or {}).items():
+        if not isinstance(raw_key, tuple) or len(raw_key) != 4:
+            continue
+        vessel, flow, cluster, area = (
+            str(raw_key[0]),
+            str(raw_key[1]),
+            str(raw_key[2]).strip().upper(),
+            str(raw_key[3]).strip().upper(),
+        )
+        if (vessel, flow, cluster) not in demand or area not in area_set:
+            continue
+        qty = float(raw_qty or 0.0)
+        if qty <= 1e-6:
+            continue
+        result[(vessel, flow, cluster, area)] = result.get((vessel, flow, cluster, area), 0.0) + qty
     return result
 
 
@@ -1617,6 +1852,11 @@ def build_daily_rolling_yard_model_scip(
     port_area_keys40 = params["port_area_keys40"]
     port_area_assignment_keys20 = params["port_area_assignment_keys20"]
     port_area_assignment_keys40 = params["port_area_assignment_keys40"]
+    import_cluster_keys20 = params["import_cluster_keys20"]
+    import_cluster_keys40 = params["import_cluster_keys40"]
+    import_cluster_assignment_keys20 = params["import_cluster_assignment_keys20"]
+    import_cluster_assignment_keys40 = params["import_cluster_assignment_keys40"]
+    import_cluster_area_keys = params["import_cluster_area_keys"]
     weights = data.weights
 
     model = Model(data.name)
@@ -1693,6 +1933,26 @@ def build_daily_rolling_yard_model_scip(
         key: model.addVar(vtype="C", lb=0.0, name=f"port_unmet40[{key[0]},{key[1]},{key[2]}]")
         for key in port_area_keys40
     }
+    import_cluster_load20 = {
+        key: model.addVar(vtype="C", lb=0.0, name=f"import_cluster_load20[{key[0]},{key[1]},{key[2]},{key[3]}]")
+        for key in import_cluster_assignment_keys20
+    }
+    import_cluster_load40 = {
+        key: model.addVar(vtype="C", lb=0.0, name=f"import_cluster_load40[{key[0]},{key[1]},{key[2]},{key[3]}]")
+        for key in import_cluster_assignment_keys40
+    }
+    import_cluster_unmet20 = {
+        key: model.addVar(vtype="C", lb=0.0, name=f"import_cluster_unmet20[{key[0]},{key[1]},{key[2]}]")
+        for key in import_cluster_keys20
+    }
+    import_cluster_unmet40 = {
+        key: model.addVar(vtype="C", lb=0.0, name=f"import_cluster_unmet40[{key[0]},{key[1]},{key[2]}]")
+        for key in import_cluster_keys40
+    }
+    import_cluster_area_used = {
+        key: model.addVar(vtype="B", name=f"import_cluster_area_used[{key[0]},{key[1]}]")
+        for key in import_cluster_area_keys
+    }
     of_area_used = {
         (v, a): model.addVar(vtype="B", name=f"of_area_used[{v},{a}]")
         for v in OF_area_vessels
@@ -1756,6 +2016,27 @@ def build_daily_rolling_yard_model_scip(
             if keys40:
                 model.addCons(quicksum(port_unmet40[key] for key in keys40) <= s40[v, f])
 
+    for v, f, cluster in import_cluster_keys20:
+        model.addCons(
+            quicksum(import_cluster_load20[v, f, cluster, a] for a in A)
+            + import_cluster_unmet20[v, f, cluster]
+            == params["import_cluster_demand20"][v, f, cluster]
+        )
+    for v, f, cluster in import_cluster_keys40:
+        model.addCons(
+            quicksum(import_cluster_load40[v, f, cluster, a] for a in A)
+            + import_cluster_unmet40[v, f, cluster]
+            == params["import_cluster_demand40"][v, f, cluster]
+        )
+    for v in V:
+        for f in F:
+            keys20 = [key for key in import_cluster_keys20 if key[0] == v and key[1] == f]
+            keys40 = [key for key in import_cluster_keys40 if key[0] == v and key[1] == f]
+            if keys20:
+                model.addCons(quicksum(import_cluster_unmet20[key] for key in keys20) <= s20[v, f])
+            if keys40:
+                model.addCons(quicksum(import_cluster_unmet40[key] for key in keys40) <= s40[v, f])
+
     for v in V:
         for f in F:
             for a in A:
@@ -1793,6 +2074,30 @@ def build_daily_rolling_yard_model_scip(
                         quicksum(port_load40[key[0], key[1], key[2], a] for key in matched_port_keys40)
                         <= X40[v, f, a] - params["S40"][v, f, a]
                     )
+                matched_cluster_keys20 = [
+                    key for key in import_cluster_keys20 if key[0] == v and key[1] == f
+                ]
+                matched_cluster_keys40 = [
+                    key for key in import_cluster_keys40 if key[0] == v and key[1] == f
+                ]
+                if matched_cluster_keys20:
+                    model.addCons(
+                        quicksum(import_cluster_load20[key[0], key[1], key[2], a] for key in matched_cluster_keys20)
+                        <= X20[v, f, a]
+                    )
+                if matched_cluster_keys40:
+                    model.addCons(
+                        quicksum(import_cluster_load40[key[0], key[1], key[2], a] for key in matched_cluster_keys40)
+                        <= X40[v, f, a]
+                    )
+                for key in matched_cluster_keys20:
+                    fixed_qty = params["import_cluster_snapshot20"].get((key[0], key[1], key[2], a), 0.0)
+                    if fixed_qty > 1e-6:
+                        model.addCons(import_cluster_load20[key[0], key[1], key[2], a] >= fixed_qty)
+                for key in matched_cluster_keys40:
+                    fixed_qty = params["import_cluster_snapshot40"].get((key[0], key[1], key[2], a), 0.0)
+                    if fixed_qty > 1e-6:
+                        model.addCons(import_cluster_load40[key[0], key[1], key[2], a] >= fixed_qty)
 
     for a in A:
         model.addCons(
@@ -1884,6 +2189,22 @@ def build_daily_rolling_yard_model_scip(
                 model.addCons(X20[v, "OF", a] >= of_balance_l20[v] - big_m20 * (1 - of_area_used[v, a]))
                 model.addCons(X40[v, "OF", a] >= of_balance_l40[v] - big_m40 * (1 - of_area_used[v, a]))
 
+    for cluster, a in import_cluster_area_keys:
+        load_terms = [
+            import_cluster_load20[v, f, key_cluster, a]
+            for v, f, key_cluster in import_cluster_keys20
+            if key_cluster == cluster
+        ] + [
+            import_cluster_load40[v, f, key_cluster, a]
+            for v, f, key_cluster in import_cluster_keys40
+            if key_cluster == cluster
+        ]
+        if load_terms:
+            model.addCons(
+                quicksum(load_terms)
+                <= params["import_cluster_totals"][cluster] * import_cluster_area_used[cluster, a]
+            )
+
     Z_miss = quicksum(s20[v, f] + s40[v, f] for v in V for f in F)
     Z_adj = quicksum(
         r20_pos[v, f, a]
@@ -1911,6 +2232,7 @@ def build_daily_rolling_yard_model_scip(
     Z_berth_conflict = quicksum(berth_conflict_shared[key] for key in berth_conflict_keys)
     Z_required_area = quicksum(required_area_unmet[key] for key in required_area_keys)
     Z_priority_area = quicksum(y[v, a] for v, a in priority_area_keys)
+    Z_import_cluster_area = quicksum(import_cluster_area_used[key] for key in import_cluster_area_keys)
     Z_op = quicksum(o[a] for a in A)
     Z_of_area = quicksum(of_area_over[v] for v in OF_area_vessels)
     Z_bal = quicksum(
@@ -1928,6 +2250,7 @@ def build_daily_rolling_yard_model_scip(
         + weights.berth_conflict * Z_berth_conflict
         + data.required_area_penalty * Z_required_area
         + getattr(weights, "priority_area", 0.01) * Z_priority_area
+        + getattr(weights, "import_cluster_area", 5.0) * Z_import_cluster_area
         + weights.adjustment * Z_adj
         + weights.balance * Z_bal,
         "minimize",
@@ -1947,6 +2270,11 @@ def build_daily_rolling_yard_model_scip(
         "m40": m40,
         "s20": s20,
         "s40": s40,
+        "import_cluster_load20": import_cluster_load20,
+        "import_cluster_load40": import_cluster_load40,
+        "import_cluster_unmet20": import_cluster_unmet20,
+        "import_cluster_unmet40": import_cluster_unmet40,
+        "import_cluster_area_used": import_cluster_area_used,
         "of_area_used": of_area_used,
         "of_area_over": of_area_over,
         "berth_conflict_shared": berth_conflict_shared,
@@ -1961,6 +2289,7 @@ def build_daily_rolling_yard_model_scip(
             "berth_conflict": Z_berth_conflict,
             "required_area": Z_required_area,
             "priority_area": Z_priority_area,
+            "import_cluster_area": Z_import_cluster_area,
             "adjustment": Z_adj,
             "balance": Z_bal,
         },

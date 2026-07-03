@@ -396,7 +396,17 @@ def build_current_case_data(
     cbar40 = {(v, a): max(0.0, c40.get(a, 0.0) - tops40.get((v, a), 0.0)) for v in all_vessels for a in areas}
 
     # 需求 D：出口 = 资料箱/快照箱去重 + 预估超出部分补 OF；进口 = 资料箱 + 快照补全。
-    d20, d40, port_demand20, port_demand40, demand_diagnostics = build_demand_params(
+    (
+        d20,
+        d40,
+        port_demand20,
+        port_demand40,
+        import_cluster_demand20,
+        import_cluster_demand40,
+        import_cluster_snapshot20,
+        import_cluster_snapshot40,
+        demand_diagnostics,
+    ) = build_demand_params(
         data_dir,
         export_vessels=export_vessels,
         import_vessels=import_vessels,
@@ -461,6 +471,10 @@ def build_current_case_data(
         port_area_demand20=port_demand20,
         port_area_demand40=port_demand40,
         port_area_allowlist=port_sail_area,
+        import_cluster_demand20=import_cluster_demand20,
+        import_cluster_demand40=import_cluster_demand40,
+        import_cluster_snapshot20=import_cluster_snapshot20,
+        import_cluster_snapshot40=import_cluster_snapshot40,
         Cbar20=cbar20,
         Cbar20Direct=cbar20_direct,
         Cbar40=cbar40,
@@ -499,6 +513,14 @@ def build_current_case_data(
         "port_area_constrained_demand20_total": float(sum(port_demand20.values())),
         "port_area_constrained_demand40_total": float(sum(port_demand40.values())),
         "port_area_constrained_group_count": int(len(port_demand20) + len(port_demand40)),
+        "import_cluster_demand20_total": float(sum(import_cluster_demand20.values())),
+        "import_cluster_demand40_total": float(sum(import_cluster_demand40.values())),
+        "import_cluster_group_count": int(
+            len({key[2] for key in import_cluster_demand20} | {key[2] for key in import_cluster_demand40})
+        ),
+        "import_cluster_snapshot_group_area_count": int(
+            len(import_cluster_snapshot20) + len(import_cluster_snapshot40)
+        ),
         **area_control_diagnostics,
         "bad_bay_count": len(bad_bays),
         "bad_bay_sample": sorted(list(bad_bays))[:20],
@@ -1495,6 +1517,10 @@ def build_demand_params(
     dict[tuple[str, str], float],
     dict[tuple[str, str, str], float],
     dict[tuple[str, str, str], float],
+    dict[tuple[str, str, str], float],
+    dict[tuple[str, str, str], float],
+    dict[tuple[str, str, str, str], float],
+    dict[tuple[str, str, str, str], float],
     dict[str, Any],
 ]:
     """
@@ -1524,6 +1550,10 @@ def build_demand_params(
     d40: dict[tuple[str, str], float] = {}
     port_demand20: dict[tuple[str, str, str], float] = {}
     port_demand40: dict[tuple[str, str, str], float] = {}
+    import_cluster_demand20: dict[tuple[str, str, str], float] = {}
+    import_cluster_demand40: dict[tuple[str, str, str], float] = {}
+    import_cluster_snapshot20: dict[tuple[str, str, str, str], float] = {}
+    import_cluster_snapshot40: dict[tuple[str, str, str, str], float] = {}
     diagnostics: dict[str, Any] = {}
     port_sail_area = normalize_port_sail_area(port_sail_area or {})
 
@@ -1590,6 +1620,20 @@ def build_demand_params(
             doc = doc[~doc["cntr_id"].isin(existing_ids)].copy()
         merged = merge_snapshot_and_doc(doc, snap)
         add_grouped_demand(merged, vessel, d20, d40)
+        snapshot_cluster_stats = add_import_cluster_demand(
+            snap,
+            vessel,
+            import_cluster_demand20,
+            import_cluster_demand40,
+            import_cluster_snapshot20,
+            import_cluster_snapshot40,
+        )
+        doc_cluster_stats = add_import_cluster_demand(
+            doc,
+            vessel,
+            import_cluster_demand20,
+            import_cluster_demand40,
+        )
         port_constrained_rows = add_import_port_area_demand(
             doc,
             vessel,
@@ -1605,8 +1649,36 @@ def build_demand_params(
             "snapshot_rows_in_model_areas": int(len(snap)),
             "dedup_rows": int(len(merged)),
             "port_area_constrained_doc_new_rows": port_constrained_rows,
+            "import_cluster_snapshot_rows": snapshot_cluster_stats["rows"],
+            "import_cluster_doc_new_rows": doc_cluster_stats["rows"],
+            "import_cluster_second_voyage_rows": (
+                snapshot_cluster_stats["second_voyage_rows"] + doc_cluster_stats["second_voyage_rows"]
+            ),
+            "import_cluster_port_rows": snapshot_cluster_stats["port_rows"] + doc_cluster_stats["port_rows"],
+            "import_cluster_group_count": len(
+                {
+                    key[2]
+                    for key in import_cluster_demand20
+                    if key[0] == vessel
+                }
+                | {
+                    key[2]
+                    for key in import_cluster_demand40
+                    if key[0] == vessel
+                }
+            ),
         }
-    return d20, d40, port_demand20, port_demand40, diagnostics
+    return (
+        d20,
+        d40,
+        port_demand20,
+        port_demand40,
+        import_cluster_demand20,
+        import_cluster_demand40,
+        import_cluster_snapshot20,
+        import_cluster_snapshot40,
+        diagnostics,
+    )
 
 
 def empty_normalized_container_frame() -> pd.DataFrame:
@@ -1753,6 +1825,57 @@ def add_import_port_area_demand(
         key = (vessel, str(flow), str(port))
         target[key] = target.get(key, 0.0) + float(qty)
     return int(grouped.sum())
+
+
+def import_cluster_key(row: Mapping[str, Any]) -> str:
+    second_voyage = normalize_code(row.get("e_voy") or row.get("IYC_EVOY_ID"))
+    if second_voyage:
+        return f"SECOND:{second_voyage}"
+    port = normalize_code(row.get("port") or row.get("IYC_POT_UNLDPORT")) or "UNK"
+    return f"PORT:{port}"
+
+
+def add_import_cluster_demand(
+    rows: pd.DataFrame,
+    vessel: str,
+    demand20: dict[tuple[str, str, str], float],
+    demand40: dict[tuple[str, str, str], float],
+    snapshot20: Optional[dict[tuple[str, str, str, str], float]] = None,
+    snapshot40: Optional[dict[tuple[str, str, str, str], float]] = None,
+) -> dict[str, int]:
+    if rows.empty:
+        return {"rows": 0, "second_voyage_rows": 0, "port_rows": 0, "groups": 0}
+    cluster_rows: list[dict[str, Any]] = []
+    for record in rows.to_dict("records"):
+        flow = normalize_code(record.get("flow"))
+        size = normalize_size(record.get("size"))
+        if not flow or size not in {"20", "40"}:
+            continue
+        cluster = import_cluster_key(record)
+        area = normalize_code(record.get("area_no")) or ""
+        cluster_rows.append({"flow": flow, "size": size, "cluster": cluster, "area": area})
+    if not cluster_rows:
+        return {"rows": 0, "second_voyage_rows": 0, "port_rows": 0, "groups": 0}
+    work = pd.DataFrame(cluster_rows)
+    grouped = work.groupby(["flow", "size", "cluster"]).size()
+    for (flow, size, cluster), qty in grouped.items():
+        target = demand20 if size == "20" else demand40
+        key = (vessel, str(flow), str(cluster))
+        target[key] = target.get(key, 0.0) + float(qty)
+    if snapshot20 is not None and snapshot40 is not None:
+        snapshot_work = work[work["area"].astype(str).ne("")].copy()
+        grouped_snapshot = snapshot_work.groupby(["flow", "size", "cluster", "area"]).size()
+        for (flow, size, cluster, area), qty in grouped_snapshot.items():
+            target_snapshot = snapshot20 if size == "20" else snapshot40
+            key = (vessel, str(flow), str(cluster), str(area))
+            target_snapshot[key] = target_snapshot.get(key, 0.0) + float(qty)
+    second_rows = int(work["cluster"].astype(str).str.startswith("SECOND:").sum())
+    return {
+        "rows": int(len(work)),
+        "second_voyage_rows": second_rows,
+        "port_rows": int(len(work) - second_rows),
+        "groups": int(work["cluster"].nunique()),
+    }
 
 
 def read_prediction_counts(path: Path) -> tuple[float, float]:
