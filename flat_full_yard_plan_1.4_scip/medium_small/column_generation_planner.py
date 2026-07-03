@@ -64,6 +64,8 @@ class PlacementColumn:
     quota_key: tuple[str, str, str, str]
     coarse_key: tuple[str, ...]
     fine_key: tuple[str, ...]
+    coarse_cluster_key: tuple[str, ...]
+    fine_cluster_key: tuple[str, ...]
     intrinsic_cost: float
 
 
@@ -220,6 +222,8 @@ class ColumnGenerationPlanner:
         self.group_demand = {group.group_id: int(group.demand) for group in self.groups}
         self.coarse_demand: Counter[tuple[str, ...]] = Counter()
         self.coarse_groups: defaultdict[tuple[str, ...], list[SmallBoxGroup]] = defaultdict(list)
+        self.coarse_cluster_demand: Counter[tuple[str, ...]] = Counter()
+        self.coarse_cluster_groups: defaultdict[tuple[str, ...], list[SmallBoxGroup]] = defaultdict(list)
         self.voyage_flow_size_demand: Counter[tuple[str, str, str]] = Counter()
         self._columns: list[PlacementColumn] = []
         self._column_keys: set[tuple[str, str, int, tuple[tuple[str, str, int], ...]]] = set()
@@ -236,8 +240,11 @@ class ColumnGenerationPlanner:
         self._prepare_quota()
         for group in self.groups:
             coarse_key = self._coarse_key(group)
+            coarse_cluster_key = self._coarse_cluster_key(group)
             self.coarse_demand[coarse_key] += group.demand
             self.coarse_groups[coarse_key].append(group)
+            self.coarse_cluster_demand[coarse_cluster_key] += group.demand
+            self.coarse_cluster_groups[coarse_cluster_key].append(group)
             self.voyage_flow_size_demand[(group.voyage_id, group.status, self._big_plan_size(group.size))] += group.demand
 
     @property
@@ -919,8 +926,8 @@ class ColumnGenerationPlanner:
                 continue
             col = self._columns[idx]
             qty = int(chosen) * int(col.quantity)
-            fine_area_bays.add((col.fine_key, col.area_no, col.bay_key))
-            coarse_area_bays[col.coarse_key + (col.area_no, col.bay_key)] += qty
+            fine_area_bays.add((col.fine_cluster_key, col.area_no, col.bay_key))
+            coarse_area_bays[col.coarse_cluster_key + (col.area_no, col.bay_key)] += qty
             anchor_score, anchor_category = self._existing_anchor_relayout_component(col, int(chosen))
             existing_anchor_score += anchor_score
             if anchor_category == "same_bay":
@@ -1010,7 +1017,7 @@ class ColumnGenerationPlanner:
                 stats["post_repair_area_relayout_failure_reason"] = "missing_group"
                 stats["post_repair_area_relayout_failed_group"] = group_id
                 return None, stats
-            coarse_area_total[self._coarse_key(group) + (area_no,)] += int(qty)
+            coarse_area_total[self._coarse_cluster_key(group) + (area_no,)] += int(qty)
 
         by_area_coarse: defaultdict[tuple[str, tuple[str, ...]], list[tuple[SmallBoxGroup, str, int]]] = defaultdict(list)
         target_areas: set[str] = set()
@@ -1020,7 +1027,7 @@ class ColumnGenerationPlanner:
                 continue
             target_areas.add(area_no)
             group = self.groups_by_id[group_id]
-            by_area_coarse[(area_no, self._coarse_key(group))].append((group, area_no, qty))
+            by_area_coarse[(area_no, self._coarse_cluster_key(group))].append((group, area_no, qty))
 
         original_by_area: defaultdict[str, list[tuple[int, PlacementColumn, int]]] = defaultdict(list)
         for idx, chosen in original_selected.items():
@@ -1175,8 +1182,8 @@ class ColumnGenerationPlanner:
         return None
 
     def _area_relayout_column_score(self, col: PlacementColumn, relayout_state: dict, remaining: int) -> float:
-        group_bay_key = (col.fine_key, col.area_no, col.bay_key)
-        coarse_bay_key = col.coarse_key + (col.area_no, col.bay_key)
+        group_bay_key = (col.fine_cluster_key, col.area_no, col.bay_key)
+        coarse_bay_key = col.coarse_cluster_key + (col.area_no, col.bay_key)
         existing_group_bay = int(relayout_state["group_area_bay_load"][group_bay_key])
         existing_coarse_bay = int(relayout_state["coarse_area_bay_load"][coarse_bay_key])
         score = 0.0
@@ -1226,8 +1233,8 @@ class ColumnGenerationPlanner:
         return 0.0, None
 
     def _apply_column_to_area_relayout_state(self, col: PlacementColumn, relayout_state: dict) -> None:
-        group_bay_key = (col.fine_key, col.area_no, col.bay_key)
-        coarse_bay_key = col.coarse_key + (col.area_no, col.bay_key)
+        group_bay_key = (col.fine_cluster_key, col.area_no, col.bay_key)
+        coarse_bay_key = col.coarse_cluster_key + (col.area_no, col.bay_key)
         relayout_state["group_area_bay_load"][group_bay_key] += int(col.quantity)
         relayout_state["coarse_area_bay_load"][coarse_bay_key] += int(col.quantity)
 
@@ -1260,13 +1267,13 @@ class ColumnGenerationPlanner:
             energy += (col.intrinsic_cost + self.config.small_plan_group_bay_split_penalty) * multiplier
             qty = col.quantity * multiplier
             actual_quota[col.quota_key] += qty
-            actual_coarse_area[col.coarse_key + (col.area_no,)] += qty
+            actual_coarse_area[col.coarse_cluster_key + (col.area_no,)] += qty
             energy += self._area_fallback_tier_penalty_for_column(col) * qty
-            used_group_area.add((col.fine_key, col.area_no))
+            used_group_area.add((col.fine_cluster_key, col.area_no))
             if col.block_id:
-                used_group_block.add((col.fine_key, col.block_id))
-                used_coarse_area_block.add(col.coarse_key + (col.area_no, col.block_id))
-            used_coarse_area_bay.add(col.coarse_key + (col.area_no, col.bay_key))
+                used_group_block.add((col.fine_cluster_key, col.block_id))
+                used_coarse_area_block.add(col.coarse_cluster_key + (col.area_no, col.block_id))
+            used_coarse_area_bay.add(col.coarse_cluster_key + (col.area_no, col.bay_key))
             used_voyage_area.add((col.voyage_id, col.area_no))
             if col.size == "20":
                 segment = self._large_segment_key_for_20_bay(col.bay_key)
@@ -1293,7 +1300,7 @@ class ColumnGenerationPlanner:
         for key, qty in actual_coarse_area.items():
             by_coarse[tuple(key[:-1])].append(float(qty))
         for coarse_key, quantities in by_coarse.items():
-            demand = max(1, int(self.coarse_demand.get(coarse_key, sum(quantities))))
+            demand = max(1, int(self._coarse_metric_demand(coarse_key, sum(quantities))))
             if self._prefers_concentrated_coarse_key(coarse_key):
                 if quantities:
                     energy += self.config.medium_small_group_area_split_penalty * max(0, len(quantities) - 1)
@@ -2358,6 +2365,8 @@ class ColumnGenerationPlanner:
         group_bay_cols: defaultdict[tuple[str, str], list[int]] = defaultdict(list)
         bay_attr_choice_cols: defaultdict[tuple[str, str, str, str], list[int]] = defaultdict(list)
         coarse_area_cols: defaultdict[tuple[str, ...], list[tuple[int, PlacementColumn]]] = defaultdict(list)
+        medium_coarse_area_cols: defaultdict[tuple[str, ...], list[tuple[int, PlacementColumn]]] = defaultdict(list)
+        medium_coarse_area_bay_cols: defaultdict[tuple[str, ...], list[int]] = defaultdict(list)
         area_size_cols: defaultdict[tuple[str, str, str, str], list[tuple[int, PlacementColumn]]] = defaultdict(list)
         group_area_cols: defaultdict[tuple[tuple[str, ...], str], list[int]] = defaultdict(list)
         group_block_cols: defaultdict[tuple[tuple[str, ...], str], list[int]] = defaultdict(list)
@@ -2383,13 +2392,15 @@ class ColumnGenerationPlanner:
                     row_attr_choice_cols[(footprint_key, row_no, attr, scope, self._column_attr_value(col, attr))].append(idx)
             bay_size_capacity_cols[(col.bay_key, col.size)].append((idx, col))
             group_bay_cols[(col.group_id, col.bay_key)].append(idx)
-            coarse_area_cols[col.coarse_key + (col.area_no,)].append((idx, col))
+            coarse_area_cols[col.coarse_cluster_key + (col.area_no,)].append((idx, col))
+            medium_coarse_area_cols[col.coarse_key + (col.area_no,)].append((idx, col))
+            medium_coarse_area_bay_cols[col.coarse_key + (col.area_no, col.bay_key)].append(idx)
             area_size_cols[col.quota_key].append((idx, col))
-            group_area_cols[(col.fine_key, col.area_no)].append(idx)
+            group_area_cols[(col.fine_cluster_key, col.area_no)].append(idx)
             if col.block_id:
-                group_block_cols[(col.fine_key, col.block_id)].append(idx)
-                coarse_area_block_cols[col.coarse_key + (col.area_no, col.block_id)].append(idx)
-            coarse_area_bay_cols[col.coarse_key + (col.area_no, col.bay_key)].append(idx)
+                group_block_cols[(col.fine_cluster_key, col.block_id)].append(idx)
+                coarse_area_block_cols[col.coarse_cluster_key + (col.area_no, col.block_id)].append(idx)
+            coarse_area_bay_cols[col.coarse_cluster_key + (col.area_no, col.bay_key)].append(idx)
             voyage_area_cols[(col.voyage_id, col.area_no)].append(idx)
             if self._is_export_e_column(col):
                 export_e_area_bay_cols[(col.voyage_id, col.area_no, col.bay_key)].append(idx)
@@ -2505,7 +2516,7 @@ class ColumnGenerationPlanner:
             )
         if self.config.medium_plan_quota is not None:
             medium_plan_quota = Counter(self.config.medium_plan_quota)
-            for key, items in coarse_area_cols.items():
+            for key, items in medium_coarse_area_cols.items():
                 cap = int(medium_plan_quota.get(key, 0))
                 medium_plan_quota_limit[key] = model.addCons(
                     quicksum(col.quantity * columns[idx] for idx, col in items) <= cap,
@@ -2513,7 +2524,7 @@ class ColumnGenerationPlanner:
                 )
         if self.config.medium_plan_bay_quota is not None:
             medium_plan_bay_quota = Counter(self.config.medium_plan_bay_quota)
-            for key, indices in coarse_area_bay_cols.items():
+            for key, indices in medium_coarse_area_bay_cols.items():
                 cap = int(medium_plan_bay_quota.get(key, 0))
                 medium_plan_quota_limit[key] = model.addCons(
                     quicksum(self._columns[idx].quantity * columns[idx] for idx in indices) <= cap,
@@ -2771,7 +2782,7 @@ class ColumnGenerationPlanner:
             area_keys_by_coarse[coarse_key].append(key)
 
         for coarse_key, area_keys in sorted(area_keys_by_coarse.items()):
-            demand = self.coarse_demand[coarse_key]
+            demand = self._coarse_metric_demand(coarse_key)
             if demand <= 0:
                 continue
             actual_by_area = self._add_coarse_area_actual_variables(
@@ -3053,11 +3064,12 @@ class ColumnGenerationPlanner:
                     area_no = self.bays[bay_key].area_no
                     coarse_area_key = self._coarse_key(group) + (area_no,)
                     block_id = self.block_by_bay.get((area_no, bay_key), "")
-                    coarse_key = self._coarse_key(group)
-                    group_area_key = ("group_area", group.group_id, area_no)
-                    group_block_key = ("group_block", group.group_id, block_id)
-                    coarse_area_bay_key = ("coarse_area_bay",) + coarse_key + (area_no, bay_key)
-                    coarse_area_block_key = ("coarse_area_block",) + coarse_key + (area_no, block_id)
+                    coarse_cluster_key = self._coarse_cluster_key(group)
+                    fine_cluster_key = self._fine_cluster_key(group)
+                    group_area_key = ("group_area", fine_cluster_key, area_no)
+                    group_block_key = ("group_block", fine_cluster_key, block_id)
+                    coarse_area_bay_key = ("coarse_area_bay",) + coarse_cluster_key + (area_no, bay_key)
+                    coarse_area_block_key = ("coarse_area_block",) + coarse_cluster_key + (area_no, block_id)
                     voyage_area_key = ("voyage_area", group.voyage_id, area_no)
                     reduced = (
                         base_cost
@@ -3194,7 +3206,7 @@ class ColumnGenerationPlanner:
             if value <= 1e-9 or idx < 0 or idx >= len(self._columns):
                 continue
             col = self._columns[idx]
-            actual[col.coarse_key + (col.area_no,)] += col.quantity * float(value)
+            actual[col.coarse_cluster_key + (col.area_no,)] += col.quantity * float(value)
         return actual
 
     def _primal_expansion_score(
@@ -3211,10 +3223,10 @@ class ColumnGenerationPlanner:
         quota_key = self._quota_key(group, area_no)
         target = self._area_size_target(group.voyage_id, group.status, area_no, self._big_plan_size(group.size))
         quota_gap = target - lp_quota_actual.get(quota_key, 0.0)
-        coarse_area_key = self._coarse_key(group) + (area_no,)
+        coarse_area_key = self._coarse_cluster_key(group) + (area_no,)
         existing_area_qty = lp_coarse_area_actual.get(coarse_area_key, 0.0)
         min_boxes = max(0, int(self.config.medium_large_group_min_area_boxes or 0))
-        if self._prefers_concentrated_coarse_key(self._coarse_key(group)):
+        if self._prefers_concentrated_coarse_key(self._coarse_cluster_key(group)):
             shape_score = (0 if existing_area_qty > 1e-6 else 1, -existing_area_qty)
         else:
             after_qty = existing_area_qty + qty
@@ -3672,6 +3684,8 @@ class ColumnGenerationPlanner:
                 quota_key=self._quota_key(group, bay.area_no),
                 coarse_key=self._coarse_key(group),
                 fine_key=self._fine_key(group),
+                coarse_cluster_key=self._coarse_cluster_key(group),
+                fine_cluster_key=self._fine_cluster_key(group),
                 intrinsic_cost=base_cost,
             )
             idx = len(self._columns)
@@ -3792,12 +3806,12 @@ class ColumnGenerationPlanner:
     def _coarse_concentration_repair_order(self, groups: list[SmallBoxGroup]) -> list[SmallBoxGroup]:
         by_coarse: defaultdict[tuple[str, ...], list[SmallBoxGroup]] = defaultdict(list)
         for group in groups:
-            by_coarse[self._coarse_key(group)].append(group)
+            by_coarse[self._coarse_cluster_key(group)].append(group)
 
         threshold = max(0, int(self.config.medium_concentrated_group_threshold or 0))
 
         def coarse_rank(coarse_key: tuple[str, ...]) -> tuple:
-            demand = int(self.coarse_demand.get(coarse_key, 0))
+            demand = int(self._coarse_metric_demand(coarse_key))
             small_group = threshold > 0 and demand <= threshold
             groups_for_key = by_coarse.get(coarse_key, [])
             representative = groups_for_key[0] if groups_for_key else None
@@ -4046,8 +4060,8 @@ class ColumnGenerationPlanner:
         area_no = bay.area_no
         block_id = self.block_by_bay.get((area_no, bay_key), "")
         quota_key = self._quota_key(group, area_no)
-        coarse_key = self._coarse_key(group)
-        fine_key = self._fine_key(group)
+        coarse_key = self._coarse_cluster_key(group)
+        fine_key = self._fine_cluster_key(group)
         coarse_area_key = coarse_key + (area_no,)
 
         score = (
@@ -4111,7 +4125,7 @@ class ColumnGenerationPlanner:
 
         min_boxes = max(0, int(self.config.medium_large_group_min_area_boxes or 0))
         energy = 0.0
-        demand = max(1, int(self.coarse_demand.get(coarse_key, sum(quantities))))
+        demand = max(1, int(self._coarse_metric_demand(coarse_key, sum(quantities))))
         energy += self.config.medium_large_group_area_open_penalty * max(
             0,
             len(quantities) - self._target_large_group_area_count(coarse_key, demand),
@@ -4267,13 +4281,13 @@ class ColumnGenerationPlanner:
                 state_key = self._row_state_attr_key(footprint_key, row_no, attr, col.voyage_id)
                 state["row_used_attrs"][state_key] = self._column_attr_value(col, attr)
         state["group_bay_used"].add((col.group_id, col.bay_key))
-        state["used_group_area"].add((col.fine_key, col.area_no))
+        state["used_group_area"].add((col.fine_cluster_key, col.area_no))
         if col.block_id:
-            state["used_group_block"].add((col.fine_key, col.block_id))
-            state["used_coarse_area_block"].add(col.coarse_key + (col.area_no, col.block_id))
-        state["used_coarse_area_bay"].add(col.coarse_key + (col.area_no, col.bay_key))
+            state["used_group_block"].add((col.fine_cluster_key, col.block_id))
+            state["used_coarse_area_block"].add(col.coarse_cluster_key + (col.area_no, col.block_id))
+        state["used_coarse_area_bay"].add(col.coarse_cluster_key + (col.area_no, col.bay_key))
         state["used_voyage_area"].add((col.voyage_id, col.area_no))
-        state["coarse_area_used"][col.coarse_key + (col.area_no,)] += col.quantity
+        state["coarse_area_used"][col.coarse_cluster_key + (col.area_no,)] += col.quantity
         if self._is_export_e_column(col):
             e_area_key = (col.voyage_id, col.area_no)
             e_bay_key = e_area_key + (col.bay_key,)
@@ -4409,7 +4423,7 @@ class ColumnGenerationPlanner:
                     continue
                 cost = self._column_base_cost(group, bay_key)
                 out.append((bay_key, min(max_qty, group.demand), cost))
-        if self._prefers_concentrated_coarse_key(self._coarse_key(group)):
+        if self._prefers_concentrated_coarse_key(self._coarse_cluster_key(group)):
             out.sort(
                 key=lambda item: (
                     self._priority_area_rank(group, self.bays[item[0]].area_no),
@@ -4953,8 +4967,33 @@ class ColumnGenerationPlanner:
                 attrs.append(text)
         return tuple(attrs)
 
+    def _configured_fine_cluster_attrs_for_group(self, group: SmallBoxGroup) -> tuple[str, ...]:
+        attrs: list[str] = list(self._configured_coarse_attrs_for_group(group))
+        rules = getattr(self.problem, "attribute_rules", None)
+        if group.status not in EXPORT_FLOWS:
+            fine_attrs = (
+                getattr(rules, "import_shared_fine_group_attributes", ())
+                if rules is not None
+                else ()
+            )
+        else:
+            fine_attrs = (
+                rules.fine_for(group.voyage_id)
+                if rules is not None and hasattr(rules, "fine_for")
+                else ()
+            )
+        for attr in fine_attrs:
+            text = str(attr)
+            if text and text not in attrs:
+                attrs.append(text)
+        return tuple(attrs)
+
     def _attribute_group_key(self, group: SmallBoxGroup, attrs: tuple[str, ...]) -> tuple[str, ...]:
         return (str(group.voyage_id), *(f"{attr}={self._group_attr_value(group, attr)}" for attr in attrs))
+
+    def _attribute_cluster_key(self, group: SmallBoxGroup, attrs: tuple[str, ...]) -> tuple[str, ...]:
+        scope = str(group.voyage_id) if group.status in EXPORT_FLOWS else "IMPORT"
+        return (scope, *(f"{attr}={self._group_attr_value(group, attr)}" for attr in attrs))
 
     def _coarse_key(self, group: SmallBoxGroup) -> tuple[str, ...]:
         return self._attribute_group_key(group, self._configured_coarse_attrs_for_group(group))
@@ -4962,8 +5001,14 @@ class ColumnGenerationPlanner:
     def _fine_key(self, group: SmallBoxGroup) -> tuple[str, ...]:
         return self._attribute_group_key(group, self._configured_fine_attrs_for_group(group))
 
+    def _coarse_cluster_key(self, group: SmallBoxGroup) -> tuple[str, ...]:
+        return self._attribute_cluster_key(group, self._configured_coarse_attrs_for_group(group))
+
+    def _fine_cluster_key(self, group: SmallBoxGroup) -> tuple[str, ...]:
+        return self._attribute_cluster_key(group, self._configured_fine_cluster_attrs_for_group(group))
+
     def _existing_anchor_key(self, group: SmallBoxGroup) -> tuple[str, ...]:
-        return self._coarse_key(group)
+        return self._coarse_cluster_key(group)
 
     def _coarse_output_value(self, coarse_key: tuple[str, ...], field: str, default: str = "MIXED") -> str:
         groups = self.coarse_groups.get(coarse_key, [])
@@ -5060,18 +5105,25 @@ class ColumnGenerationPlanner:
 
     def _prefers_concentrated_coarse_key(self, coarse_key: tuple[str, ...]) -> bool:
         threshold = int(self.config.medium_concentrated_group_threshold or 0)
-        return threshold > 0 and self.coarse_demand[coarse_key] <= threshold
+        return threshold > 0 and self._coarse_metric_demand(coarse_key) <= threshold
+
+    def _coarse_metric_demand(self, coarse_key: tuple[str, ...], fallback: int | None = None) -> int:
+        if coarse_key in self.coarse_cluster_demand:
+            return int(self.coarse_cluster_demand[coarse_key])
+        if coarse_key in self.coarse_demand:
+            return int(self.coarse_demand[coarse_key])
+        return int(fallback or 0)
 
     def _target_large_group_area_count(self, coarse_key: tuple[str, ...], demand: int | None = None) -> int:
         if self._prefers_concentrated_coarse_key(coarse_key):
             return 1
         target_boxes = max(1, int(self.config.medium_large_group_target_area_boxes or 1))
-        total = max(1, int(self.coarse_demand.get(coarse_key, demand or 1) if demand is None else demand))
+        total = max(1, int(self._coarse_metric_demand(coarse_key, demand or 1) if demand is None else demand))
         return max(1, math.ceil(total / target_boxes))
 
     def _concentrated_area_sort_key(self, group: SmallBoxGroup, area_no: str) -> tuple[int, int, int, int, str]:
-        coarse_key = self._coarse_key(group)
-        demand = max(int(self.coarse_demand.get(coarse_key, group.demand)), int(group.demand))
+        coarse_key = self._coarse_cluster_key(group)
+        demand = max(int(self._coarse_metric_demand(coarse_key, group.demand)), int(group.demand))
         quota = self.quota_by_key.get(self._quota_key(group, area_no), 0)
         group_cap = self._area_group_capacity(group, area_no)
         height_cap = self.area_size_height_cap.get((area_no, group.size, group.height), 0)
@@ -5091,9 +5143,12 @@ class ColumnGenerationPlanner:
         return int(self.area_group_cap.get(key, 0))
 
     def _coarse_quota_buckets(self, coarse_key: tuple[str, ...]) -> set[tuple[str, str, str]]:
+        groups = self.coarse_groups.get(coarse_key)
+        if not groups:
+            groups = self.coarse_cluster_groups.get(coarse_key, [])
         return {
             (group.voyage_id, group.status, self._big_plan_size(group.size))
-            for group in self.coarse_groups.get(coarse_key, [])
+            for group in groups
         }
 
     def _coarse_area_target(self, coarse_key: tuple[str, ...], area_no: str) -> float:
@@ -5110,7 +5165,7 @@ class ColumnGenerationPlanner:
             for (v, f, a, s), qty in self.quota_by_key.items()
             if a == area_no and (v, f, s) in buckets
         )
-        return self.coarse_demand[coarse_key] * quota / total
+        return self._coarse_metric_demand(coarse_key) * quota / total
 
     def _area_size_target(self, voyage_id: str, flow: str, area_no: str, big_size: str) -> float:
         total = sum(qty for (v, f, _a, s), qty in self.quota_by_key.items() if v == voyage_id and f == flow and s == big_size)

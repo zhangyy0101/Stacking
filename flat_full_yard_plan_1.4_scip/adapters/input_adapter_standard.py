@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta
 from itertools import combinations
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 import pandas as pd
 
@@ -793,24 +793,35 @@ def read_attribute_rules(input_guandong: InputAdapterGd, voyages: Sequence[str])
         canonical_weight_levels,
         fill_missing=False,
     )
+    coarse_group_attributes_by_voyage = voyage_rule_map(
+        getattr(input_guandong, "rough_attr", None),
+        voyages,
+        DEFAULT_ROUGH_ATTR,
+        canonical_attribute_tuple,
+    )
+    fine_group_attributes_by_voyage = voyage_rule_map(
+        getattr(input_guandong, "detail_attr", None),
+        voyages,
+        DEFAULT_DETAIL_ATTR,
+        canonical_attribute_tuple,
+    )
+    import_voyages = [
+        normalize_voyage(voyage)
+        for voyage in voyages
+        if normalize_voyage(voyage) and is_import_voyage(input_guandong, voyage)
+    ]
+    import_shared_fine_group_attributes = common_attribute_intersection(
+        fine_group_attributes_by_voyage.get(voyage, canonical_attribute_tuple(DEFAULT_DETAIL_ATTR, AttributeRules().fine_group_attributes))
+        for voyage in import_voyages
+    )
     return AttributeRules(
         coarse_group_attributes=canonical_attribute_tuple(DEFAULT_ROUGH_ATTR, AttributeRules().coarse_group_attributes),
         fine_group_attributes=canonical_attribute_tuple(DEFAULT_DETAIL_ATTR, AttributeRules().fine_group_attributes),
         bay_no_mix_attributes=(),
         row_no_mix_attributes=(),
         weight_levels=canonical_weight_levels(DEFAULT_WEIGHT_LEVEL),
-        coarse_group_attributes_by_voyage=voyage_rule_map(
-            getattr(input_guandong, "rough_attr", None),
-            voyages,
-            DEFAULT_ROUGH_ATTR,
-            canonical_attribute_tuple,
-        ),
-        fine_group_attributes_by_voyage=voyage_rule_map(
-            getattr(input_guandong, "detail_attr", None),
-            voyages,
-            DEFAULT_DETAIL_ATTR,
-            canonical_attribute_tuple,
-        ),
+        coarse_group_attributes_by_voyage=coarse_group_attributes_by_voyage,
+        fine_group_attributes_by_voyage=fine_group_attributes_by_voyage,
         bay_no_mix_attributes_by_voyage=voyage_rule_map(
             getattr(input_guandong, "bay_rules", None),
             voyages,
@@ -827,7 +838,18 @@ def read_attribute_rules(input_guandong: InputAdapterGd, voyages: Sequence[str])
         ),
         weight_levels_by_voyage=weight_levels_by_voyage,
         weight_group_voyages=frozenset(weight_levels_by_voyage),
+        import_shared_fine_group_attributes=import_shared_fine_group_attributes,
     )
+
+
+def common_attribute_intersection(values: Iterable[Sequence[str]]) -> tuple[str, ...]:
+    sequences = [tuple(str(attr) for attr in attrs if str(attr)) for attrs in values]
+    if not sequences:
+        return ()
+    common = set(sequences[0])
+    for attrs in sequences[1:]:
+        common.intersection_update(attrs)
+    return tuple(attr for attr in sequences[0] if attr in common)
 
 
 def small_groupby_columns(attribute_rules: AttributeRules, voyage_id: str) -> tuple[str, ...]:
@@ -886,7 +908,7 @@ def import_base_group_attributes(row: Mapping[str, Any], size_mode: str, port: s
 def import_small_groupby_columns(attribute_rules: AttributeRules, voyage_id: str, row: Mapping[str, Any], size_mode: str, port: str) -> tuple[str, ...]:
     base_attrs, _base_values, _port_label = import_base_group_attributes(row, size_mode, port)
     attrs: list[str] = list(base_attrs)
-    attrs.extend(attribute_rules.fine_for(voyage_id))
+    attrs.extend(getattr(attribute_rules, "import_shared_fine_group_attributes", ()))
     # These are not part of the user fine group; they are carried only so the
     # no-mix constraints have a concrete value to compare.
     attrs.extend(attribute_rules.bay_no_mix_for(voyage_id))
@@ -1415,7 +1437,23 @@ def _sheet_has_area_and_berths(path: Path, sheet: str) -> bool:
     return "area_no" in columns and any(re.fullmatch(r"B\d+", column) for column in columns)
 
 
+def adapter_runtime_cache(input_guandong: InputAdapterGd) -> dict[str, Any]:
+    cache = getattr(input_guandong, "_standard_runtime_cache", None)
+    if isinstance(cache, dict):
+        return cache
+    cache = {}
+    try:
+        setattr(input_guandong, "_standard_runtime_cache", cache)
+    except Exception:
+        return {}
+    return cache
+
+
 def read_vessel_info(input_guandong: InputAdapterGd) -> pd.DataFrame:
+    cache = adapter_runtime_cache(input_guandong)
+    cached = cache.get("vessel_info")
+    if isinstance(cached, pd.DataFrame):
+        return cached.copy()
     frame = input_guandong.vessel_berth_info
     frame = frame.copy()
     frame["voy_id"] = frame["VOY_ID"].map(normalize_voyage)
@@ -1436,7 +1474,8 @@ def read_vessel_info(input_guandong: InputAdapterGd) -> pd.DataFrame:
         frame.get("VBT_PDPTDT", pd.Series(index=frame.index, dtype=object)),
         errors="coerce",
     )
-    return frame
+    cache["vessel_info"] = frame
+    return frame.copy()
 
 
 def read_berths_for_vessels(vessel_info: pd.DataFrame, vessels: Sequence[str]) -> dict[str, str]:
@@ -2096,6 +2135,31 @@ def slot_range_mask(values: pd.Series, start_value: Any, end_value: Any, value_p
     return parsed_values.map(lambda value: value is not None and lo <= value <= hi)
 
 
+def slot_range_mask_preparsed(
+    values: pd.Series,
+    parsed_values: pd.Series,
+    start_value: Any,
+    end_value: Any,
+    value_parser: Any,
+) -> pd.Series:
+    start = normalize_code(start_value)
+    end = normalize_code(end_value)
+    if not start and not end:
+        return pd.Series(True, index=values.index)
+    if start and not end:
+        return values.map(normalize_code).eq(start)
+    if end and not start:
+        return values.map(normalize_code).eq(end)
+    start_key = value_parser(start)
+    end_key = value_parser(end)
+    if start_key is None or end_key is None:
+        allowed = {value for value in [start, end] if value}
+        return values.map(normalize_code).isin(allowed)
+    lo = min(start_key, end_key)
+    hi = max(start_key, end_key)
+    return parsed_values.notna() & parsed_values.ge(lo) & parsed_values.le(hi)
+
+
 def bay_range_mask(values: pd.Series, start_bay: str, end_bay: str) -> pd.Series:
     return slot_range_mask(values, start_bay, end_bay, bay_code_value)
 
@@ -2126,14 +2190,18 @@ def count_tops_blocked_slots(tops_rows: pd.DataFrame, slots: pd.DataFrame, vesse
 
 
 def active_tops_rows(input_guandong: InputAdapterGd, planning_time: datetime) -> pd.DataFrame:
-    tops = input_guandong.tops_plan.copy()
-    tops["condition_vessel"] = tops["SPL_CONDITIONCODE"].map(normalize_voyage)
-    tops["start_time"] = parse_tops_time(tops["SPL_STDATE"])
-    tops["end_time"] = parse_tops_time(tops["SPL_EDDATE"])
-    if "SPL_ISVALID" in tops.columns:
-        tops = tops[tops["SPL_ISVALID"].astype(str).str.upper().eq("Y")].copy()
-    if "SPR_ISVALID" in tops.columns:
-        tops = tops[tops["SPR_ISVALID"].astype(str).str.upper().eq("Y")].copy()
+    cache = adapter_runtime_cache(input_guandong)
+    tops = cache.get("tops_plan_normalized")
+    if not isinstance(tops, pd.DataFrame):
+        tops = input_guandong.tops_plan.copy()
+        tops["condition_vessel"] = tops["SPL_CONDITIONCODE"].map(normalize_voyage)
+        tops["start_time"] = parse_tops_time(tops["SPL_STDATE"])
+        tops["end_time"] = parse_tops_time(tops["SPL_EDDATE"])
+        if "SPL_ISVALID" in tops.columns:
+            tops = tops[tops["SPL_ISVALID"].astype(str).str.upper().eq("Y")].copy()
+        if "SPR_ISVALID" in tops.columns:
+            tops = tops[tops["SPR_ISVALID"].astype(str).str.upper().eq("Y")].copy()
+        cache["tops_plan_normalized"] = tops
     return tops[(tops["start_time"] <= planning_time) & (planning_time <= tops["end_time"])].copy()
 
 
@@ -2780,6 +2848,7 @@ def existing_coarse_group_loads(
     if "IYC_IVOY_ID" in occupied.columns:
         voyage_columns.append("IYC_IVOY_ID")
     seen_voyage_containers: set[tuple[str, str]] = set()
+    seen_anchor_containers: set[tuple[tuple[str, ...], str]] = set()
     for voyage_column in voyage_columns:
         work = occupied.copy()
         work["_voyage"] = work[voyage_column].map(normalize_voyage)
@@ -2805,6 +2874,12 @@ def existing_coarse_group_loads(
             record["IYC_EVOY_ID"] = normalize_voyage(row.get("IYC_EVOY_ID"))
             record["IYC_IVOY_ID"] = normalize_voyage(row.get("IYC_IVOY_ID"))
             coarse_key = configured_coarse_anchor_key(record, voyage_id, attribute_rules)
+            container_key = str(row.get("_container_key", ""))
+            anchor_container_key = (coarse_key, container_key)
+            if container_key and anchor_container_key in seen_anchor_containers:
+                continue
+            if container_key:
+                seen_anchor_containers.add(anchor_container_key)
             area_no = str(row.get("_area", ""))
             bay_key = str(row.get("_bay_key", ""))
             if not area_no or not bay_key:
@@ -2831,7 +2906,8 @@ def configured_coarse_anchor_key(
         attrs,
         levels=attribute_rules.weight_levels_for(voyage_id),
     )
-    return (str(voyage_id), *(f"{attr}={values.get(attr, 'MIXED')}" for attr in attrs))
+    scope = str(voyage_id) if flow == "OF" else "IMPORT"
+    return (scope, *(f"{attr}={values.get(attr, 'MIXED')}" for attr in attrs))
 
 
 def container_identity(row: pd.Series, index: object) -> str:
@@ -3104,14 +3180,18 @@ def load_port_demand_groups(
     attribute_rules: AttributeRules,
     big_plan_caps: dict[tuple[str, str, str], int] | None = None,
     horizon_hours: float = 24.0,
+    demand_rows: list[DemandRow] | None = None,
 ) -> tuple[list[BoxGroup], list[DemandRow]]:
-    demand_rows = calculate_medium_demands(
-        input_guandong,
-        voyage_ids,
-        planning_time,
-        big_plan_caps=big_plan_caps,
-        horizon_hours=horizon_hours,
-    )
+    if demand_rows is None:
+        demand_rows = calculate_medium_demands(
+            input_guandong,
+            voyage_ids,
+            planning_time,
+            big_plan_caps=big_plan_caps,
+            horizon_hours=horizon_hours,
+        )
+    else:
+        demand_rows = list(demand_rows)
     groups: list[BoxGroup] = []
     group_index: defaultdict[str, int] = defaultdict(int)
     counters: defaultdict[str, Counter[tuple]] = defaultdict(Counter)
@@ -3411,6 +3491,15 @@ def build_bays(
     physical_cap = physical_capacity_by_bay(available)
     row_cap_by_size = capacity_by_bay_row_size(available)
     row_physical_cap = physical_capacity_by_bay_row(available)
+    row_cap_by_size_by_bay: dict[str, defaultdict[tuple[str, str], dict[str, int]]] = {
+        size: defaultdict(dict) for size in SIZE_MODES
+    }
+    for size in SIZE_MODES:
+        for (area_no, bay_no, row_no), qty in row_cap_by_size[size].items():
+            row_cap_by_size_by_bay[size][(area_no, bay_no)][row_no] = qty
+    row_physical_cap_by_bay: defaultdict[tuple[str, str], dict[str, int]] = defaultdict(dict)
+    for (area_no, bay_no, row_no), qty in row_physical_cap.items():
+        row_physical_cap_by_bay[(area_no, bay_no)][row_no] = qty
     existing_attrs = existing_bay_attributes(
         frame,
         vessel_schedules,
@@ -3463,16 +3552,10 @@ def build_bays(
             cap_by_size={size: cap_by_size[size].get((area_no, bay_no), 0) for size in SIZE_MODES},
             physical_capacity=physical,
             row_cap_by_size={
-                size: {
-                    row_no: qty
-                    for (a, b, row_no), qty in row_cap_by_size[size].items()
-                    if a == area_no and b == bay_no
-                }
+                size: dict(row_cap_by_size_by_bay[size].get((area_no, bay_no), {}))
                 for size in SIZE_MODES
             },
-            row_physical_capacity={
-                row_no: qty for (a, b, row_no), qty in row_physical_cap.items() if a == area_no and b == bay_no
-            },
+            row_physical_capacity=dict(row_physical_cap_by_bay.get((area_no, bay_no), {})),
             large_bay_partner_no=large_bay_partner.get((area_no, bay_no), ""),
             large_bay_partner_key=(
                 f"{area_no}|{large_bay_partner[(area_no, bay_no)]}"
@@ -3516,6 +3599,8 @@ def tops_reserved_slots(
     if active.empty or frame.empty:
         return reserved, closed_bays
     empty = frame[frame["HAS_CONTAINER"].fillna(0).astype(int).eq(0)].copy()
+    empty["_bay_code"] = empty["YBY_BAYNO"].map(bay_code_value)
+    empty["_row_code"] = empty["YST_ROWNO"].map(bay_code_value)
     by_area = {area: sub for area, sub in empty.groupby("YAA_AREANO")}
     for _, tops in active.iterrows():
         start_area, start_bay = parse_tops_area_bay(tops.get("SPR_STBAY"))
@@ -3526,13 +3611,29 @@ def tops_reserved_slots(
         if not area or area not in by_area:
             continue
         sub = by_area[area]
-        matched = sub[bay_range_mask(sub["YBY_BAYNO"], start_bay, end_bay)].copy()
+        matched = sub[
+            slot_range_mask_preparsed(
+                sub["YBY_BAYNO"],
+                sub["_bay_code"],
+                start_bay,
+                end_bay,
+                bay_code_value,
+            )
+        ].copy()
         if matched.empty:
             continue
         start_row = normalize_row(tops.get("SPR_STROW"))
         end_row = normalize_row(tops.get("SPR_EDROW"))
         if start_row or end_row:
-            matched = matched[row_range_mask(matched["YST_ROWNO"], start_row, end_row)]
+            matched = matched[
+                slot_range_mask_preparsed(
+                    matched["YST_ROWNO"],
+                    matched["_row_code"],
+                    start_row,
+                    end_row,
+                    bay_code_value,
+                )
+            ]
         for row in matched.to_dict("records"):
             reserved.add((row["YAA_AREANO"], row["YBY_BAYNO"], row["YST_ROWNO"]))
             closed_bays.add((row["YAA_AREANO"], row["YBY_BAYNO"]))
@@ -4031,6 +4132,7 @@ def build_problem(
     horizon_hours: float,
     target_voyages: list[str],
     misplaced_bay_exclusion_ratio: float,
+    demand_rows: list[DemandRow] | None = None,
 ) -> ProblemData:
     closed = read_closed_areas(input_guandong)
     area_functions = read_area_functions(input_guandong)
@@ -4105,6 +4207,7 @@ def build_problem(
         attribute_rules,
         big_plan_caps=None,
         horizon_hours=horizon_hours,
+        demand_rows=demand_rows,
     )
     small_groups = load_small_doc_groups(
         input_guandong,
@@ -4323,6 +4426,7 @@ def load_medium_small_inputs(
         horizon_hours=horizon_hours,
         target_voyages=list(voyages),
         misplaced_bay_exclusion_ratio=misplaced_bay_exclusion_ratio,
+        demand_rows=demand_rows,
     )
     return MediumSmallInputs(big_plan=big_plan_rows, demand_rows=demand_rows, problem=problem)
 

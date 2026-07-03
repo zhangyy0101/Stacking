@@ -24,6 +24,7 @@ class AttributeRules:
     row_no_mix_attributes_by_voyage: dict[str, tuple[str, ...]] = field(default_factory=dict)
     weight_levels_by_voyage: dict[str, tuple[int, ...]] = field(default_factory=dict)
     weight_group_voyages: frozenset[str] = frozenset()
+    import_shared_fine_group_attributes: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, list[str]]:
         return {
@@ -48,6 +49,7 @@ class AttributeRules:
                 voyage: list(values) for voyage, values in sorted(self.weight_levels_by_voyage.items())
             },
             "weight_group_voyages": sorted(self.weight_group_voyages),
+            "import_shared_fine_group_attributes": list(self.import_shared_fine_group_attributes),
         }
 
     def coarse_for(self, voyage_id: object) -> tuple[str, ...]:
