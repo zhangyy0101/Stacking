@@ -112,6 +112,7 @@ def add_column_generation_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--fine-group-bay-penalty", type=float, default=defaults.small_plan_group_bay_split_penalty)
     parser.add_argument("--coarse-area-block-penalty", type=float, default=defaults.small_plan_coarse_area_block_split_penalty)
     parser.add_argument("--coarse-area-bay-penalty", type=float, default=defaults.small_plan_coarse_area_bay_split_penalty)
+    parser.add_argument("--group-area-balance-penalty", type=float, default=defaults.group_area_balance_penalty)
     parser.add_argument("--medium-concentrated-group-threshold", type=int, default=defaults.medium_concentrated_group_threshold)
     parser.add_argument("--medium-small-group-area-split-penalty", type=float, default=defaults.medium_small_group_area_split_penalty)
     parser.add_argument("--medium-small-group-fragment-penalty", type=float, default=defaults.medium_small_group_fragment_penalty)
@@ -119,6 +120,11 @@ def add_column_generation_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--medium-large-group-small-area-penalty", type=float, default=defaults.medium_large_group_small_area_penalty)
     parser.add_argument("--medium-large-group-area-open-penalty", type=float, default=defaults.medium_large_group_area_open_penalty)
     parser.add_argument("--medium-large-group-target-area-boxes", type=int, default=defaults.medium_large_group_target_area_boxes)
+    parser.add_argument(
+        "--medium-large-group-area-excess-penalty",
+        type=float,
+        default=defaults.medium_large_group_area_excess_penalty,
+    )
     parser.add_argument("--unplaced-penalty", type=float, default=defaults.unplaced_penalty)
     parser.add_argument("--required-area-reward", type=float, default=defaults.required_area_reward)
     parser.add_argument("--big-plan-area-deviation-penalty", type=float, default=defaults.big_plan_area_deviation_penalty)
@@ -210,6 +216,7 @@ def make_config(args: argparse.Namespace) -> ColumnGenerationConfig:
         small_plan_group_bay_split_penalty=args.fine_group_bay_penalty,
         small_plan_coarse_area_block_split_penalty=args.coarse_area_block_penalty,
         small_plan_coarse_area_bay_split_penalty=args.coarse_area_bay_penalty,
+        group_area_balance_penalty=args.group_area_balance_penalty,
         medium_concentrated_group_threshold=args.medium_concentrated_group_threshold,
         medium_small_group_area_split_penalty=args.medium_small_group_area_split_penalty,
         medium_small_group_fragment_penalty=args.medium_small_group_fragment_penalty,
@@ -217,6 +224,7 @@ def make_config(args: argparse.Namespace) -> ColumnGenerationConfig:
         medium_large_group_small_area_penalty=args.medium_large_group_small_area_penalty,
         medium_large_group_area_open_penalty=args.medium_large_group_area_open_penalty,
         medium_large_group_target_area_boxes=args.medium_large_group_target_area_boxes,
+        medium_large_group_area_excess_penalty=args.medium_large_group_area_excess_penalty,
         unplaced_penalty=args.unplaced_penalty,
         required_area_reward=args.required_area_reward,
         big_plan_area_deviation_penalty=args.big_plan_area_deviation_penalty,

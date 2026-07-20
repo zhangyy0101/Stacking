@@ -44,7 +44,7 @@ class YardPlanningWeights:
     share: float = 20.0
     berth_conflict: float = 25.0
     adjustment: float = 10.0
-    balance: float = 1.0
+    balance: float = 5.0
     priority_area: float = 0.01
     import_cluster_area: float = 5.0
 
@@ -387,17 +387,6 @@ def build_daily_rolling_yard_model(
         name="required_area_unmet",
     )
 
-    # OF balance range variables. These only apply to export vessels with OF work lanes.
-    of_balance_u20 = model.addVars(OF_area_vessels, vtype=GRB.CONTINUOUS, lb=0, name="of_balance_u20")
-    of_balance_l20 = model.addVars(OF_area_vessels, vtype=GRB.CONTINUOUS, lb=0, name="of_balance_l20")
-    of_balance_u40 = model.addVars(OF_area_vessels, vtype=GRB.CONTINUOUS, lb=0, name="of_balance_u40")
-    of_balance_l40 = model.addVars(OF_area_vessels, vtype=GRB.CONTINUOUS, lb=0, name="of_balance_l40")
-    for v in OF_area_vessels:
-        of_balance_u20[v].UB = max(0.0, params["D20"][v, "OF"])
-        of_balance_l20[v].UB = max(0.0, params["D20"][v, "OF"])
-        of_balance_u40[v].UB = max(0.0, params["D40"][v, "OF"])
-        of_balance_l40[v].UB = max(0.0, params["D40"][v, "OF"])
-
     # -------------------------
     # 约束 1：需求满足约束
     # sum_a X[v,f,a] + s[v,f] = D[v,f]
@@ -706,30 +695,22 @@ def build_daily_rolling_yard_model(
                 )
 
     # -------------------------
-    # 约束 12：箱型分布均衡约束
-    # X20[v,f,a] <= m20[v,f]，X40[v,f,a] <= m40[v,f]
-    # 最小化 m 后，同一航次/流向/箱型不会过度集中到单个箱区。
+    # 约束 12：出口新增箱量的箱区均衡约束。
+    # m20/m40 表示该航次对应尺寸在任一箱区的最大新增量。最小化 m 可以避免
+    # “只使用一个箱区时最大值与最小值相等、均衡惩罚反而为零”的退化情况。
     # -------------------------
     if "OF" in F:
         for v in OF_area_vessels:
-            big_m20 = max(0.0, params["D20"][v, "OF"])
-            big_m40 = max(0.0, params["D40"][v, "OF"])
             for a in A:
+                new20 = X20[v, "OF", a] - params["S20"][v, "OF", a]
+                new40 = X40[v, "OF", a] - params["S40"][v, "OF", a]
                 model.addConstr(
-                    X20[v, "OF", a] <= of_balance_u20[v],
-                    name=f"of_balance20_upper[{v},{a}]",
+                    new20 <= m20[v, "OF"],
+                    name=f"of_max_new20[{v},{a}]",
                 )
                 model.addConstr(
-                    X40[v, "OF", a] <= of_balance_u40[v],
-                    name=f"of_balance40_upper[{v},{a}]",
-                )
-                model.addConstr(
-                    X20[v, "OF", a] >= of_balance_l20[v] - big_m20 * (1 - of_area_used[v, a]),
-                    name=f"of_balance20_lower[{v},{a}]",
-                )
-                model.addConstr(
-                    X40[v, "OF", a] >= of_balance_l40[v] - big_m40 * (1 - of_area_used[v, a]),
-                    name=f"of_balance40_lower[{v},{a}]",
+                    new40 <= m40[v, "OF"],
+                    name=f"of_max_new40[{v},{a}]",
                 )
 
     for cluster, a in import_cluster_area_keys:
@@ -797,11 +778,8 @@ def build_daily_rolling_yard_model(
     # Z_of_area：出口 OF 箱使用箱区数超过 2 倍作业路数的超额惩罚。
     Z_of_area = gp.quicksum(of_area_over[v] for v in OF_area_vessels)
 
-    # Z_bal：20/40 箱型分布均衡惩罚。
-    Z_bal = gp.quicksum(
-        (of_balance_u20[v] - of_balance_l20[v]) + (of_balance_u40[v] - of_balance_l40[v])
-        for v in OF_area_vessels
-    )
+    # Z_bal：各出口航次 20/40 尺的最大单箱区新增箱量。
+    Z_bal = gp.quicksum(m20[v, "OF"] + m40[v, "OF"] for v in OF_area_vessels)
 
     # 综合目标函数：按业务优先级加权求和并最小化。
     model.setObjective(
@@ -842,10 +820,6 @@ def build_daily_rolling_yard_model(
         "of_area_over": of_area_over,
         "berth_conflict_shared": berth_conflict_shared,
         "required_area_unmet": required_area_unmet,
-        "of_balance_u20": of_balance_u20,
-        "of_balance_l20": of_balance_l20,
-        "of_balance_u40": of_balance_u40,
-        "of_balance_l40": of_balance_l40,
         "objective_components": {
             "miss": Z_miss,
             "operation": Z_op,
@@ -1970,23 +1944,6 @@ def build_daily_rolling_yard_model_scip(
         key: model.addVar(vtype="C", lb=0.0, ub=1.0, name=f"required_area_unmet[{key[0]},{key[1]}]")
         for key in required_area_keys
     }
-    of_balance_u20 = {
-        v: model.addVar(vtype="C", lb=0.0, ub=max(0.0, params["D20"][v, "OF"]), name=f"of_balance_u20[{v}]")
-        for v in OF_area_vessels
-    }
-    of_balance_l20 = {
-        v: model.addVar(vtype="C", lb=0.0, ub=max(0.0, params["D20"][v, "OF"]), name=f"of_balance_l20[{v}]")
-        for v in OF_area_vessels
-    }
-    of_balance_u40 = {
-        v: model.addVar(vtype="C", lb=0.0, ub=max(0.0, params["D40"][v, "OF"]), name=f"of_balance_u40[{v}]")
-        for v in OF_area_vessels
-    }
-    of_balance_l40 = {
-        v: model.addVar(vtype="C", lb=0.0, ub=max(0.0, params["D40"][v, "OF"]), name=f"of_balance_l40[{v}]")
-        for v in OF_area_vessels
-    }
-
     for v in V:
         for f in F:
             model.addCons(quicksum(X20[v, f, a] for a in A) + s20[v, f] == params["D20"][v, f])
@@ -2181,13 +2138,11 @@ def build_daily_rolling_yard_model_scip(
 
     if "OF" in F:
         for v in OF_area_vessels:
-            big_m20 = max(0.0, params["D20"][v, "OF"])
-            big_m40 = max(0.0, params["D40"][v, "OF"])
             for a in A:
-                model.addCons(X20[v, "OF", a] <= of_balance_u20[v])
-                model.addCons(X40[v, "OF", a] <= of_balance_u40[v])
-                model.addCons(X20[v, "OF", a] >= of_balance_l20[v] - big_m20 * (1 - of_area_used[v, a]))
-                model.addCons(X40[v, "OF", a] >= of_balance_l40[v] - big_m40 * (1 - of_area_used[v, a]))
+                new20 = X20[v, "OF", a] - params["S20"][v, "OF", a]
+                new40 = X40[v, "OF", a] - params["S40"][v, "OF", a]
+                model.addCons(new20 <= m20[v, "OF"])
+                model.addCons(new40 <= m40[v, "OF"])
 
     for cluster, a in import_cluster_area_keys:
         load_terms = [
@@ -2235,11 +2190,7 @@ def build_daily_rolling_yard_model_scip(
     Z_import_cluster_area = quicksum(import_cluster_area_used[key] for key in import_cluster_area_keys)
     Z_op = quicksum(o[a] for a in A)
     Z_of_area = quicksum(of_area_over[v] for v in OF_area_vessels)
-    Z_bal = quicksum(
-        (of_balance_u20[v] - of_balance_l20[v])
-        + (of_balance_u40[v] - of_balance_l40[v])
-        for v in OF_area_vessels
-    )
+    Z_bal = quicksum(m20[v, "OF"] + m40[v, "OF"] for v in OF_area_vessels)
 
     model.setObjective(
         weights.miss * Z_miss

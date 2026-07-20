@@ -265,6 +265,7 @@ class ProblemData:
     user_voyage_area_blocklist: dict[str, set[str]] = field(default_factory=dict)
     user_voyage_area_requirements: dict[str, set[str]] = field(default_factory=dict)
     user_area_constraint_summary: dict[str, dict[str, list[str]]] = field(default_factory=dict)
+    user_voyage_bay_allowlist: dict[str, set[str]] = field(default_factory=dict)
     user_group_bay_requirements: dict[str, set[str]] = field(default_factory=dict)
     user_group_bay_blocklist: dict[str, set[str]] = field(default_factory=dict)
     user_bay_adjust_rules: list[dict[str, object]] = field(default_factory=list)

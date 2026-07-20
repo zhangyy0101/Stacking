@@ -128,7 +128,7 @@ class ColumnGenerationConfig:
     twenty_large_segment_loss_penalty: float = 220.0
     twenty_large_segment_fresh_loss_penalty: float = 240.0
     twenty_large_segment_used_zero_loss_reward: float = 160.0
-    group_area_balance_penalty: float = 18.0
+    group_area_balance_penalty: float = 36.0
     medium_concentrated_group_threshold: int = 26
     medium_small_group_area_split_penalty: float = 2400.0
     medium_small_group_fragment_penalty: float = 90.0
@@ -136,6 +136,7 @@ class ColumnGenerationConfig:
     medium_large_group_small_area_penalty: float = 900.0
     medium_large_group_area_open_penalty: float = 0.0
     medium_large_group_target_area_boxes: int = 60
+    medium_large_group_area_excess_penalty: float = 4.0
     big_plan_area_deviation_penalty: float = 3.0
     big_plan_fallback_tier_penalty: float = 20.0
     export_e_area_max_bays_per_voyage_area: int = 2
@@ -726,6 +727,7 @@ class ColumnGenerationPlanner:
                 "medium_large_group_small_area": self.config.medium_large_group_small_area_penalty,
                 "medium_large_group_area_open": self.config.medium_large_group_area_open_penalty,
                 "medium_large_group_target_area_boxes": self.config.medium_large_group_target_area_boxes,
+                "medium_large_group_area_excess": self.config.medium_large_group_area_excess_penalty,
                 "existing_same_coarse_bay_reward": self.config.existing_coarse_bay_reward,
                 "existing_same_coarse_neighbor_bay_reward": self.config.existing_coarse_neighbor_bay_reward,
                 "existing_other_coarse_bay_penalty": self.config.existing_other_coarse_bay_penalty,
@@ -1309,6 +1311,10 @@ class ColumnGenerationPlanner:
                 energy += self.config.medium_large_group_area_open_penalty * max(
                     0,
                     len(quantities) - self._target_large_group_area_count(coarse_key, demand),
+                )
+                target_boxes = max(1, int(self.config.medium_large_group_target_area_boxes or 1))
+                energy += self.config.medium_large_group_area_excess_penalty * sum(
+                    max(0.0, qty - target_boxes) for qty in quantities
                 )
                 min_boxes = max(0, int(self.config.medium_large_group_min_area_boxes or 0))
                 if min_boxes > 0:
@@ -2911,6 +2917,17 @@ class ColumnGenerationPlanner:
             )
             model.addCons(extra_areas >= sum(use_vars) - target_area_count)
 
+        target_boxes = max(1, int(self.config.medium_large_group_target_area_boxes or 1))
+        excess_penalty = max(0.0, float(self.config.medium_large_group_area_excess_penalty or 0.0))
+        if excess_penalty > 0:
+            for area_no, actual, _use in area_terms:
+                excess = model.addVar(
+                    lb=0.0,
+                    obj=excess_penalty,
+                    name=f"excess_bal_area_{name_key}_{area_no}",
+                )
+                model.addCons(excess >= actual - target_boxes)
+
         if len(area_terms) <= 1:
             return
         pair_penalty = self.config.group_area_balance_penalty / max(1.0, demand) / max(1, len(area_terms) - 1)
@@ -4130,6 +4147,10 @@ class ColumnGenerationPlanner:
             0,
             len(quantities) - self._target_large_group_area_count(coarse_key, demand),
         )
+        target_boxes = max(1, int(self.config.medium_large_group_target_area_boxes or 1))
+        energy += self.config.medium_large_group_area_excess_penalty * sum(
+            max(0.0, qty - target_boxes) for qty in quantities
+        )
         if min_boxes > 0:
             small_area_penalty = self.config.medium_large_group_small_area_penalty / max(1.0, min_boxes)
             energy += sum(small_area_penalty * max(0.0, min_boxes - qty) for qty in quantities if qty > 0)
@@ -4571,6 +4592,9 @@ class ColumnGenerationPlanner:
         return area_code in {str(area or "").strip().upper() for area in allowlist}
 
     def _user_bay_policy_allows(self, group: SmallBoxGroup, bay_key: str) -> bool:
+        voyage_allowlists = getattr(self.problem, "user_voyage_bay_allowlist", {})
+        if group.voyage_id in voyage_allowlists and bay_key not in voyage_allowlists[group.voyage_id]:
+            return False
         blocked = getattr(self.problem, "user_group_bay_blocklist", {}).get(group.group_id, set())
         return bay_key not in blocked
 

@@ -115,6 +115,7 @@ class InputAdapterGd:
         self.adjust_plan_info: Dict = {}                  # 计划的人工调整信息
         self.user_design: Dict[str, bool] = {} # 用户指定大计划区域，区域放在user_design_large_plan_area,大中小计划都不能突破用户给定的区域
         self.user_design_large_plan_area: Dict[str, List[str]] = {} # 用户指定的大计划区域
+        self.user_design_area_bay: Dict[str, Dict[str, List[str]]] = {} # 用户按航次、箱区限定中小计划可用贝位
         self.voyage_limit_areas: Dict[str, List[str]] = {} # 用户为航次限定的可选大范围箱区
         self.voyage_priority_areas: Dict[str, List[str]] = {} # 用户为航次限定的优选大范围箱区
         self.rough_attr: Dict[str, List[str]] = {} # 粗属性分组依据
@@ -146,6 +147,7 @@ class InputAdapterGd:
             "adjust_plan_info": clean_for_json(self.adjust_plan_info),
             "user_design": self.user_design,
             "user_design_large_plan_area": self.user_design_large_plan_area,
+            "user_design_area_bay": self.user_design_area_bay,
             "voyage_limit_areas": self.voyage_limit_areas,
             "voyage_priority_areas": self.voyage_priority_areas,
             "rough_attr": self.rough_attr,
@@ -195,6 +197,7 @@ class InputAdapterGd:
         obj.adjust_plan_info = data.get("adjust_plan_info", {})
         obj.user_design = data.get("user_design", {})
         obj.user_design_large_plan_area = data.get("user_design_large_plan_area", {})
+        obj.user_design_area_bay = data.get("user_design_area_bay", {})
         obj.voyage_limit_areas = data.get("voyage_limit_areas", {})
         obj.voyage_priority_areas = data.get("voyage_priority_areas", {})
         obj.rough_attr = voyage_rule_dict(data.get("rough_attr"), takeover_vessel_list, DEFAULT_ROUGH_ATTR)

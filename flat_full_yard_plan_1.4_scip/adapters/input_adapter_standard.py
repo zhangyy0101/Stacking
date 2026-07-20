@@ -69,7 +69,7 @@ class YardPlanningWeights:
     share: float = 20.0
     berth_conflict: float = 25.0
     adjustment: float = 10.0
-    balance: float = 1.0
+    balance: float = 5.0
     priority_area: float = 0.01
     import_cluster_area: float = 5.0
 
@@ -326,6 +326,7 @@ class ProblemData:
     user_voyage_area_blocklist: dict[str, set[str]] = field(default_factory=dict)
     user_voyage_area_priority: dict[str, set[str]] = field(default_factory=dict)
     user_voyage_area_requirements: dict[str, set[str]] = field(default_factory=dict)
+    user_voyage_bay_allowlist: dict[str, set[str]] = field(default_factory=dict)
     user_group_bay_requirements: dict[str, set[str]] = field(default_factory=dict)
     user_group_bay_blocklist: dict[str, set[str]] = field(default_factory=dict)
     user_bay_adjust_rules: list[dict[str, Any]] = field(default_factory=list)
@@ -1247,6 +1248,44 @@ def build_medium_small_bay_controls(
     summary["required_bay_count"] = sum(len(values) for values in cleaned_required.values())
     summary["blocked_bay_count"] = sum(len(values) for values in cleaned_blocked.values())
     return cleaned_required, cleaned_blocked, rule_records, summary
+
+
+def build_user_design_area_bay_allowlist(
+    input_guandong: InputAdapterGd,
+    bays: Mapping[str, Bay],
+) -> tuple[dict[str, set[str]], dict[str, Any]]:
+    raw = getattr(input_guandong, "user_design_area_bay", {}) or {}
+    allowlist: dict[str, set[str]] = {}
+    unknown: list[dict[str, str]] = []
+    if not isinstance(raw, Mapping):
+        return {}, {"configured_voyages": [], "unknown_bays": [], "ignored": True}
+
+    for voyage_id, area_bays in raw.items():
+        voyage = normalize_voyage(voyage_id)
+        if not voyage or not isinstance(area_bays, Mapping):
+            continue
+        allowed: set[str] = set()
+        for area_no, bay_values in area_bays.items():
+            area = normalize_area(area_no)
+            values = bay_values if isinstance(bay_values, (list, tuple, set)) else [bay_values]
+            for value in values:
+                bay_no = normalize_bay(value)
+                matches = {
+                    key
+                    for key, bay in bays.items()
+                    if normalize_area(bay.area_no) == area and normalize_bay(bay.bay_no) == bay_no
+                }
+                if matches:
+                    allowed.update(matches)
+                else:
+                    unknown.append({"voyage_id": voyage, "area_no": area, "bay_no": bay_no})
+        allowlist[voyage] = allowed
+    return allowlist, {
+        "configured_voyages": sorted(allowlist),
+        "allowed_bay_count": sum(len(values) for values in allowlist.values()),
+        "unknown_bays": unknown,
+        "ignored": False,
+    }
 
 
 def _plan_adjust_rules(adjust_plan_info: Mapping[str, Any] | None, plan_level: str) -> Mapping[str, Any]:
@@ -4308,6 +4347,8 @@ def build_problem(
         small_groups,
         bays,
     )
+    voyage_bay_allowlist, voyage_bay_summary = build_user_design_area_bay_allowlist(input_guandong, bays)
+    bay_constraint_summary["user_design_area_bay"] = voyage_bay_summary
     user_area_constraint_summary.update(
         {
             "allowed_areas_by_voyage": {
@@ -4385,6 +4426,7 @@ def build_problem(
             voyage_id: set(_required_areas_by_voyage.get(voyage_id, []))
             for voyage_id in target_voyages
         },
+        user_voyage_bay_allowlist=voyage_bay_allowlist,
         user_group_bay_requirements=bay_requirements,
         user_group_bay_blocklist=bay_blocklist,
         user_bay_adjust_rules=bay_adjust_rules,

@@ -1210,6 +1210,43 @@ def read_medium_small_bay_controls(
     return cleaned_required, cleaned_blocked, rule_records, summary
 
 
+def read_user_design_area_bays(
+    data_dir: str | Path,
+    bays: dict[str, Bay],
+) -> tuple[dict[str, set[str]], dict[str, object]]:
+    """Read voyage/area/bay allowlists used as a hard medium/small constraint."""
+    raw = input_value(data_dir, "user_design_area_bay", {})
+    allowlist: dict[str, set[str]] = {}
+    unknown: list[dict[str, str]] = []
+    if not isinstance(raw, dict):
+        return {}, {"configured_voyages": [], "unknown_bays": [], "ignored": True}
+
+    for voyage_id, area_bays in raw.items():
+        voyage = _voyage(voyage_id)
+        if not voyage or not isinstance(area_bays, dict):
+            continue
+        allowed: set[str] = set()
+        for area_no, bay_values in area_bays.items():
+            area = _norm(area_no)
+            values = bay_values if isinstance(bay_values, (list, tuple, set)) else [bay_values]
+            for bay_value in values:
+                bay_key = _canonical_adjust_bay_key(area, bay_value, bays)
+                if bay_key:
+                    allowed.add(bay_key)
+                else:
+                    unknown.append({"voyage_id": voyage, "area_no": area, "bay_no": _norm(bay_value)})
+        # The presence of a voyage is significant even when its bay list is empty:
+        # it means that voyage has no permitted allocation space.
+        allowlist[voyage] = allowed
+
+    return allowlist, {
+        "configured_voyages": sorted(allowlist),
+        "allowed_bay_count": sum(len(values) for values in allowlist.values()),
+        "unknown_bays": unknown,
+        "ignored": False,
+    }
+
+
 def _plan_adjust_rules(adjust_plan_info: object, plan_level: str) -> dict:
     if not isinstance(adjust_plan_info, dict):
         return {}
@@ -2695,6 +2732,8 @@ def build_problem(
         small_groups,
         bays,
     )
+    voyage_bay_allowlist, voyage_bay_summary = read_user_design_area_bays(data_dir, bays)
+    bay_constraint_summary["user_design_area_bay"] = voyage_bay_summary
     area_operations = build_area_operations(data_dir, vessel_schedules)
     berth_distances = read_berth_distances(data_dir)
     berth_by_voyage = {
@@ -2727,6 +2766,7 @@ def build_problem(
         user_voyage_area_blocklist=user_area_blocklist,
         user_voyage_area_requirements=user_area_requirements,
         user_area_constraint_summary=user_area_constraint_summary,
+        user_voyage_bay_allowlist=voyage_bay_allowlist,
         user_group_bay_requirements=bay_requirements,
         user_group_bay_blocklist=bay_blocklist,
         user_bay_adjust_rules=bay_adjust_rules,
