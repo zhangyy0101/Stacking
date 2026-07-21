@@ -695,22 +695,20 @@ def build_daily_rolling_yard_model(
                 )
 
     # -------------------------
-    # 约束 12：出口新增箱量的箱区均衡约束。
-    # m20/m40 表示该航次对应尺寸在任一箱区的最大新增量。最小化 m 可以避免
+    # 约束 12：出口 OF 最终总箱量的箱区均衡约束。
+    # m20/m40 表示该航次对应尺寸在任一箱区的最大最终计划量。最小化 m 可以避免
     # “只使用一个箱区时最大值与最小值相等、均衡惩罚反而为零”的退化情况。
     # -------------------------
     if "OF" in F:
         for v in OF_area_vessels:
             for a in A:
-                new20 = X20[v, "OF", a] - params["S20"][v, "OF", a]
-                new40 = X40[v, "OF", a] - params["S40"][v, "OF", a]
                 model.addConstr(
-                    new20 <= m20[v, "OF"],
-                    name=f"of_max_new20[{v},{a}]",
+                    X20[v, "OF", a] <= m20[v, "OF"],
+                    name=f"of_max_total20[{v},{a}]",
                 )
                 model.addConstr(
-                    new40 <= m40[v, "OF"],
-                    name=f"of_max_new40[{v},{a}]",
+                    X40[v, "OF", a] <= m40[v, "OF"],
+                    name=f"of_max_total40[{v},{a}]",
                 )
 
     for cluster, a in import_cluster_area_keys:
@@ -778,7 +776,7 @@ def build_daily_rolling_yard_model(
     # Z_of_area：出口 OF 箱使用箱区数超过 2 倍作业路数的超额惩罚。
     Z_of_area = gp.quicksum(of_area_over[v] for v in OF_area_vessels)
 
-    # Z_bal：各出口航次 20/40 尺的最大单箱区新增箱量。
+    # Z_bal：各出口航次 20/40 尺的最大单箱区最终计划量。
     Z_bal = gp.quicksum(m20[v, "OF"] + m40[v, "OF"] for v in OF_area_vessels)
 
     # 综合目标函数：按业务优先级加权求和并最小化。
@@ -2139,10 +2137,8 @@ def build_daily_rolling_yard_model_scip(
     if "OF" in F:
         for v in OF_area_vessels:
             for a in A:
-                new20 = X20[v, "OF", a] - params["S20"][v, "OF", a]
-                new40 = X40[v, "OF", a] - params["S40"][v, "OF", a]
-                model.addCons(new20 <= m20[v, "OF"])
-                model.addCons(new40 <= m40[v, "OF"])
+                model.addCons(X20[v, "OF", a] <= m20[v, "OF"])
+                model.addCons(X40[v, "OF", a] <= m40[v, "OF"])
 
     for cluster, a in import_cluster_area_keys:
         load_terms = [

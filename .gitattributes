@@ -1,1 +1,3 @@
 flat_full_yard_plan_1.4_scip/data/input/input_data.json filter=lfs diff=lfs merge=lfs -text
+flat_full_yard_plan_1.5_scip/data/input/input_data.json filter=lfs diff=lfs merge=lfs -text
+flat_full_yard_plan_1.5_scip/data_examples/input_data.json filter=lfs diff=lfs merge=lfs -text

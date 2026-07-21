@@ -1,0 +1,203 @@
+flat_full_yard_plan_1.3_scip 调用关系说明
+
+一、当前版本定位
+
+flat_full_yard_plan_1.3_scip 是当前完整大中小计划链路目录。
+
+本目录已经合并了两部分修改：
+- 大计划、数据处理、参数封装、adjust_plan_info 支持等最新修改。
+- 70f6b07 中小计划列生成工作流修改。
+
+flat_full_yard_plan_1.2_scip 保留为上一版目录。
+flat_full_yard_plan_2_scip 的有效内容已经合并到 1.3，原目录不再作为当前运行入口。
+
+二、完整大中小计划入口
+
+运行命令：
+
+python -X utf8 -B run_flat_full_yard_plan.py --run-name latest_integrated_full_plan --large-quiet --mip-time-limit 300
+
+默认输入：
+- input_data.json
+
+默认输出：
+- full_plan_outputs/<run_name>/
+
+完整调用关系：
+
+input_data.json
+  -> input_adapter_gd.InputAdapterGd.load_from_json()
+  -> input_adapter_standard.build_large_inputs()
+       - 使用 LargePlanningConfig
+       - 生成 LargePlanningData
+  -> planning_large_solver.solve_daily_rolling_yard_plan()
+       - 求解大计划
+  -> input_adapter_standard.write_large_outputs()
+       - 写出 allocation.csv、allocation_new.csv、diagnostics.json
+  -> input_adapter_standard.allocation_output_rows()
+       - 从内存中的大计划解生成中小计划所需 allocation rows
+  -> medium_small_column_generation_bridge.build_problem_from_large_plan_records_adapter()
+       - 使用 adapter 对象和内存大计划结果构建中小计划问题
+  -> column_generation_planner.ColumnGenerationPlanner.solve()
+       - 使用列生成/SCIP 工作流求解中计划和小计划
+  -> medium_small_column_generation_bridge.solve_medium_small_problem()
+       - 写出 medium_plan.csv、small_plan.csv、generated_columns.csv、diagnostics.json 等结果
+  -> pipeline_summary.json
+       - 汇总大计划、中小计划、输出路径和诊断字段
+
+完整链路不会把 input_data.json 还原成 parquet、xlsx、csv 等临时输入文件。
+完整链路里的中小计划也不依赖刚刚写出的 allocation.csv；allocation.csv 是输出文件，中小计划使用内存中的大计划 allocation rows。
+
+三、只运行大计划
+
+运行命令：
+
+python -X utf8 -B run_large_plan.py --adapter-json input_data.json --run-name large_only
+
+调用关系：
+
+input_data.json
+  -> InputAdapterGd.load_from_json()
+  -> build_large_inputs()
+  -> solve_daily_rolling_yard_plan()
+  -> write_large_outputs()
+  -> pipeline_summary.json
+
+主要输出：
+- large_plan_outputs/<run_name>/outputs_large/latest_run/allocation.csv
+- large_plan_outputs/<run_name>/outputs_large/latest_run/allocation_new.csv
+- large_plan_outputs/<run_name>/outputs_large/latest_run/diagnostics.json
+- large_plan_outputs/<run_name>/pipeline_summary.json
+
+四、已有外部大计划时只运行中小计划
+
+运行命令：
+
+python -X utf8 -B run_medium_small_column_generation.py --adapter-json input_data.json --big-plan path/to/allocation.csv --run-name medium_small_only
+
+这个入口把外部 allocation.csv 当成大计划边界，再通过 medium_small_column_generation_bridge.py 构建列生成中小计划问题。
+
+五、已有外部中计划时只运行小计划
+
+运行命令：
+
+python -X utf8 -B run_small_plan_from_medium.py --adapter-json input_data.json --medium-plan path/to/medium_plan.csv --run-name small_only
+
+可选指定外部大计划：
+
+python -X utf8 -B run_small_plan_from_medium.py --adapter-json input_data.json --medium-plan path/to/medium_plan.csv --big-plan path/to/allocation.csv --run-name small_only
+
+如果不提供 --big-plan，会从 medium_plan.csv 汇总推导小计划所需的大计划配额。
+
+六、输入数据和用户调整文件
+
+input_data.json 是当前主链路的唯一 JSON 输入包，主要包含：
+- bay_slots_detail
+- tops_plan
+- area_function_info
+- vessel_berth_info
+- vessel_containers
+- berth_area_dist_matrix
+- history_plan_info
+- planning_time
+- take_over_vessel
+- adjust_plan_info
+
+adjust_plan_info.json 当前放在 flat_full_yard_plan_1.3_scip 目录内，用于保存用户调整信息示例和对接格式。
+大计划实际运行时优先使用 input_data.json / adapter 对象中的 adjust_plan_info 字段。
+
+七、大计划数据处理和参数封装
+
+大计划输入构建集中在 input_adapter_standard.py。
+
+关键封装类：
+- LargePlanningData：大计划求解输入数据对象。
+- YardPlanningWeights：大计划目标函数权重。
+- LargePlanningConfig：大计划配置参数对象。
+
+LargePlanningConfig 当前封装的主要参数包括：
+- flow_aliases
+- berth_conflict_threshold_hours
+- weights
+- required_area_penalty
+- allow_unmet_demand
+- strict_validation
+
+因此，原来散落在代码里的 DEFAULT_FLOW_ALIASES、BERTH_CONFLICT_THRESHOLD_HOURS、YardPlanningWeights 等大计划配置，现在统一通过 LargePlanningConfig 进入 build_large_inputs()。
+
+大计划用户调整逻辑：
+- adjust_plan_info.large_plan.add 会形成 required/priority area 约束。
+- add 不是硬约束失败退出，而是通过 required_area_penalty 和 required_area_unmet 做软约束与未满足诊断。
+- adjust_plan_info.large_plan.remove 会形成 disallowed area。
+- user_design_large_plan_area 会限制可选区域范围。
+- user_design=True 时，用户指定区域相关逻辑优先于默认大计划区域偏好。
+
+航次选择逻辑：
+- 当前版本不再包含 IGNORED_EXPORT_VESSELS = {"454447"} 这样的硬编码排除。
+- 出口航次优先来自 take_over_vessel["E"]，如果没有该字段则从 vessel_containers 中发现。
+- 454447 是否进入规划由输入数据和当前 planning_time 下的航次/箱量/过滤规则决定，不再被固定忽略。
+
+八、中小计划列生成链路
+
+当前 1.3 目录里的中小计划已经使用列生成工作流，不再使用旧的模拟退火版本。
+
+核心文件：
+- medium_small_column_generation_bridge.py
+- column_generation_planner.py
+- block_bay_planning/data_loader.py
+- small_plan_from_medium.py
+
+核心流程：
+- 先由大计划内存结果形成 BigPlanRow。
+- build_problem_from_large_plan_records_adapter() 结合 adapter 对象构建中小计划问题。
+- ColumnGenerationPlanner 生成列并求解主问题。
+- 可用 SCIP 时使用 SCIP；不可用时根据配置和代码路径进入相应降级逻辑。
+- 当前完整链路的 pipeline_summary.json 会记录 column_generation_used_greedy_fallback、column_generation_scip_available、generated_column_count 等字段。
+
+九、完整链路主要输出
+
+完整大中小计划输出：
+- full_plan_outputs/<run_name>/outputs_large/latest_run/allocation.csv
+- full_plan_outputs/<run_name>/outputs_large/latest_run/allocation_new.csv
+- full_plan_outputs/<run_name>/outputs_large/latest_run/diagnostics.json
+- full_plan_outputs/<run_name>/medium_small_plan/medium_plan.csv
+- full_plan_outputs/<run_name>/medium_small_plan/small_plan.csv
+- full_plan_outputs/<run_name>/medium_small_plan/small_plan_six_bay_blocks.csv
+- full_plan_outputs/<run_name>/medium_small_plan/medium_demand_by_port.csv
+- full_plan_outputs/<run_name>/medium_small_plan/big_plan_used.csv
+- full_plan_outputs/<run_name>/medium_small_plan/generated_columns.csv
+- full_plan_outputs/<run_name>/medium_small_plan/diagnostics.json
+- full_plan_outputs/<run_name>/pipeline_summary.json
+
+pipeline_summary.json 里的关键字段：
+- input_mode = adapter_object
+- large_allocation_used_by_medium_small = in_memory_large_solution
+- large_plan / medium_plan / small_plan / generated_columns 等输出路径
+- medium_small_solver
+- medium_small_algorithm
+- medium_unplaced_boxes
+- column_generation_used_greedy_fallback
+- column_generation_scip_available
+- generated_column_count
+
+十、当前校验结果
+
+最近一次完整运行：
+
+python -X utf8 -B run_flat_full_yard_plan.py --run-name latest_integrated_full_plan --large-quiet --mip-time-limit 300
+
+运行结果：
+- 输出目录：full_plan_outputs/latest_integrated_full_plan
+- 大计划状态：TIMELIMIT
+- 中小计划求解器：flat_full_yard_plan_1.3_scip_column_generation
+- 中小计划算法：small_plan_first_column_generation
+- SCIP 可用：True
+- 是否使用 greedy fallback：False
+- generated_columns 行数：31783
+- medium_plan 行数：612
+- small_plan 行数：207
+- medium planned boxes：5628
+- small planned boxes：1543
+- unplaced_boxes：971
+
+因此，当前 1.3 链路可以完整跑通，并且已经从旧的 unplaced_boxes = 2879 结果变为当前列生成整合后的 unplaced_boxes = 971。

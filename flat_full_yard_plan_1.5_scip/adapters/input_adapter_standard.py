@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import csv
 import json
@@ -44,7 +44,7 @@ except ImportError:  # pragma: no cover - keeps compatibility with script-style 
             InputAdapterGd,
         )
 
-from block_bay_planning.models import AttributeRules
+from block_bay_planning.models import AttributeRules, EXPORT_VOYAGE_ROW_NO_MIX_ATTR
 
 
 
@@ -145,6 +145,10 @@ class LargePlanningData:
     allowed_areas_by_vessel: Mapping[str, Sequence[str]] = field(default_factory=dict)
     required_areas_by_vessel: Mapping[str, Sequence[str]] = field(default_factory=dict)
     priority_areas_by_vessel: Mapping[str, Sequence[str]] = field(default_factory=dict)
+    bay_limit_areas_by_vessel: Mapping[str, Sequence[str]] = field(default_factory=dict)
+    bay_limit_C20: Mapping[tuple[str, str], float] = field(default_factory=dict)
+    bay_limit_C20Direct: Mapping[tuple[str, str], float] = field(default_factory=dict)
+    bay_limit_C40: Mapping[tuple[str, str], float] = field(default_factory=dict)
     weights: YardPlanningWeights = field(default_factory=YardPlanningWeights)
     required_area_penalty: float = 10000.0
     allow_unmet_demand: bool = True
@@ -317,6 +321,7 @@ class ProblemData:
     voyage_windows: dict[str, tuple[datetime, datetime]]
     area_operations: dict[str, list[AreaOperation]]
     target_voyages: list[str]
+    export_voyages: set[str] | None = None
     existing_coarse_area_load: dict[tuple[str, ...], int] = field(default_factory=dict)
     existing_coarse_bay_load: dict[tuple[str, ...], int] = field(default_factory=dict)
     berth_distances: dict[tuple[str, str], float] = field(default_factory=dict)
@@ -806,10 +811,11 @@ def read_attribute_rules(input_guandong: InputAdapterGd, voyages: Sequence[str])
         DEFAULT_DETAIL_ATTR,
         canonical_attribute_tuple,
     )
+    export_voyages = classified_export_voyages(input_guandong)
     import_voyages = [
         normalize_voyage(voyage)
         for voyage in voyages
-        if normalize_voyage(voyage) and is_import_voyage(input_guandong, voyage)
+        if normalize_voyage(voyage) and normalize_voyage(voyage) not in export_voyages
     ]
     import_shared_fine_group_attributes = common_attribute_intersection(
         fine_group_attributes_by_voyage.get(voyage, canonical_attribute_tuple(DEFAULT_DETAIL_ATTR, AttributeRules().fine_group_attributes))
@@ -1288,6 +1294,99 @@ def build_user_design_area_bay_allowlist(
     }
 
 
+def build_user_design_area_bay_large_limits(
+    input_guandong: InputAdapterGd,
+    available_slots: pd.DataFrame,
+    vessels: Sequence[str],
+    areas: Sequence[str],
+) -> tuple[
+    dict[str, list[str]],
+    dict[tuple[str, str], float],
+    dict[tuple[str, str], float],
+    dict[tuple[str, str], float],
+    dict[str, Any],
+]:
+    raw = getattr(input_guandong, "user_design_area_bay", {}) or {}
+    if not isinstance(raw, Mapping):
+        return {}, {}, {}, {}, {"configured_voyages": [], "ignored": True, "unknown_bays": []}
+
+    vessel_set = {normalize_voyage(vessel) for vessel in vessels}
+    area_set = {normalize_area(area) for area in areas}
+    all_slot_pairs: set[tuple[str, str]] = set()
+    slot_source = getattr(input_guandong, "bay_slots_detail", None)
+    if isinstance(slot_source, pd.DataFrame) and not slot_source.empty:
+        all_slot_pairs = set(
+            zip(
+                slot_source.get("YAA_AREANO", pd.Series(dtype=object)).map(normalize_area),
+                slot_source.get("YBY_BAYNO", pd.Series(dtype=object)).map(normalize_bay),
+            )
+        )
+
+    selected_bays: dict[tuple[str, str], set[str]] = {}
+    areas_by_vessel: dict[str, set[str]] = {}
+    unknown_bays: list[dict[str, str]] = []
+    for voyage_id, area_bays in raw.items():
+        voyage = normalize_voyage(voyage_id)
+        if not voyage or voyage not in vessel_set or not isinstance(area_bays, Mapping):
+            continue
+        for area_no, bay_values in area_bays.items():
+            area = normalize_area(area_no)
+            values = bay_values if isinstance(bay_values, (list, tuple, set)) else [bay_values]
+            if not area or area not in area_set:
+                for value in values:
+                    unknown_bays.append(
+                        {"voyage_id": voyage, "area_no": area, "bay_no": normalize_bay(value)}
+                    )
+                continue
+            areas_by_vessel.setdefault(voyage, set()).add(area)
+            target_bays = selected_bays.setdefault((voyage, area), set())
+            for value in values:
+                bay = normalize_bay(value)
+                if not bay:
+                    continue
+                target_bays.add(bay)
+                if all_slot_pairs and (area, bay) not in all_slot_pairs:
+                    unknown_bays.append({"voyage_id": voyage, "area_no": area, "bay_no": bay})
+
+    cap20: dict[tuple[str, str], float] = {}
+    cap20_direct: dict[tuple[str, str], float] = {}
+    cap40: dict[tuple[str, str], float] = {}
+    for (voyage, area), bay_set in selected_bays.items():
+        sub = available_slots[
+            available_slots["area_no"].map(normalize_area).eq(area)
+            & available_slots["bay_no"].map(normalize_bay).isin(bay_set)
+        ].copy()
+        cap20[voyage, area] = float(sub["slot_uid"].nunique()) if "slot_uid" in sub else 0.0
+        cap20_direct[voyage, area] = (
+            float(sub.loc[sub["enable_20"], "slot_uid"].nunique())
+            if "slot_uid" in sub and "enable_20" in sub
+            else 0.0
+        )
+        cap40[voyage, area] = (
+            float(sub.loc[sub["enable_40"], "slot_uid"].nunique())
+            if "slot_uid" in sub and "enable_40" in sub
+            else 0.0
+        )
+
+    area_lists = {voyage: sorted(values) for voyage, values in sorted(areas_by_vessel.items())}
+    summary = {
+        "configured_voyages": sorted(area_lists),
+        "limited_area_by_vessel": area_lists,
+        "selected_bay_count_by_vessel_area": {
+            f"{voyage}|{area}": len(bays)
+            for (voyage, area), bays in sorted(selected_bays.items())
+        },
+        "capacity20_by_vessel_area": {f"{v}|{a}": cap20[v, a] for v, a in sorted(cap20)},
+        "capacity20_direct_by_vessel_area": {
+            f"{v}|{a}": cap20_direct[v, a] for v, a in sorted(cap20_direct)
+        },
+        "capacity40_by_vessel_area": {f"{v}|{a}": cap40[v, a] for v, a in sorted(cap40)},
+        "unknown_bays": unknown_bays,
+        "ignored": False,
+    }
+    return area_lists, cap20, cap20_direct, cap40, summary
+
+
 def _plan_adjust_rules(adjust_plan_info: Mapping[str, Any] | None, plan_level: str) -> Mapping[str, Any]:
     if not isinstance(adjust_plan_info, Mapping):
         return {}
@@ -1425,6 +1524,27 @@ def discover_import_vessels(input_guandong: InputAdapterGd) -> list[str]:
         if normalize_code(content.get("type")) == "I" and _has_container_frame(content):
             vessels.add(voyage)
     return sorted(vessels)
+
+def classified_export_voyages(input_guandong: InputAdapterGd) -> set[str]:
+    """Return voyages explicitly classified as export, independent of box flow."""
+    cache = adapter_runtime_cache(input_guandong)
+    cached = cache.get("classified_export_voyages")
+    if isinstance(cached, set):
+        return set(cached)
+    exports = set(_take_over_vessels(input_guandong, "E"))
+    exports.update(
+        voyage
+        for voyage, content in _adapter_vessel_items(input_guandong)
+        if normalize_code(content.get("type")) == "E"
+    )
+    vessel_info = read_vessel_info(input_guandong)
+    exports.update(
+        normalize_voyage(row.get("voy_id"))
+        for row in vessel_info.to_dict("records")
+        if row.get("ie_flag") == "E" and normalize_voyage(row.get("voy_id"))
+    )
+    cache["classified_export_voyages"] = set(exports)
+    return exports
 
 
 def normalize_bay(value: Any) -> str:
@@ -2483,6 +2603,18 @@ def build_large_inputs(
     c20 = count_slots_by_area(bay20_equiv, areas)
     c20_direct = count_slots_by_area(bay20_direct, areas)
     c40 = count_slots_by_area(bay40, areas)
+    (
+        bay_limit_areas_by_vessel,
+        bay_limit_c20,
+        bay_limit_c20_direct,
+        bay_limit_c40,
+        bay_limit_summary,
+    ) = build_user_design_area_bay_large_limits(
+        input_guandong,
+        available_slots,
+        all_vessels,
+        areas,
+    )
 
     tops20, tops20_direct, tops40, active_tops_count = compute_tops_capacity_deductions(
         input_guandong,
@@ -2571,6 +2703,10 @@ def build_large_inputs(
         allowed_areas_by_vessel=allowed_areas_by_vessel,
         required_areas_by_vessel=required_areas_by_vessel,
         priority_areas_by_vessel=priority_areas_by_vessel,
+        bay_limit_areas_by_vessel=bay_limit_areas_by_vessel,
+        bay_limit_C20=bay_limit_c20,
+        bay_limit_C20Direct=bay_limit_c20_direct,
+        bay_limit_C40=bay_limit_c40,
         weights=config.weights,
         required_area_penalty=config.required_area_penalty,
         allow_unmet_demand=config.allow_unmet_demand,
@@ -2613,6 +2749,7 @@ def build_large_inputs(
         "import_cluster_snapshot_group_area_count": int(
             len(import_cluster_snapshot20) + len(import_cluster_snapshot40)
         ),
+        "user_design_area_bay_large_limits": bay_limit_summary,
         "demand": demand_diagnostics,
     }
     return (
@@ -2697,6 +2834,8 @@ def write_large_outputs(output_dir: Path, artifacts: PlanningInputArtifacts, sol
         "mip_gap": solution.mip_gap,
         "runtime": solution.runtime,
         "objective_components": solution.objective_components,
+        "objective_components_normalized": getattr(solution, "objective_components_normalized", {}),
+        "objective_layer_values": getattr(solution, "objective_layer_values", {}),
         "unmet20": {str(k): v for k, v in getattr(solution, "s20", {}).items()},
         "unmet40": {str(k): v for k, v in getattr(solution, "s40", {}).items()},
         "required_area_unmet": {
@@ -2727,6 +2866,7 @@ def calculate_medium_demands(
     planning_time = planning_time or parse_datetime(DEFAULT_PLANNING_TIME) or datetime(2026, 5, 19, 9, 30)
     schedules = read_vessel_schedules(input_guandong)
     normalized_voyages = [normalize_voyage(v) for v in voyage_ids]
+    export_voyages = classified_export_voyages(input_guandong)
     yard_by_voyage = read_yard_by_voyage_port_size(input_guandong, set(normalized_voyages), planning_time)
     rows: list[DemandRow] = []
     for voyage_id in normalized_voyages:
@@ -2734,7 +2874,7 @@ def calculate_medium_demands(
         stage, ratio = planning_stage(receive_start, planning_time, horizon_hours)
         docs = read_doc_by_port_size(input_guandong, voyage_id)
         yard_counts = yard_by_voyage.get(voyage_id, Counter())
-        if is_import_voyage(input_guandong, voyage_id):
+        if voyage_id not in export_voyages:
             predicted = Counter()
             ratio_targets = Counter()
             planned_source = Counter(docs)
@@ -2782,8 +2922,7 @@ def net_prediction_targets(
 
 def is_import_voyage(input_guandong: InputAdapterGd, voyage_id: object) -> bool:
     voyage = normalize_voyage(voyage_id)
-    content = input_guandong.vessel_containers.get(voyage, {})
-    return isinstance(content, Mapping) and normalize_code(content.get("type")) == "I"
+    return bool(voyage) and voyage not in classified_export_voyages(input_guandong)
 
 
 def read_yard_by_voyage_port_size(
@@ -2895,6 +3034,7 @@ def existing_coarse_group_loads(
         voyage_columns.append("IYC_IVOY_ID")
     seen_voyage_containers: set[tuple[str, str]] = set()
     seen_anchor_containers: set[tuple[tuple[str, ...], str]] = set()
+    export_voyages = classified_export_voyages(input_guandong)
     for voyage_column in voyage_columns:
         work = occupied.copy()
         work["_voyage"] = work[voyage_column].map(normalize_voyage)
@@ -2919,7 +3059,7 @@ def existing_coarse_group_loads(
             record = normalized_doc_record(row, flow, size, port)
             record["IYC_EVOY_ID"] = normalize_voyage(row.get("IYC_EVOY_ID"))
             record["IYC_IVOY_ID"] = normalize_voyage(row.get("IYC_IVOY_ID"))
-            coarse_key = configured_coarse_anchor_key(record, voyage_id, attribute_rules)
+            coarse_key = configured_coarse_anchor_key(record, voyage_id, attribute_rules, export_voyages)
             container_key = str(row.get("_container_key", ""))
             anchor_container_key = (coarse_key, container_key)
             if container_key and anchor_container_key in seen_anchor_containers:
@@ -2939,11 +3079,12 @@ def configured_coarse_anchor_key(
     row: Mapping[str, Any],
     voyage_id: str,
     attribute_rules: AttributeRules,
+    export_voyages: set[str],
 ) -> tuple[str, ...]:
     flow = normalize_medium_small_flow(row.get("IYC_STS_CSTATUSCD"), default="OF")
     size = normalize_size_small(row.get("IYC_CSZ_CSIZECD"))
     port = normalize_text(row.get("IYC_POT_UNLDPORT"), "UNK")
-    if flow == "OF":
+    if voyage_id in export_voyages:
         attrs = medium_groupby_attributes(attribute_rules, voyage_id)
     else:
         attrs, _values, _port_label = import_base_group_attributes(row, size, port)
@@ -2952,7 +3093,7 @@ def configured_coarse_anchor_key(
         attrs,
         levels=attribute_rules.weight_levels_for(voyage_id),
     )
-    scope = str(voyage_id) if flow == "OF" else "IMPORT"
+    scope = str(voyage_id) if voyage_id in export_voyages else "IMPORT"
     return (scope, *(f"{attr}={values.get(attr, 'MIXED')}" for attr in attrs))
 
 
@@ -3243,6 +3384,7 @@ def load_port_demand_groups(
     counters: defaultdict[str, Counter[tuple]] = defaultdict(Counter)
     port_sail_area = read_port_sail_area(input_guandong)
     doc_frames: dict[str, pd.DataFrame] = {}
+    export_voyages = classified_export_voyages(input_guandong)
     for voyage_id in voyage_ids:
         frame = input_guandong.vessel_containers.get(voyage_id, {}).get("doc_cntrs", None)
         if not isinstance(frame, pd.DataFrame) or frame.empty:
@@ -3252,18 +3394,18 @@ def load_port_demand_groups(
 
     import_counters: Counter[tuple] = Counter()
     for voyage_id, frame in doc_frames.items():
-        import_voyage = is_import_voyage(input_guandong, voyage_id)
+        export_voyage = voyage_id in export_voyages
+        if export_voyage:
+            continue
         for record in frame.to_dict("records"):
             flow = normalize_medium_small_flow(record.get("IYC_STS_CSTATUSCD"), default="OF")
-            if flow == "OF":
-                continue
             size = normalize_size_small(record.get("IYC_CSZ_CSIZECD"))
             port = normalize_text(record.get("IYC_POT_UNLDPORT"), "UNK")
             normalized_record = normalized_doc_record(record, flow, size, port)
             group_attrs, values, port_label = import_base_group_attributes(normalized_record, size, port)
             core = (flow, size, port_label)
             key = tuple(values.get(attr, "MIXED") for attr in group_attrs)
-            constraint_port = port if import_voyage and port in port_sail_area else ""
+            constraint_port = port if port in port_sail_area else ""
             import_counters[(voyage_id, flow, "40" if size == "45" else size, core, group_attrs, key, constraint_port)] += 1
 
     import_by_cap_key: defaultdict[tuple[str, str, str], list[tuple[tuple, int]]] = defaultdict(list)
@@ -3290,7 +3432,7 @@ def load_port_demand_groups(
             counters[voyage_id][(core, group_attrs, key, constraint_port)] += int(planned_qty)
 
     for row in demand_rows:
-        if row.flow != "OF":
+        if row.voyage_id not in export_voyages:
             continue
         base_attrs = {
             "status": row.flow,
@@ -3403,11 +3545,12 @@ def load_small_doc_groups(
     planning_time = planning_time or parse_datetime(DEFAULT_PLANNING_TIME) or datetime(2026, 5, 19, 9, 30)
     groups: list[SmallBoxGroup] = []
     port_sail_area = read_port_sail_area(input_guandong)
+    export_voyages = classified_export_voyages(input_guandong)
     for voyage_id in voyage_ids:
         frame = input_guandong.vessel_containers.get(voyage_id, {}).get("doc_cntrs", None)
         if not isinstance(frame, pd.DataFrame) or frame.empty:
             continue
-        import_voyage = is_import_voyage(input_guandong, voyage_id)
+        export_voyage = voyage_id in export_voyages
         levels = attribute_rules.weight_levels_for(voyage_id)
         group_by_weight = getattr(attribute_rules, "weight_group_enabled_for", lambda _voyage_id: False)(voyage_id)
         counter: Counter[tuple] = Counter()
@@ -3416,7 +3559,7 @@ def load_small_doc_groups(
             size = normalize_size_small(row.get("IYC_CSZ_CSIZECD"))
             port = normalize_text(row.get("IYC_POT_UNLDPORT"), "UNK")
             normalized_record = normalized_doc_record(row, flow, size, port)
-            if flow == "OF":
+            if export_voyage:
                 group_columns = small_groupby_columns(attribute_rules, voyage_id)
                 port_label = port
             else:
@@ -3433,14 +3576,14 @@ def load_small_doc_groups(
                 "0",
             )
             values = dynamic_attributes_from_row(normalized_record, group_columns, levels=levels)
-            constraint_port = port if import_voyage and flow != "OF" and port in port_sail_area else ""
+            constraint_port = port if not export_voyage and port in port_sail_area else ""
             counter[(core, group_columns, tuple(values.get(column, "") for column in group_columns), constraint_port)] += 1
         planned_counter: Counter[tuple] = Counter()
         import_by_cap_key: defaultdict[tuple[str, str, str], list[tuple[tuple, int]]] = defaultdict(list)
         for key, qty in counter.items():
             core, _group_columns, _dynamic_key, _constraint_port = key
             flow, size, _port, _height, _weight, _special_code, _pre_stow_value = core
-            if flow == "OF":
+            if export_voyage:
                 planned_counter[key] += int(qty)
                 continue
             import_by_cap_key[(voyage_id, medium_small_area_flow(flow), "40" if size == "45" else size)].append((key, int(qty)))
@@ -4106,6 +4249,9 @@ def existing_bay_attributes(
                 attrs["ports"].add(port)
             row_no = normalize_row(row.get("YST_ROWNO"))
             row_attrs = attrs["attributes_by_row"].setdefault(row_no, {}) if row_no else {}
+            export_voyage = normalize_voyage(row.get("IYC_EVOY_ID"))
+            if export_voyage and row_no:
+                row_attrs.setdefault(EXPORT_VOYAGE_ROW_NO_MIX_ATTR, set()).add(export_voyage)
             for attr in dynamic_attrs:
                 value = dynamic_attribute_value(row, attr)
                 if value:
@@ -4394,6 +4540,8 @@ def build_problem(
         for voyage_id in target_voyages
         if voyage_id in vessel_schedules and vessel_schedules[voyage_id].berth_no
     }
+    target_voyage_set = set(target_voyages)
+    export_voyages = classified_export_voyages(input_guandong) & target_voyage_set
     return ProblemData(
         groups=groups,
         small_groups=small_groups,
@@ -4409,6 +4557,7 @@ def build_problem(
         voyage_windows=voyage_windows,
         area_operations=area_operations,
         target_voyages=target_voyages,
+        export_voyages=export_voyages,
         existing_coarse_area_load=dict(existing_coarse_area_load),
         existing_coarse_bay_load=dict(existing_coarse_bay_load),
         berth_distances=berth_distances,
