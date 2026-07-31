@@ -3753,6 +3753,28 @@ class ColumnGenerationPlanner:
                 break
         return patterns
 
+    def _row_capacity_for_column(
+        self,
+        group: SmallBoxGroup,
+        bay_key: str,
+        state: dict | None = None,
+    ) -> int:
+        """Return row-feasible capacity without constructing allocations."""
+        footprint = self._placement_footprint_keys(bay_key, group.size)
+        if not footprint:
+            return 0
+        per_bay = {
+            key: dict(self._row_capacity_items_for_group(key, group.size, group, state=state))
+            for key in footprint
+        }
+        if any(not caps for caps in per_bay.values()):
+            return 0
+        common_rows = set.intersection(*(set(caps) for caps in per_bay.values()))
+        return sum(
+            min(per_bay[key][row_no] for key in footprint)
+            for row_no in common_rows
+        )
+
     def _stack_count_for_group(self, bay_key: str, size: str, group: SmallBoxGroup) -> int:
         return len(self._row_stack_capacities_for_group(bay_key, size, group))
 
@@ -4216,6 +4238,10 @@ class ColumnGenerationPlanner:
     ) -> tuple[int, PlacementColumn] | None:
         best: tuple[tuple[int, int, float, int, int, str], str, int, float] | None = None
         relaxed_best: tuple[tuple[int, float, int, int, str], str, int, float] | None = None
+        priority_rank_by_area: dict[str, int] = {}
+        coarse_area_cost_by_area_qty: dict[tuple[str, int], float] = {}
+        coarse_key = self._coarse_cluster_key(group)
+        fine_key = self._fine_cluster_key(group)
         for bay_key, _max_qty, base_cost in self._candidate_bays_for_group(group, scope=stage):
             area_no = self.bays[bay_key].area_no
             capacity = self._remaining_capacity_for_group_bay(
@@ -4229,9 +4255,21 @@ class ColumnGenerationPlanner:
             if capacity <= 0:
                 continue
             qty = min(remaining, capacity)
+            area_qty_key = (area_no, qty)
+            if area_qty_key not in coarse_area_cost_by_area_qty:
+                coarse_area_cost_by_area_qty[area_qty_key] = self._coarse_area_incremental_repair_cost(
+                    coarse_key + (area_no,), qty, state["coarse_area_used"]
+                )
+            if area_no not in priority_rank_by_area:
+                priority_rank_by_area[area_no] = self._priority_area_rank(group, area_no)
             common_score = (
-                self._priority_area_rank(group, area_no),
-                self._repair_column_score(group, bay_key, qty, base_cost, state),
+                priority_rank_by_area[area_no],
+                self._repair_column_score(
+                    group, bay_key, qty, base_cost, state,
+                    coarse_key=coarse_key,
+                    fine_key=fine_key,
+                    coarse_area_incremental_cost=coarse_area_cost_by_area_qty[area_qty_key],
+                ),
                 0 if qty >= remaining else 1,
                 -qty,
                 bay_key,
@@ -4269,14 +4307,8 @@ class ColumnGenerationPlanner:
         if selected.get(idx, 0) > 0:
             return None
         col = self._columns[idx]
-        if not self._column_fits_state(
-            col,
-            state,
-            remaining,
-            enforce_quota=enforce_quota,
-            enforce_medium_plan_quota=enforce_medium_plan_quota,
-        ):
-            return None
+        # Capacity and policy were checked above against the unchanged state;
+        # _column_index_for(..., state=state) checked this row allocation.
         return idx, col
 
     def _repair_column_score(
@@ -4286,13 +4318,16 @@ class ColumnGenerationPlanner:
         qty: int,
         base_cost: float,
         state: dict,
+        coarse_key: tuple[str, ...] | None = None,
+        fine_key: tuple[str, ...] | None = None,
+        coarse_area_incremental_cost: float | None = None,
     ) -> float:
         bay = self.bays[bay_key]
         area_no = bay.area_no
         block_id = self.block_by_bay.get((area_no, bay_key), "")
         quota_key = self._quota_key(group, area_no)
-        coarse_key = self._coarse_cluster_key(group)
-        fine_key = self._fine_cluster_key(group)
+        coarse_key = coarse_key if coarse_key is not None else self._coarse_cluster_key(group)
+        fine_key = fine_key if fine_key is not None else self._fine_cluster_key(group)
         coarse_area_key = coarse_key + (area_no,)
 
         score = (
@@ -4318,7 +4353,11 @@ class ColumnGenerationPlanner:
         score += self.config.big_plan_area_deviation_penalty * (
             abs(before_quota + qty - target) - abs(before_quota - target)
         )
-        score += self._coarse_area_incremental_repair_cost(coarse_area_key, qty, state["coarse_area_used"])
+        score += (
+            coarse_area_incremental_cost
+            if coarse_area_incremental_cost is not None
+            else self._coarse_area_incremental_repair_cost(coarse_area_key, qty, state["coarse_area_used"])
+        )
         score += self._twenty_bay_state_cost(group, bay_key, state)
         return float(score)
 
@@ -4472,14 +4511,7 @@ class ColumnGenerationPlanner:
         for key in footprint:
             capacity = min(capacity, self.bays[key].physical_capacity - state["bay_load"][key])
         capacity = min(capacity, bay.cap_by_size.get(group.size, 0) - state["bay_size_load"][(bay_key, group.size)])
-        row_patterns = self._row_allocation_patterns_for_column(group, bay_key, capacity, state=state, max_patterns=1)
-        if not row_patterns:
-            row_capacity = 0
-            for qty in range(capacity - 1, 0, -1):
-                if self._row_allocation_patterns_for_column(group, bay_key, qty, state=state, max_patterns=1):
-                    row_capacity = qty
-                    break
-            capacity = min(capacity, row_capacity)
+        capacity = min(capacity, self._row_capacity_for_column(group, bay_key, state=state))
         quota_key = self._quota_key(group, bay.area_no)
         quota = self.quota_by_key.get(quota_key, 0)
         if enforce_quota and quota > 0:
